@@ -1,0 +1,53 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs18-x64",
+      "displayName": "Visual Studio 18 2026 - x64",
+      "generator": "Visual Studio 18 2026",
+      "binaryDir": "${sourceDir}/obj/vs18-x64",
+      "architecture": {
+        "value": "x64",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/install"
+      }
+    },
+    {
+      "name": "vs17-x64",
+      "displayName": "Visual Studio 17 2022 BuildTools - x64",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/obj/vs17-x64",
+      "architecture": {
+        "value": "x64",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/install"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "vs18-x64",
+      "configuration": "Debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "vs18-x64",
+      "configuration": "Release"
+    },
+    {
+      "name": "debug-2022",
+      "configurePreset": "vs17-x64",
+      "configuration": "Debug"
+    }
+  ]
+}

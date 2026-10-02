@@ -1,0 +1,59 @@
+name: VolumeMixerExtender-PostRelease
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  upload_asset:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Extract base version from tag
+        id: get_version
+        run: |
+          if [[ "${{ github.event.release.tag_name }}" != v* ]]; then
+            echo "Skipping because tag does not start with 'v'"
+            exit 0
+          fi
+          BASE_VERSION=${{ github.event.release.tag_name }}
+          BASE_VERSION=${BASE_VERSION#v}
+          echo "VERSION=$BASE_VERSION" >> $GITHUB_OUTPUT
+          echo "Expected version is $BASE_VERSION"
+
+      - name: Check Zip File Existence
+        if: steps.get_version.outputs.VERSION != ''
+        run: |
+          ZIP_PATH="output/VolumeMixerExtender_${{ steps.get_version.outputs.VERSION }}.zip"
+          if [ ! -f "$ZIP_PATH" ]; then
+            echo "Error: Could not find zip file at $ZIP_PATH"
+            exit 1
+          fi
+          echo "Found zip file: $ZIP_PATH"
+
+      - name: Upload Asset to Release
+        if: steps.get_version.outputs.VERSION != ''
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: .releasenote.md
+          files: output/VolumeMixerExtender_${{ steps.get_version.outputs.VERSION }}.zip
+
+      - name: Cleanup output directory
+        if: steps.get_version.outputs.VERSION != ''
+        run: |
+          git config user.name "eric-bot"
+          git config user.email "ericzhang233@outlook.com"
+          git fetch origin master
+          git checkout master
+          if [ -d "output" ]; then
+            git rm -r output/
+            git commit -m "chore: auto-remove output directory after release"
+            git pull --rebase origin master
+            git push origin master
+          fi

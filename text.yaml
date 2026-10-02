@@ -1,0 +1,82 @@
+app.name: VolumeMixerExtender
+app.short: VMExt
+app.description: 为 Windows 11 快速设置音量面板注入扩展入口与自定义声音页面
+cli.banner: VolumeMixerExtender {0}
+cli.usage: 用法: vmex <命令> [参数] [选项]
+cli.section.commands: 命令
+cli.section.groups: 命令分组
+cli.section.arguments: 参数
+cli.section.options: 选项
+cli.section.examples: 示例
+cli.section.exitcodes: 退出码
+cli.hint.skill: 运行 "vmex skill" 获取完整接入文档
+cli.group.core: 基础
+cli.group.inject: 注入
+cli.group.audio: 音频
+cli.group.config: 配置
+cli.outcome.success: 完成
+cli.outcome.invalid_arguments: 参数错误
+cli.outcome.not_supported: 尚未实现
+cli.outcome.failed: 运行失败
+cli.error.unknown_command: 未知命令: {0}
+cli.error.missing_value: 缺少参数值: {0}
+cli.error.unknown_option: 未知选项: {0}
+cli.error.missing_required: 缺少必需参数: {0}
+cli.error.service_unavailable: 服务不可用: {0}
+cli.field.command: 命令
+cli.field.status: 状态
+cli.field.path: 路径
+cli.field.value: 值
+cli.field.count: 数量
+cli.field.missing: 缺失
+skill.title: VolumeMixerExtender 接入文档
+skill.section.purpose: 用途
+skill.purpose.text: 通过命令行完整驱动快速设置音量面板的注入入口与自定义声音页面, 不依赖图形界面。
+skill.section.workflow: 工作流
+skill.workflow.text: 确认 ShellHost 就绪后执行 inject, 随后可查询状态并驱动音频端点与会话。
+skill.section.commands: 命令清单
+skill.section.exitcodes: 退出码
+skill.exitcode.text: 0 成功; 1 参数错误; 2 尚未实现; 3 运行失败
+cmd.payload.summary: 列出内置注入载荷
+cmd.payload.opt.extract: 释放载荷到指定目录
+cmd.help.summary: 显示帮助
+cmd.help.arg.command: 要查看的命令名
+cmd.version.summary: 显示版本号
+cmd.skill.summary: 输出完整接入文档
+cmd.inject.summary: 注入 TAP 到 ShellHost
+cmd.inject.opt.tap: TAP 模块路径
+cmd.inject.opt.wait: 等待目标就绪的超时毫秒数
+cmd.eject.summary: 卸载当前注入
+cmd.status.summary: 查询注入状态
+cmd.devices.summary: 列出音频端点
+cmd.devices.opt.flow: 数据流 render 或 capture 或 all
+cmd.devices.opt.state: 端点状态 active 或 all
+cmd.sessions.summary: 列出音频会话
+cmd.sessions.arg.device: 端点标识
+cmd.volume.summary: 设置端点或会话音量
+cmd.volume.arg.value: 音量 0.0 到 1.0
+cmd.mute.summary: 设置端点或会话静音
+cmd.default.summary: 设置系统默认端点
+cmd.redirect.summary: 设置逐应用端点重定向
+cmd.clear-redirect.summary: 清除全部逐应用重定向
+cmd.config.summary: 读写配置项
+cmd.log.summary: 控制日志级别与输出
+log.app.init: 应用初始化, 配置={0}
+log.app.ready: 应用就绪, 文本项={0}
+log.app.shutdown: 应用关闭
+log.text.loaded: 文本资源载入完成, 共 {0} 项
+log.text.missing: 文本键缺失: {0}
+log.logger.sink: 已挂载日志接收器: {0}
+log.logger.level: 日志级别设为 {0}
+log.config.loaded: 配置载入完成: {0}
+log.config.saved: 配置已保存: {0}
+log.config.created: 配置不存在, 使用默认值: {0}
+log.audio.enumerate: 枚举音频端点 flow={0} state={1}
+log.audio.not_implemented: 音频设备服务尚未实现: {0}
+log.audio.policy_not_implemented: 端点策略服务尚未实现: {0}
+log.inject.find_target: 查找注入目标进程
+log.inject.not_implemented: 注入服务尚未实现: {0}
+log.inject.payload: 注入载荷 launcher={0} tap={1}
+log.cli.start: 命令行启动, 命令={0}
+log.cli.finish: 命令行结束, 命令={0} 结果={1}
+log.cli.unknown: 未知命令 {0}
