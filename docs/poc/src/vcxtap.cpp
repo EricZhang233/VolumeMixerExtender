@@ -58,6 +58,7 @@ namespace WUX  = winrt::Windows::UI::Xaml;
 namespace WUXC = winrt::Windows::UI::Xaml::Controls;
 namespace WUXM = winrt::Windows::UI::Xaml::Media;
 namespace WUXA = winrt::Windows::UI::Xaml::Automation;
+namespace WUXCP = winrt::Windows::UI::Xaml::Controls::Primitives;
 namespace WUC  = winrt::Windows::UI::Core;
 
 // {A7C5F1E2-9B34-4D6E-8F21-5C0D3E7A9B44}
@@ -581,8 +582,125 @@ static bool InjectIntoRow(WUX::FrameworkElement const& model, WUXC::Button const
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// 一次性能力探针：T14（能否激活自定义页所需的控件类型）+ T12（ListContent 内容是否可写、可还原）
+// ---------------------------------------------------------------------------
+template <typename T>
+static void TryActivate(const wchar_t* name)
+{
+    try { T instance; (void)instance; LogF("   [ok]   %ls", name); }
+    catch (winrt::hresult_error const& e) { LogF("   [FAIL] %ls  hr=0x%08lX", name, (unsigned long)e.code().value); }
+    catch (...) { LogF("   [FAIL] %ls  (unknown)", name); }
+}
+
+static WUX::FrameworkElement FindByNameDeep(WUX::DependencyObject const& node, const wchar_t* want, int depth)
+{
+    if (depth > 14) return nullptr;
+    UINT32 n = 0;
+    try { n = WUXM::VisualTreeHelper::GetChildrenCount(node); } catch (...) { return nullptr; }
+    for (UINT32 i = 0; i < n; ++i) {
+        WUX::DependencyObject c = nullptr;
+        try { c = WUXM::VisualTreeHelper::GetChild(node, i); } catch (...) { continue; }
+        if (auto fe = c.try_as<WUX::FrameworkElement>()) {
+            try { if (fe.Name() == want) return fe; } catch (...) {}
+        }
+        if (auto r = FindByNameDeep(c, want, depth + 1)) return r;
+    }
+    return nullptr;
+}
+
+static void ProbeCapabilities(WUX::FrameworkElement const& footer)
+{
+    static bool done = false;
+    if (done) return;
+    done = true;
+
+    LogF("=== capability probe (T14) ===");
+    TryActivate<WUXC::ComboBox>(L"ComboBox");
+    TryActivate<WUXC::ComboBoxItem>(L"ComboBoxItem");
+    TryActivate<WUXC::ListView>(L"ListView");
+    TryActivate<WUXC::ListViewItem>(L"ListViewItem");
+    TryActivate<WUXC::Slider>(L"Slider");
+    TryActivate<WUXC::StackPanel>(L"StackPanel");
+    TryActivate<WUXC::Grid>(L"Grid");
+    TryActivate<WUXC::TextBlock>(L"TextBlock");
+    TryActivate<WUXC::ScrollViewer>(L"ScrollViewer");
+    TryActivate<WUXC::Image>(L"Image");
+
+    // T18：「录制模式」复选框要用 CheckBox（T14 的 10 个类型不含它）。
+    // ToggleButton 也曾因位于 Controls.Primitives 而编译失败 —— 顺带确认现在可激活。
+    LogF("=== capability probe (T18: CheckBox) ===");
+    TryActivate<WUXC::CheckBox>(L"CheckBox");
+    TryActivate<WUXCP::ToggleButton>(L"ToggleButton");
+    try {
+        WUXC::CheckBox cb;
+        cb.Content(winrt::box_value(L"probe"));
+        cb.MinHeight(0.0);
+        cb.IsThreeState(false);
+        cb.IsChecked(winrt::box_value(true).as<WFI::IReference<bool>>());
+        bool on = false;
+        try { on = winrt::unbox_value<bool>(cb.IsChecked()); } catch (...) {}
+        WUXC::StackPanel host;
+        host.Children().Append(cb);
+        std::wstring txt = winrt::unbox_value<winrt::hstring>(cb.Content()).c_str();
+        LogF("   [ok]   CheckBox 建/设值/挂树：Content=%ls  IsChecked=%s  MinHeight=%.1f",
+             txt.c_str(), on ? "true" : "false", cb.MinHeight());
+    } catch (winrt::hresult_error const& e) {
+        LogF("   [FAIL] CheckBox 建/设值/挂树  hr=0x%08lX", (unsigned long)e.code().value);
+    } catch (...) {
+        LogF("   [FAIL] CheckBox 建/设值/挂树  (unknown)");
+    }
+
+    LogF("=== capability probe (T12) ===");
+    WUX::FrameworkElement pageWindow = nullptr;
+    {
+        WUX::DependencyObject cur = footer;
+        for (int i = 0; i < 14 && cur; ++i) {
+            WUX::DependencyObject p = nullptr;
+            try { p = WUXM::VisualTreeHelper::GetParent(cur); } catch (...) { break; }
+            if (!p) break;
+            if (auto fe = p.try_as<WUX::FrameworkElement>()) {
+                try { if (fe.Name() == L"PageWindow") { pageWindow = fe; break; } } catch (...) {}
+            }
+            cur = p;
+        }
+    }
+    LogF("   PageWindow = %s", pageWindow ? "found" : "NOT FOUND");
+    if (!pageWindow) return;
+
+    auto listContent = FindByNameDeep(pageWindow, L"ListContent", 0);
+    LogF("   ListContent = %s", listContent ? "found" : "NOT FOUND");
+    if (!listContent) return;
+    LogF("   ListContent class = %s", ClassOf(listContent).c_str());
+
+    auto scroller = listContent.try_as<WUXC::ScrollViewer>();
+    LogF("   as ScrollViewer = %s", scroller ? "yes" : "no");
+    if (!scroller) return;
+
+    WFI::IInspectable original = nullptr;
+    try { original = scroller.Content(); } catch (...) {}
+    LogF("   original Content = %s", original ? "non-null" : "null");
+
+    WUXC::StackPanel probe;
+    WUXC::TextBlock label;
+    label.Text(L"probe");
+    probe.Children().Append(label);
+    try {
+        scroller.Content(probe);
+        LogF("   *** set Content = OK  (T12 写入可用) ***");
+        scroller.Content(original);
+        LogF("   *** restore Content = OK ***");
+    } catch (winrt::hresult_error const& e) {
+        LogF("   *** set Content FAILED  hr=0x%08lX ***", (unsigned long)e.code().value);
+    } catch (...) {
+        LogF("   *** set Content FAILED  (unknown) ***");
+    }
+}
+
 static void InjectIntoFooter(WUX::FrameworkElement const& footer)
 {
+    ProbeCapabilities(footer);
+
     // ★ 幂等：按内容判定（见文首说明）。不再用指针身份 —— 那会被分配器地址复用骗到。
     if (auto existing = FindOurEntry(footer, 0)) {
         LogF("   Footer 里已经有我们的按钮了（AutomationId=%ls）-> 跳过（内容判定）",

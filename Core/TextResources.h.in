@@ -5,7 +5,7 @@
 namespace vmex::text::generated
 {
     inline constexpr wchar_t kTextYaml[] =
-LR"VMEXTEXT(@VMEX_TEXT_YAML_CONTENT@)VMEXTEXT";
+        LR"VMEXTEXT(@VMEX_TEXT_YAML_CHUNKS@)VMEXTEXT";
 
     inline constexpr std::size_t kTextYamlLength = (sizeof(kTextYaml) / sizeof(wchar_t)) - 1;
 }

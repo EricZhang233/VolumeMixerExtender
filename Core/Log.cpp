@@ -1,11 +1,14 @@
 #include "Log.h"
 
+#include "Platform.h"
 #include "Strings.h"
 
 #include <windows.h>
 
+#include <ctime>
 #include <deque>
 #include <mutex>
+#include <system_error>
 
 namespace vmex::log
 {
@@ -210,6 +213,39 @@ namespace vmex::log
     std::shared_ptr<ILogSink> CreateFileSink(const std::filesystem::path& file)
     {
         return std::make_shared<FileSink>(file);
+    }
+
+    std::filesystem::path SessionLogFile(std::wstring_view role)
+    {
+        static const std::wstring stamp = []()
+        {
+            std::tm local{};
+            const std::time_t now = std::time(nullptr);
+            localtime_s(&local, &now);
+            wchar_t buffer[32] = {};
+            swprintf_s(
+                buffer,
+                L"%04d%02d%02d-%02d%02d%02d",
+                local.tm_year + 1900,
+                local.tm_mon + 1,
+                local.tm_mday,
+                local.tm_hour,
+                local.tm_min,
+                local.tm_sec);
+            return std::wstring(buffer);
+        }();
+
+        const auto directory = platform::GetCacheDirectory() / L"log";
+        std::error_code ignored;
+        std::filesystem::create_directories(directory, ignored);
+
+        const std::wstring stem = std::wstring(role) + L"-" + stamp;
+        std::filesystem::path file = directory / (stem + L".log");
+        for (int suffix = 2; std::filesystem::exists(file, ignored) && suffix < 100; ++suffix)
+        {
+            file = directory / (stem + L"-" + std::to_wstring(suffix) + L".log");
+        }
+        return file;
     }
 
     std::shared_ptr<ILogSink> CreateDebugSink()

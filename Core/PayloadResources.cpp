@@ -52,7 +52,8 @@ namespace vmex::payload
         const auto resource = Locate(item);
         if (resource == nullptr)
         {
-            log::Logger::Instance().Write(log::Level::Error, kChannel, std::wstring(L"missing embedded payload: ") + std::wstring(ToString(item)));
+            log::Logger::Instance().WriteKeyFormat(
+                log::Level::Error, kChannel, L"log.payload.missing", { std::wstring(ToString(item)) });
             return Status::Failed(L"missing embedded payload");
         }
 
@@ -75,10 +76,11 @@ namespace vmex::payload
             return status;
         }
 
-        log::Logger::Instance().Write(
+        log::Logger::Instance().WriteKeyFormat(
             log::Level::Info,
             kChannel,
-            std::wstring(L"extracted ") + std::wstring(ToString(item)) + L" -> " + destination.wstring() + L" (" + std::to_wstring(size) + L" bytes)");
+            L"log.payload.extracted",
+            { std::wstring(ToString(item)), destination.wstring(), std::to_wstring(size) });
         return Status::Ok();
     }
 

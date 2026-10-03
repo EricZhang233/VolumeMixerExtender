@@ -79,6 +79,11 @@
 
 自定义页承载：默认输入/输出设备切换、逐应用音量与输出端点、一键清除重定向。
 
+**范围边界（重要）**：自定义页**只做这两块强项**。系统页原有的能力（空间音效、设备单选列表等）
+**一律不自绘** —— 用户按底栏的 `SystemMixer` 切回系统页即可。
+因为**系统页由系统自己绘制、我们不修改**（§5.7.3），它一直活着，切回去就是；自绘一份等于
+维护一套会随系统更新而失效的复制品。
+
 > ⚠️ **与旧版的区别**：早前设计是"在声音输出页底栏右侧注入一个入口按钮，点击执行外部指令"。
 > 底栏注入的技术路线仍然复用（§5.2），但**入口语义已转移**：入口现在是 L1 的 `VolumeL2Button`。
 > 详见 §5.7 与 `docs/design.md` §7。
@@ -192,6 +197,7 @@ VmExt.App.exe 启动
   ConfigReader::ReadEntry（按钮创建时已读入闭包）
       action=exec → BuildCommandLine(exe, args) → CreateProcessW(exe, cmd, …, exe 所在目录)
       action=pipe → 起独立线程 → CreateFileW(pipe) → 写 "CLICK <id>\n"
+      action=open → ShellExecuteW(nullptr, L"open", url, …, SW_SHOWNORMAL)  ← URL 专用
         └─ PipeServer 线程收到 → 投递到主线程 → 执行动作
        ▼
 （关面板）→ XAML 树销毁 → 按钮消失（无残留）
@@ -212,7 +218,10 @@ loop（在 Watcher 线程里）:
     4. 有进程退出 → 触发 onExited → 回到 1
 ```
 
-**要点**：TAP 活在 ShellHost 里，ShellHost 一换进程 TAP 就没了。产品要的是这个**重注入循环**，不是"重启 explorer"。
+**要点**：TAP 活在 ShellHost 里，ShellHost 一换进程 TAP 就没了。正常运行要的是这个**重注入循环**（保持接管），
+不是"重启 explorer"。
+> ⭐ 但**卸载反着用同一个事实**：既然"ShellHost 换进程 ⇒ TAP 必然消失"，那**重启 shell 就是唯一
+> 不需要"卸载 DLL"就能送走 TAP 的手段** —— 这正是 §5.7.8「从系统卸载」第 4 步的依据。
 
 ---
 
@@ -319,6 +328,7 @@ namespace inikey {
 // ============ 6. IPC 报文 ============
 namespace ipc {
     inline constexpr char kClickPrefix[] = "CLICK ";
+    inline constexpr char kUninstallLine[] = "UNINSTALL\n";
     // 完整的点击报文： "CLICK <entryId> <unixMillisUtc>\n"
     std::string FormatClick(std::string_view entryId, unsigned long long unixMillis);
 }
@@ -353,8 +363,9 @@ namespace ipc {
 | 目标元素名 | `Footer` | Tap 匹配 | ⚠️ 软依赖（§10.2 S1） |
 | **TAP 配置直投导出名** | `VmExtTapProvideInitData` ✅ | Launcher 直投配置给 Tap | 改动只需改 `vmext_contract.h`（导出名由宏派生） |
 | **initData 硬上限** | `259` 字符（实测值） | `Contract::Build` 之后的长度自检 + 告警 | ⛔ OS 行为，不可改（§2.2.1） |
-| 日志目录 | `<InstallRoot>\logs` | 双方 | 可改 |
+| 日志目录 | `<cache>\log` = `%TEMP%\eric\VolumeMixerExtender\log` | App / Launcher / TAP 共用 | ⛔ 与隔壁 EricGameLauncher 同构：一次进程会话一个文件 `<role>-<yyyyMMdd-HHmmss>.log`（`role` = `app`/`launcher`/`tap`） |
 | 点击消息号（备选方案） | `WM_APP + 0x2100` | Tap → App | 可改 |
+| **IPC 报文 VERB** | `CLICK `（带 `<entryId> <unixMillisUtc>`）/ `UNINSTALL`（无参数） | Tap 生成 / App 解析 | ⚠️ ⛔ **App 侧必须先取 VERB 再分支**，不能按"第一段一定是 CLICK"写死（§2.4） |
 
 ### 2.2 配置下发（两条通道，主次分明）
 
@@ -498,7 +509,7 @@ log_level=2
 [entry1]
 id=volumemixer
 text=音量合成器
-; exec = TAP 直接 CreateProcessW；pipe = 通知 App 由 App 决定
+; exec = TAP 直接 CreateProcessW；pipe = 通知 App 由 App 决定；open = ShellExecuteW 打开 URL
 action=pipe
 ; ★ action=exec 时用这两项：exe 是**真实 exe 的绝对路径**（不是 .lnk），args 可选。
 ;   刻意不给"一整条命令行"的写法，见 §2.3 的安全说明。
@@ -511,6 +522,7 @@ args=
 ```ini
 [vmext]
 ; 1 = 注入按钮；0 = 什么都不做（"反注入"的开关）
+; ⚠️ "从系统卸载"的第一步就是把它写成 0（§5.7.8）；App 启动时会写回 1
 enabled=1
 
 entry1.id=volumemixer
@@ -521,6 +533,8 @@ entry1.action=pipe
 entry1.exe=
 ; 可选：附加参数（原样拼到 exe 后面）
 entry1.args=
+; ★ 仅 action=open 时用：要打开的 URL（如 https://github.com/EricZhang233/VolumeMixerExtender）
+entry1.url=
 ; 右侧内边距（像素）。✅ 实测底栏左边距也是 4，所以默认 4 得到对称
 entry1.inset=4
 ; 按钮高度。0 = 跟随模型按钮的显式 Height（✅ 实测为 40，推荐）
@@ -529,11 +543,13 @@ entry1.height=0
 
 | 字段 | 依据（与实测事实的对应） |
 |---|---|
-| `enabled` | 反注入开关。关闭后 TAP 常驻但不再改树（⛔ TAP 无法卸载，§10.1） |
+| `enabled` | 反注入开关。关闭后 TAP 常驻但不再改树（⛔ TAP 无法卸载，§10.1）。**`enabled=0` 是"从系统卸载"的第一步**（§5.7.8）—— 它先把"重新注入"这条路断掉；相应地 **App 启动时必须写回 `enabled=1`**，否则手动重开程序会出现"在跑但不注入" |
 | `entry1.text` | 注入后 UIA 读到的 `Name` 就是它（PoC 用 `TestLink`） |
 | `entry1.action=exec` | PoC 用 `CreateProcessW(L"winver.exe")` ✅ 已实测能拉起进程（安全写法，见 §4.3 坑 27–29） |
 | `entry1.exe` | ★ **拆开而不是一整条命令行**：一整条命令行交给用户填，就会有人写成不加引号、或写成 `.lnk`。拆成 `exe` + `args` 后由 `Contract::BuildCommandLine` 负责加引号 ⇒ 用户**无从写错** |
 | `entry1.action=pipe` | ⚠️ 设计新增，V4 验证 |
+| `entry1.action=open` | ✅ **已定（2026-10-03）**：底栏左格 GitHub 用这个。`ShellExecuteW(nullptr, L"open", url, …)` —— **不复用 `exec`**，理由见 §4.2.5 的 ⚠️ |
+| `entry1.url` | 仅 `action=open` 时读；放**完整 URL**（`https://…`）。⛔ 别把它塞进 `args` —— `ShellExecuteW` 的第二个参数（verb）和第三个参数（file/URL）是两个位置，语义不同 |
 | `entry1.inset=4` | ✅ 实测：底栏 x=2189、模型按钮 x=2193 ⇒ 左边距 4；取 4 后按钮右边缘 2543 = 2547-4 |
 | `entry1.height=0` | ✅ 实测：模型按钮 `Height` 是显式 `40.0`、`MinHeight=0.0`，直接读即可定高 |
 
@@ -595,11 +611,25 @@ entry1.height=0
 | 方向 | **单向**：TAP → App。App 不回包（避免 TAP 等回复而阻塞 UI 线程） |
 | 服务端 | App：`CreateNamedPipeW` + `ConnectNamedPipe` 阻塞循环（§3.12） |
 | 客户端 | TAP：`CreateFileW` + `WriteFile` + `CloseHandle` |
-| 报文 | `CLICK <entryId> <unixMillisUtc>\n` |
+| 报文 | `<VERB> <args…>\n`。**VERB 是第一段**，App 先取 VERB 再分支（⛔ ⛔ 别按"第一段一定是 CLICK"写死）：<br>`CLICK <entryId> <unixMillis>\n` —— 点击条目<br>`SETDEFAULT <render\|capture> <deviceId>\n` —— 切系统默认设备<br>`SETREDIRECT <render\|capture> <pid> <deviceId>\n` —— 逐应用重定向（`deviceId` 为空 = 清除该应用）<br>`CLEARREDIRECT\n` —— 清空所有逐应用重定向<br>`UNINSTALL\n` —— 「从系统卸载」全套流程（§5.7.8） |
 | 超时 | 客户端：`WaitNamedPipeW` 200ms；失败则**记日志并放弃**（不重试、不弹窗） |
 | 线程 | ⚠️ **必须**在 TAP 的独立线程里做（或保证 200ms 上限），避免阻塞 XAML UI 线程 |
 
+⚠️ **原 `AUTOSTART <0\|1>` 已不是管道动词**（2026-10-03 改）：开关必须**现查**「任务在不在」（管道单向，
+问不了宿主），所以查/注册/删除全在 `Core/AutostartEntry` 里就地做，TAP 不再发包。
+`UNINSTALL` 仍在管道上 —— 它要**重启 shell**，而 TAP 就在那个 shell 里，只能交给宿主。
+
 **为什么不用窗口消息（`PostMessage`）**：`HWND` 在 App 重启后失效而 TAP 无法感知；管道名稳定且可重连。窗口消息列为备选（常量表已留消息号）。
+
+⛔ **本协议不是数据通道，只走"离散事件"（点击 / 命令）。**
+`Slider.ValueChanged` 这类**高频流量一律不走这里** —— 已定由 TAP 在 ShellHost 内**直接调 WASAPI**（§5.7.9 方案 A）。
+⇒ 新增动作**优先考虑 TAP 内联实现**，只有"必须由 App 的进程身份/生命周期来做"的事才加报文。
+
+⭐ **判据（2026-10-03 补，来自 `verified-after-injection/12-audio-interop-safety.md`）**：
+除了"进程身份/生命周期"，**"不能崩在别人的进程里"也是同一类理由**。
+未公开接口（`IPolicyConfig` 那类）**槽位未经证实、错槽位会 AV** ——
+**在 ShellHost 里试错就是崩掉用户的 shell**，而在宿主进程里崩了只是重启一下。
+⇒ **所有设备策略改动（切默认 / 逐应用重定向 / 清空重定向）都走本协议**，不在 TAP 内联。
 
 ### 2.5 日志契约
 
@@ -774,6 +804,7 @@ TEST(Parse_Rejects_Overlong)         // 2049 字符 → false
 TEST(Parse_EmptyValue)               // "cfg=;log=x" → cfg 为空 → 沿用 MissingCfg 的判定
 TEST(PipeName_And_MutexName_Format)  // 与文档 §2.1 的字面量一致（防手改）
 TEST(Ipc_FormatClick_Shape)          // "CLICK id 123\n" 三段 + 换行
+TEST(Ipc_UninstallLine_Shape)        // "UNINSTALL\n" 且**不含** entryId（它没有 id 参数）
 ```
 
 ---
@@ -2066,9 +2097,9 @@ int wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
         return 1;
     }
 
-    // 5) 日志（失败不致命）
-    CreateDirectoryIfNeeded(str::Join(root, L"logs"));
-    Log::Open(str::Join(root, L"logs\\app.log"), cfg.logLevel);
+    // 5) 日志（失败不致命）—— <cache>\log，一次会话一个文件，见 §9.3
+    CreateDirectoryIfNeeded(platform::GetCacheDirectory() / L"log");
+    Log::Open(log::SessionLogFile(L"app"), cfg.logLevel);
 
     // 6) 诊断运行时（失败 → 进 Faulted，但仍启动托盘，让用户能看到原因与诊断信息）
     auto rt = DiagnosticsRuntimeLocator::Locate(cfg.diagnosticsDll);
@@ -2093,12 +2124,64 @@ VolumeMixerExtender 诊断信息
   TAP DLL         : ...\VmExt.Tap.dll       (存在)
   initData        : ver=1;cfg=...;log=...;pipe=...;mutex=...
   最近错误        : （无）
-  日志目录        : ...\logs
+  日志目录        : %TEMP%\eric\VolumeMixerExtender\log
 ```
 
 > **⚠️ 待补的可用性缺口**：TAP 完成一次按钮注入后**没有回传任何信号**。
 > 要真正做到"状态可信"，需要让 TAP 在注入成功后也走管道写一行 `INJECTED <entryId>`。
 > v1 里状态只到"TAP 就绪"。**文档写清楚，不要假装状态是准的。**
+
+---
+
+### 3.14.1 开机自启（`Run` 键）与「从系统卸载」
+
+> 设计见 `../design.md` §7.9.2。**已定（2026-10-03）：登录自启走 `Run` 键**
+> （同日从"计划任务"改过来：一个值就是全部语义，没有 `ExecutionTimeLimit` / 电池那几项默认值陷阱，
+> 也不存在把运行身份写成提权的可能）。
+> **已实现（2026-10-03）：`Core/AutostartEntry.{h,cpp}`**，命名空间 `vmex::autostart`
+> （本项目统一用 `vmex`，不是文档早期的 `vmext`）。
+
+```cpp
+namespace vmex::autostart {
+
+class AutostartEntry final {
+public:
+    // 值名固定：HKCU\Software\Microsoft\Windows\CurrentVersion\Run 下的这一个名字。
+    static constexpr wchar_t kValueName[] = L"VolumeMixerExtender";
+
+    // 初值判定：Run 值存在 && 未被系统标记为禁用。⛔ 不是"我记得我建过"
+    [[nodiscard]] static bool IsEnabled();
+    static bool Enable(std::wstring& error);
+    static bool Disable(std::wstring& error);
+};
+
+} // namespace vmex::autostart
+```
+
+| 项 | 值 |
+|---|---|
+| 位置 / 值名 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` · `VolumeMixerExtender` |
+| 值 | `"<InstallRoot>\vmex.exe" --tray`（⚠️ 路径带引号：`Run` 值是一整条命令行字符串） |
+| 触发 | 登录时（explorer 拉起），**每会话一份** |
+| 运行身份 | 当前用户、**未提权**（继承 explorer 令牌）⇒ 与 ShellHost 同完整性级别，注入契约成立 |
+| 禁用标记 | `HKCU\...\Explorer\StartupApproved\Run` 下的同名 `REG_BINARY`，**首字节低位 = 1 表示已被用户禁用** |
+
+**开关语义**：`初值 = Run 值存在 && 未被禁用`；`打开 = 写 Run 值 + 清禁用标记`；
+`关闭 = 删 Run 值 + 删禁用标记`（⛔ 不留"已禁用"残留）。
+
+⛔ **禁用标记必须一起读、一起删**：用户在「任务管理器 → 启动」里关掉它时，Windows **不删**
+我们的 `Run` 值，只写那个标记 ⇒ 只读 `Run` 值会**画"开"而实际不启动**；关闭时不清标记则下次
+打开又被判成"被禁用"。
+
+⛔ **开关状态不存任何副本**：自启开关画的是"自启项到底在不在"这个事实，任何镜像都会和用户的
+手动删改打架 ⇒ 每次现查（payload 与宿主都链接 `vmex_core`，实现只有这一份）。
+
+⚠️ `<InstallRoot>\vmex.exe` 不存在时**拒绝注册**（否则留下一个每次登录都失败、还赖在「启动」列表里的项）。
+
+**CLI**：`vmex autostart` 查询、`vmex autostart on|off` 注册/取消（与设置页开关同一份实现）。
+
+**控制台闪现**：`vmex.exe` 是控制台子系统，登录自启时会闪一下控制台窗口 ——
+**已决定接受**（不做 `WIN32` 子系统 + `AttachConsole` 改造，原 T25 关闭）。
 
 ---
 
@@ -2496,6 +2579,20 @@ void Tap::PerformClickAction(const EntryConfig& e) noexcept
         return;
     }
 
+    if (e.action == L"open") {
+        // ★ 为什么不复用 action=exec 走 CreateProcessW：
+        //   CreateProcessW 只认 exe，URL 不是 exe —— "用默认浏览器打开 URL" 是 shell 的职责。
+        //   ShellExecuteW 的 verb=L"open" 才是官方途径（走 URL/文档关联解析）。
+        if (e.url.empty()) { VLOG_WARN("Tap", "action=open 但 url 为空，忽略"); return; }
+
+        // hwnd = nullptr（不指定父窗口）。
+        // ⚠️ ShellExecuteW 的返回值**不是** BOOL：> 32 才算成功，<= 32 是错误码（老 API 的历史包袱）。
+        const INT_PTR r = ::ShellExecuteW(nullptr, L"open", e.url.c_str(),
+                                          nullptr, nullptr, SW_SHOWNORMAL);
+        if (r <= 32) VLOG_ERR("Tap", "ShellExecuteW 失败 code=%lld", (long long)r);
+        return;
+    }
+
     VLOG_WARN("Tap", "未知 action: %S", e.action.c_str());
 }
 ```
@@ -2507,6 +2604,8 @@ void Tap::PerformClickAction(const EntryConfig& e) noexcept
 | 在 UI 线程上 `CreateFileW` 管道 | 服务端没起来会卡住整个面板。**必须**独立线程 + 短超时 |
 | `std::thread(...).detach()` 的异常安全 | 线程函数的**最外层**必须 `try/catch(...)`：线程里未捕获的异常会 `std::terminate` 整个 ShellHost |
 | 用 `std::jthread` 代替 `detach` 更安全？ | ⚠️ 不能：`jthread` 析构会 `join`，而 Click 处理器返回时线程还在跑，`join` 会阻塞 UI 线程。**这里必须 `detach` + 全捕获** |
+| ⛔ `ShellExecuteW` 的返回值**不是 BOOL** | `> 32` 才算成功，`<= 32` 是错误码（`SE_ERR_*`）。写成 `if (!r)` 会把失败当成成功 |
+| `action=open` 别把 URL 塞进 `args` | `ShellExecuteW` 的 verb / file 是两个独立参数位；URL 必须走 `entry1.url` |
 
 > **✅ 已实测**：`CreateProcessW(L"winver.exe")` 从 `Button.Click` 里调用成功拉起进程（UIA `InvokePattern` 触发，窗口标题「关于"Windows"」）。
 > **⚠️ 未实测**：`action=pipe` 全链路（服务端 + 客户端 + UI 线程不阻塞）。
@@ -2698,6 +2797,13 @@ panel.Children().Append(grid);
 | `Foreground` | model | 文字颜色（含浅色/深色主题差异） |
 | ⭐ **`Height`** | 见下方规则 | **决定 hover 高亮框的高度** |
 
+> **实测外观（说明为什么必须复制 `Style` + `Foreground`）**：2026-10-03 逐像素取样证明，
+> 底栏按钮**静止时无边框、无填充** —— 它是**文字式按钮，不是带框按钮**。文字核心 `#5a535b`
+> 叠在背景 `#e8d4e8` 上正好是 **60.6% 前景**（等效 `TextFillColorSecondary`），
+> 且 R−B 差 = 0 ⇒ **中性灰，不是强调色**。
+> 几何：`94x40` 框 = 文字 `72` + 左右各 `11px`；「更多音量设置」6 个汉字 = 72px ⇒ `FontSize = 12`。
+> 完整取样数据见 `../design.md` §7.5.1。
+
 **不复制、而是显式设定**：
 
 | 属性 | 我们设成 | 原因 |
@@ -2866,19 +2972,27 @@ L1 树里还有 `Microsoft.QuickAction.ProjectL2` —— **`L2` 后缀是"导航
 #### 5.7.4 ⚠️ 界面只能逐元素构建（最大成本项）
 
 **没有 XAML 标记编译** —— 那需要 UWP 工程体系（`xamlcompiler` + 应用包结构），
-在注入用的普通 DLL 里不成立。自定义页只能用 `IVisualTreeService::CreateInstance` 逐元素搭：
+在注入用的普通 DLL 里不成立。自定义页只能逐元素构建。
+
+> ⚠️ **构建方式已更正**：本文早前写的是 `IVisualTreeService::CreateInstance`，
+> 但 **PoC 实际用的是 C++/WinRT 直接激活**（`WUXC::ComboBox c;`，即 `RoActivateInstance`）——
+> ShellHost 内 `Windows.UI.Xaml` 已加载，类型工厂可用。**按已验的方式走**。
+> 见 `verified-after-injection/10-page-swap-capability.md`。
 
 | 元素 | 代价 |
 |---|---|
 | 两个下拉框 | 每个 `ComboBox` + N 个 `ComboBoxItem` 手工创建 |
+| 「录制模式」复选框 | 一个 `CheckBox` + **紧凑模板**（默认 `MinHeight=32`/方框 `20px` 会撑高标签行，见 §5.7.7） |
 | 应用列表 | N 项 ×（图标 + 名称 + `Slider` + 静音键）全部手工 |
-| 事件 | 每个 `Slider` 单独挂 `ValueChanged` |
+| 事件 | 每个 `Slider` 单独挂 `ValueChanged`；`CheckBox` 挂 `Checked`/`Unchecked` |
 
 参照 §5.2 中单个 `Button`（含样式抄写）约 60 行，一个带应用列表的页面保守估计
 **1500–2500 行 C++**。**排期时不可按"写个 XAML"估算。**
 
-> 目前 `CreateInstance` **只验证过 `Button`**（`Button` / `Grid` / `TextBlock`）。
-> `ComboBox` / `ListView` / `Slider` 的可用性是 T14，**未验证** —— 若不成立，页面形态要重设计。
+> ✅ **已实测**：`ComboBox` / `ComboBoxItem` / `ListView` / `ListViewItem` / `Slider` / `StackPanel` /
+> `Grid` / `TextBlock` / `ScrollViewer` / `Image` **全部可激活**（T14，2026-10-03）。
+> `ToggleButton` 属 `Controls.Primitives`，需另引该命名空间 —— **已验可用**（T18）。
+> ✅ `CheckBox`（§5.7.7 需要）**已验证可激活**：见 `verified-after-injection/11-checkbox-capability.md`。
 
 #### 5.7.5 新增不变量
 
@@ -2889,19 +3003,219 @@ L1 树里还有 `Microsoft.QuickAction.ProjectL2` —— **`L2` 后缀是"导航
 | **I7** | 自定义页的所有元素必须**由 TAP 在 ShellHost 内创建** | 跨进程传递 XAML 对象不可能；只能在目标进程内 `CreateInstance` |
 | **I8** | 替换动作只允许发生在 **UI 线程**（`OnVisualTreeChange` 本就在 UI 线程） | 改可视树非线程安全；且不得在此做阻塞 IO（§2.4 的 `action=pipe` 教训） |
 
-#### 5.7.6 底栏按钮的语义变化
+#### 5.7.6 底栏：三态 + 三格复用
 
-底栏仍按 §5.2 注入（同一行右侧），但动作语义不同：
+底栏仍按 §5.2 注入，但**三个格子每页给不同文案与动作，且始终是同一个 `Footer` 元素**：
 
-| 状态 | 按钮文案 | 动作 |
+| | 左格 | 中格 | 右格 |
+|---|---|---|---|
+| 系统页 | —（隐藏） | —（隐藏） | `MixerExtender` |
+| 自定义页 | `清除重定向` | `设置` | `SystemMixer` |
+| 设置页 | `GitHub` | `返回` | （占位，先空着） |
+
+**四个元素全部是纯文字，没有图标**（中格不是齿轮图标）。样式一律由 §5.3 的复制算法得出：
+底栏项**静止时无边框、无填充**，`Foreground` 等效 `TextFillColorSecondary`（中性灰，非强调色），
+内边距 `0 11px`、`FontSize = 12`。实测依据见 `../design.md` §7.5.1。
+
+**系统页我们只加右侧一个按钮**，其余一概不碰。
+
+⛔ **实现约束一：每格只挂一个 handler，进来先读"当前页"再分发。**
+`Footer` 是 `PageWindow` 的子元素，**不随 `ListContent` 的内容一起被换掉**，
+所以三个元素**只注入一次**并常驻。
+**绝不能"每到一页就新挂一个 `Click`"** —— `Button::Click` 只能注册、不能注销，
+handler 会累积，来回切两页之后一次点击就会触发两次。
+
+```text
+左格 onClick:  当前==自定义页 ? 清除重定向 : (当前==设置页 ? 打开 GitHub : 无)
+中格 onClick:  当前==自定义页 ? 进设置页   : (当前==设置页 ? 返回自定义页 : 无)
+右格 onClick:  当前==自定义页 ? 切系统页   : (当前==设置页 ? 无 : 切自定义页)
+```
+
+⛔ **实现约束二：可见性与文案是两件事，别混。**
+**可见性**只用于"系统页时左、中必须隐藏"（那两格是我们塞进系统那一行的，系统页不该有我们的东西）；
+**文案/动作**一律靠上面的 dispatch。混在一起就会写出"每页重建底栏"的错误做法。
+
+**右格的文案指"目标"而非"动作"**（仅系统页 ⇄ 自定义页这一对）：
+
+| 当前显示的页 | 右格文字 | 动作 |
 |---|---|---|
-| 显示系统页 | 「进入」 | 切到自定义页 |
-| 显示自定义页 | 「退出」 | 切回系统页 |
+| 系统页 | **`MixerExtender`** | 切到自定义页 |
+| 自定义页 | **`SystemMixer`** | 切回系统页 |
+| 设置页 | **（占位）** | — |
 
-⇒ 需要一个**新的动作类型**（如 `action=page`）。现有的 `exec` / `pipe` 都面向"拉起外部进程"，
-页面切换是 in-proc 行为，复用它们会导致配置语义错位。
+⇒ 页面切换需要一个**新的动作类型**（如 `action=page`）。现有的 `exec` / `pipe` 都面向
+"拉起外部进程"，页面切换是 in-proc 行为，复用它们会导致配置语义错位。
 
-底栏左侧另需一个「清除重定向」按钮（§5.2 的两列网格需扩为三列）。
+**左格 `GitHub` 用 `action=open`**（已定，2026-10-03）—— 它调 `ShellExecuteW(..., L"open", url, ...)`
+走 shell 的 URL 关联解析，不复用 `exec` 的 `CreateProcessW`（URL 不是 exe，详见 §2.3 / §4.2.5）。
+
+底栏左侧另需一个「清除重定向」按钮 —— §5.2 的两列网格需扩为**四列**：
+`左格(Auto) | 弹性列(*) | 中格(Auto) | 右格(Auto)`。
+
+#### 5.7.7 「录制模式」复选框（对接虚拟音频驱动方案）
+
+UI 落点与语义见 `../design.md` §7.9.1，对应 `VirtualAudio-Record-Mirror-Plan.md`。
+
+- **位置**：「默认输出设备」标签行的右端，**右对齐**，与标签同一行（不占额外高度）。
+- **切换自动、双向对称**：
+
+```text
+勾选：  记住当前默认 D → 系统默认切到 V → R := D      标题 → 监听输出设备
+取消：  系统默认切回 R（= 记住的 D）                   标题 → 默认输出设备
+```
+
+| | 系统默认输出设备 | 本行下拉框选的是 | 本行标题 |
+|---|---|---|---|
+| ☐ 未勾选 | = 下拉框选的那台 | 系统默认输出设备（render 端点，**排除 V**） | `默认输出设备` |
+| ☑ 录制模式 | **`OC Virtual Speaker`**（V，音量硬锁 100%） | **监听设备 R**（render 端点，**排除 V**） | `监听输出设备` |
+
+> ⚠️ **这推翻了方案 §0/§8 的「自动化：无（默认设备手动切换，无脚本、无看门狗）」** ——
+> 现在切换由本复选框自动完成。`VirtualAudio-Record-Mirror-Plan.md` 已同步修订（§0/§8/§10）。
+
+**实现约束**：
+
+1. **V 永不显示** —— 枚举 render 端点时必须**过滤掉自己的虚拟端点**（按 FriendlyName / 硬件 ID 判定），
+   两态的列表都过滤。否则用户能把它直接选成默认设备，绕过录制模式、让录制链空转（没有监听目标）。
+2. **录制模式不持久化** —— **勾选状态**不跨系统重启保存，每次启动一律从"未勾选"开始。
+   D **也只活在会话内存里**（用于"取消勾选时立刻切回"，不必等 Windows 自己滚）。
+3. **残留不靠对账，靠驱动的「常开开关」** —— 见方案 §4.3。V 的插头默认「**未插入**」，
+   只有我们显式闭合（录制模式打开时通过 IOCTL）才「已插入」；模式关 / 程序退出 / 崩溃 →
+   驱动在 `IRP_MJ_CLEANUP` 上兜底回到「未插入」。
+   ⇒ **不需要 `pendingRestore` / `previousDefaultId`、也不需要"启动时对账"** —— 残留结构上不可能存在。
+   本侧要做的是：**录制模式开 → ① 让驱动闭合插头 ② 立刻把默认切到 V**（两件事必须都做）。
+4. **必须用紧凑模板** —— WinUI `CheckBox` 默认 `MinHeight = 32`、方框 `20px`；
+   而标签行只有 **16px** 高，直接用默认模板会把整行撑到 32。
+   ⇒ 设 `MinHeight = 0` 并使用 16px 方框的模板。（线框稿实测：16px 方框下**行高保持 16 不变**。）
+
+#### 5.7.8 设置页（子页面）
+
+> 🅿️ **挂起（2026-10-03）**：先做 §5.7.9 的端点音量层。本节布局已定，**实现顺位后移**。
+
+布局与定稿项见 `../design.md` §7.9.2。要点：
+
+- **入口**：自定义页底栏中格的「设置」；**返回**：设置页底栏中格的「返回」。
+- **「开机启动」= `ToggleSwitch`**（不是 `CheckBox`）。
+  ⚠️ **新类型，尚未验证**（T14 的 10 个 + T18 的 `CheckBox` 都不含它）—— 见 §10.5 的 T19。
+- **「从系统卸载」**：置底 + 危险色（`SystemFillColorCriticalBrush`）。
+  XAML 侧靠一个 `RowDefinition Height="*"` 的空白行推到内容区底部。
+  它**在内容区里**，不属底栏 —— 所以会随内容一起滚。
+- ⭐ **「从系统卸载」= 退出接管、回落原生行为，不是删除软件**（已定，2026-10-03）：
+  **不删程序文件、不卸驱动、不删配置**，只做 **删除开机自启项 + 重启 shell**。
+
+```text
+由 App 执行，顺序不可换：
+  1. 写 enabled=0（vmext-tap.ini）   ← 先断"重新注入"；TAP 每次命中 Footer 时重读 ini ⇒ 立刻生效
+  2. 停 Watcher 线程                  ← ⛔ 顺序关键，见下
+  3. 删除开机自启项（AutostartEntry::Disable()：Run 值 + 系统禁用标记；见 §3.14.1）
+  4. 重启 shell（explorer.exe）       ← ShellHost 换新进程 ⇒ 旧 TAP 连同注入一起消失 ⇒ 原生 UI 回来
+  5. App 自己退出
+```
+
+  - ⛔ **第 1、2 步必须在第 4 步之前**：否则杀掉 ShellHost 后，Watcher 会立刻在新 ShellHost 上
+    **重新注入**，卸载等于没做。
+  - ⛔ **这五步必须全由 App 执行，不能由 TAP 执行**。两条致命原因：
+    ① **TAP 活在 ShellHost 里** —— 第 4 步 = TAP 在 `Click` 回调栈上当场自杀，顺序没法保证；
+    ② **只有 App 能在杀 ShellHost 之前先把 Watcher 停掉**（第 2 步）。
+    ⇒ **卸载动作走 `action=pipe`**（点击 → 报文 → App 执行，如 `UNINSTALL`）。
+    **pipe 不可用（App 已崩/未运行）时拒绝执行** + 改文案 + 记日志，
+    ⛔ **绝不降级成"TAP 自己重启 shell"**（那就是半卸载）。
+  - **第 3 步**：删干净（`Run` 值 + `StartupApproved\Run` 标记）。⛔ **不要只禁用** ——
+    只禁用会在「任务管理器 → 启动」和「设置 → 应用 → 启动」里留一条灰项。
+    ⚠️ 用户手动禁用过的话，Windows 是**往 `StartupApproved\Run` 写标记**、不删 `Run` 值 ⇒
+    这一步必须**两个都删**：只删 `Run` 值会留下禁用标记，下次打开开关会立刻又被判成"被禁用"。
+    ⚠️ 反过来说，**只读 `Run` 值是会撒谎的** —— 初值必须连禁用标记一起读。详见 §3.14.1。
+  - **不删驱动是安全的**：V 的插头是**常开开关**（方案 §4.3）—— 驱动上电默认「未插入」，
+    只有我们显式闭合才「已插入」。App 退出后没人闭合 ⇒ **V 结构性不可用** ⇒ 系统回落原生行为。
+    ⇒ 卸载**不需要动驱动**，也**不需要重启系统**（这正是"直接重启 shell"能成立的原因）。
+  - **重新接管**：程序文件还在 ⇒ 用户**手动运行一次 exe** 即可。
+    ⇒ **App 启动时必须写 `enabled=1`**，覆盖卸载留下的 `0`，否则会出现"程序在跑但不注入"的诡异状态。
+  - ✅ **不用管驱动**（2026-10-03 定）：**没有端点时 Windows 不会显示它** —— 宿主退出后没人闭合插头
+    ⇒ V 是 `UNPLUGGED` ⇒ 系统自己的声音设置里也不会出现。⇒ 卸载不需要动驱动，也不会有"看得见的残留"。
+- ✅ **标题行的系统后退键：保持系统默认行为，不拦**（已定，2026-10-03）。
+  ⇒ 设置页会出现两个返回键且行为不同（标题行 = 退回 L1；底栏「返回」= 回自定义页）。
+  **这是接受的取舍** —— ⛔ 不要再为此挂 `L2Frame.Navigating`（**原 T20 一并关闭，不必再验 `Cancel` 可写性**）。
+- ✅ **「从系统卸载」的确认方式：连击 5 次**（已定，2026-10-03），**不用 `ContentDialog`**。
+
+```text
+hits = 0，文案 = 「从系统卸载」
+  单击 → hits++
+         hits < 5  → 文案 = 「再单击(5−hits)次从系统卸载」；**重置** 500ms 定时器（首次为 4）
+         hits == 5 → 执行卸载
+  500ms 内无下一次单击 → hits = 0，文案复位
+```
+
+  - **超时按"距上一次单击"算**（两两相邻 ≤ 0.5s），不是"5 次总时长"。
+  - **第 1..4 次单击无任何副作用**，只改文案 ⇒ 复位是纯内存操作，无需回滚。
+  - **必须用 `DispatcherTimer`**（回调改 UI 文案，`DispatcherTimer` 天生在 UI 线程）；
+    ⛔ 不要用 `Task.Delay` / 线程池 + `Dispatcher.RunAsync`。
+  - ⛔ **`hits` 是纯 UI 态**：只活在面板这一次打开期间，关面板即丢弃（**这是期望行为**，不需要持久化）。
+  - **为什么不用 `ContentDialog`**：① 浮层盖住整个面板；② `XamlRoot` 是额外未验前置（原 T21）；
+    ③ 防误触的意图连击已经满足（误触一次不会卸载）。⇒ **T21 可以不做**。
+- ✅ **左格 GitHub 用 `action=open`**（已定，2026-10-03），见 §5.7.6 与 §4.2.5。
+- **「显示驱动名」= `ToggleSwitch`，默认开**：控制设备名要不要带括号里的驱动名后缀
+  （`扬声器 (Realtek(R) Audio)` ↔ `扬声器`）。**作用面三处，必须同步**：
+  两个下拉框的值 / 端点音量每一行 / 应用行里的"重定向目标端点"。
+  - ⛔ **判定方式：按"元素是不是设备名"，不能按"文本以 `(` 结尾"。**
+    应用名里也有括号（`Microsoft Teams (工作或学校)`），按文本判定会把应用名削掉一截。
+    我们这边每个 `TextBlock` 都是自己建的，所以天然知道它是设备名 —— **别偷懒去正则扫文本**。
+  - **取值 Key**：`PKEY_Device_FriendlyName`（或 `PKEY_Device_DeviceDesc` + `PKEY_DeviceInterface_FriendlyName` 自己拼）；
+    应用名走会话/进程信息，两者别混用一个取值函数。
+  - ℹ️ **「显示驱动名」不省高度**：实测开关前后内容高度 603px → 603px 不变（行高由 `min-height:44` 钉死），
+      只影响折行/截断。**别指望它缓解 §5.7.9 的溢出。**
+
+#### 5.7.9 端点音量（每个设备一条）
+
+布局与定稿项见 `../design.md` §7.9.3。要点：
+
+- **粒度：每个端点一条** —— **不是"输出/输入各一条"**。每台设备单独调音量 + 静音。
+- **枚举**：`EnumAudioEndpoints(DEVICE_STATE_ACTIVE)`，`eRender` 在前、`eCapture` 在后，**不加分组标签**。
+  ⚠️ 用 `DEVICE_STATE_ACTIVE` 而不是 `DEVICE_STATE_ALL` ——「已禁用」「未插入」的一律不列。
+- ⭐ **必须过滤掉 V**：与两个下拉框同一条硬约束（§5.7.7 约束 1）。
+  **一处实现、两处复用**（下拉框 + 这里），不要写两份判定。
+- ⭐ **采集侧收成一个折叠组**：渲染端点逐条展开；采集端点收成一行「输入设备（N）」+ 展开箭头，
+  **默认不展开**，子行缩进 28px。⇒ 输入侧不再随设备数增长（§7.9.3 的"高度封顶"）。
+- ✅ **溢出已接受，不做压缩**（2026-10-03 定）：收起态 603px 对可用 306px，靠**共用滚动区**消化，
+  行高**保持 `44px`**（与 app 行等高）。⛔ 不要"顺手优化"成 40px、或给这一层加内部滚动、
+  或把渲染端点也折叠 —— 那四个旋钮都已被明确否决（`../design.md` §7.9.3）。
+- ✅ **安全 / 危险 API 的分界（2026-10-03 定，证据 `verified-after-injection/12-audio-interop-safety.md`）**：
+
+  | 操作 | 在哪执行 | 为什么 |
+  |---|---|---|
+  | 枚举设备、读端点音量/静音、**读写**逐应用音量/静音 | **TAP 内联**（ShellHost 里） | 全走 SDK 文档化接口，实测无风险 |
+  | **切系统默认设备**、**逐应用重定向**、**清空重定向** | **走 `action=pipe` → 宿主** | 未公开接口。`IPolicyConfig` 按 EarTrumpet 的槽位声明实测 **`vtable[13]` 访问违规** ⇒ **在 ShellHost 里试错 = 崩掉用户的 shell**；宿主崩了只是重启 |
+  | 开机自启、从系统卸载 | **走 `action=pipe` → 宿主** | 生命周期/进程身份原因（§5.7.8） |
+
+  ⚠️ **代价要认**：`pipe` 是**单向**的，宿主不回包 ⇒ **切换结果拿不到确认**。
+  ⇒ UI 用**乐观更新**（点了就改显示），下次打开面板重新枚举即与事实对齐。
+
+  ⚠️ **未定论**：`IPolicyConfig` 的正确槽位，以及"AV 是不是 RDP 虚拟端点造成的"。
+  本次探测在 **RDP 会话 + 虚拟端点**下进行（唯一渲染端点是 `远程音频`，采集端点 0 个），
+  而 EarTrumpet 在真实硬件上大量使用同一路径且工作正常 ⇒ **留作实体机待验**。
+
+- ✅ **滑块的高频回调走哪条路：已定方案 A —— TAP 在 ShellHost 内直接调 WASAPI**（2026-10-03）。
+  `Slider.ValueChanged` 拖动时**每秒触发几十次** ⇒ **滑块流量一律不走 IPC**；
+  `action=pipe` 继续**只承载"点击/命令"**（这就把 §2.4 的边界钉死了：pipe 不是数据通道）。
+  本层与下一层「逐应用音量」同用这一条。
+
+  方案 A 的**三条硬约束**（都必须实现，不是可选优化）：
+
+  | # | 约束 | 说明 |
+  |---|---|---|
+  | **A1** | **WASAPI 封装两边共链** | TAP 与 App 都要用 `IAudioEndpointVolume`。⛔ **绝不能写两份** —— 两份实现 = 两份端点枚举顺序、两份 `DEVICE_STATE` 过滤、两份 V 过滤，迟早不一致。⇒ 抽成**静态库 / 仅头实现**，TAP 与 App 各链一份 |
+  | **A2** | **外部改动要回写 UI** | 键盘音量键、系统自己的音量面板改同一台设备时，我们的滑块必须跟着动 ⇒ `IAudioEndpointVolume::RegisterControlChangeNotify`。⛔ 回调**不在 UI 线程**（COM 通知线程池）⇒ 回写 UI 必须 `Dispatcher.RunAsync` |
+  | **A3** | **必须区分"拖动中"与"拖动结束"** | `Slider.ValueChanged` 分不清。外部回写时直接改 `Value` 会和用户正在拖的位置**打架**。⇒ 用 `Thumb.DragStarted` / `DragCompleted`（或 `PointerPressed`/`Released`）维护 `isDragging`，**拖动中忽略外部回写**。⚠️ WinUI `Slider` **没有** `IsDragging` 属性，别去找 |
+
+- ⚠️ **A1/A2 带来两个必须先实测的点（本机就能验 —— 本机有 1 个渲染端点可读写）**：
+  - **T23**：`Slider.ValueChanged` 里直调 `SetMasterVolumeLevelScalar` 的**单次往返耗时**。
+    这是跨进程 COM 调用（到 `audiosrv`），若达数十 ms 且 UI 线程同步等待，拖动会顿。
+  - **T24**：`RegisterControlChangeNotify` 的**回调线程**是否真不在 UI 线程（若不在而直接改 UI ⇒ 崩）。
+
+- **音量读写**：`IMMDevice::Activate(IID_IAudioEndpointVolume)` →
+  `GetMasterVolumeLevelScalar` / `SetMasterVolumeLevelScalar`、`GetMute` / `SetMute`。
+  ⚠️ **不要用 `SetMasterVolumeLevel`（dB 版）** —— 线性标量版（0..1）才是滑块要的，
+  dB 版要经过系统的音量曲线换算，容易和 Windows 自己的滑块对不上。
+- ⚠️ **不要对 V 调用任何音量 API**：方案 §5.2 把 V 的音量节点做成 `min = max = 0 dB`，
+  写了也会失败或被忽略。（V 已被过滤掉，这里是双保险。）
 
 ---
 
@@ -3333,10 +3647,11 @@ $shpid = (Get-Process ShellHost).Id
 # ---- 3. 面板与底栏几何（需要面板在前台）----
 & .\docs\poc\scripts\footer-map.ps1
 
-# ---- 4. 日志 ----
-Get-Content "$env:LOCALAPPDATA\VolumeMixerExtender\logs\app.log" -Tail 40
-Get-Content "$env:LOCALAPPDATA\VolumeMixerExtender\logs\launcher.log" -Tail 30
-Get-Content "$env:LOCALAPPDATA\VolumeMixerExtender\logs\tap.log" -Tail 60
+# ---- 4. 日志（`<cache>\log`，一次进程会话一个文件）----
+$log = "$env:TEMP\eric\VolumeMixerExtender\log"
+Get-ChildItem $log\app-*.log      | Sort-Object LastWriteTime | Select-Object -Last 1 | Get-Content -Tail 40
+Get-ChildItem $log\launcher-*.log | Sort-Object LastWriteTime | Select-Object -Last 1 | Get-Content -Tail 30
+Get-ChildItem $log\tap-*.log      | Sort-Object LastWriteTime | Select-Object -Last 1 | Get-Content -Tail 60
 
 # ---- 5. 原生 DLL 自检 ----
 dumpbin /exports    "$env:LOCALAPPDATA\VolumeMixerExtender\VmExt.Tap.dll"
@@ -3357,19 +3672,23 @@ Get-Item "$env:LOCALAPPDATA\VolumeMixerExtender\VmExt.Tap.dll" -Stream Zone.Iden
 
 ### 9.3 日志阅读指南
 
+> 三个日志都在 `<cache>\log`（`%TEMP%\eric\VolumeMixerExtender\log`），且**一次进程会话一个文件**：
+> `app-<yyyyMMdd-HHmmss>.log` / `launcher-<...>.log` / `tap-<...>.log`（同名同秒时加 `-2` 后缀）。
+> 所以"最新的那个"通常就是当前这次的会话 —— ⛔ 不要按固定文件名去 tail。
+
 **判断"注入是否成功"的正确顺序**：
 
 ```text
-① app.log
+① app-*.log
      "onStarted pid=..."            → Watcher 发现了目标
      "TryInject pid=..."            → 开始注入
      "pid=... TAP 就绪"             → ★ 到这一步才叫注入成功
 
-② launcher.log
+② launcher-*.log
      "SUCCESS endpoint=... hr=0x00000000"  → in-proc 入口调用成功
      ← 若这里没有，问题在 Launcher 内部（§4.1.4 表格）
 
-③ tap.log
+③ tap-*.log
      "Tap 加载: pid=... "           → TAP 被 XAML core 加载
      "QI IXamlDiagnostics hr=0x0"   → 拿到诊断接口
      "AdviseVisualTreeChange hr=0x0"→ 开始收事件
@@ -3473,11 +3792,20 @@ Get-Item "$env:LOCALAPPDATA\VolumeMixerExtender\VmExt.Tap.dll" -Stream Zone.Iden
 | T9 | ⭐ **R7 的额外重建成本是否可接受** | 中 | 若不可接受，评估"把 `VmExt.Shared` 改成 DLL 并严格处理 I4"——**但这是一次架构级改动，不要轻易做** |
 | T10 | ⭐ **验收脚本在非 100% 缩放下的坐标处理** | 中 | UIA 返回物理像素；要在 100% 缩放下跑，或做 DPI 换算。写进脚本的说明里 |
 | T11 | 配置对话框的完整度 | 低 | v1 只做"总开关 + 诊断运行时路径 + 按钮文字"，其余让用户编辑 INI（§3.15） |
-| **T12** | ⭐ **`ListContent.Content` 可写性与还原** | **高** | **新机制的基石**：写入我们的页面能否正常渲染、切回时系统内容能否原样恢复（AT-20）。**未验证** |
-| **T13** | ⭐ **换内容的最佳时机** | **高** | `Footer appeared` 触发时布局是否已完成（`ActualWidth` 是否可用）。§5.5 记录过"注入发生在布局之前导致静默错位"的坑，这里同理 |
-| **T14** | ⭐ **`ComboBox` / `ListView` / `Slider` 的 `CreateInstance` 可用性** | **高** | 目前**只验证过 `Button`**。这三个若拿不到，自定义页的形态要重新设计（§5.7.4） |
+| ~~T12~~ | ~~`ListContent.Content` 可写性与还原~~ | — | ✅ **已验证**（2026-10-03）。写入与还原均成功。见 `verified-after-injection/10-page-swap-capability.md` |
+| ~~T13~~ | ~~换内容的最佳时机~~ | — | ✅ **已验证**。`Footer` 触发时 `PageWindow`/`ListContent` 已就绪、原内容已非空 ⇒ 无需额外调度 |
+| ~~T14~~ | ~~`ComboBox` / `ListView` / `Slider` 可用性~~ | — | ✅ **已验证**。10 个控件类型全部可激活（含 `ComboBoxItem`/`ListViewItem`/`Image`/`ScrollViewer`）。★ 顺带纠正：实际用 **C++/WinRT 直接激活**，不是 `IVisualTreeService::CreateInstance`（见 §5.7.4） |
 | **T15** | 系统页被换下后是否仍在后台活动 | 中 | 音频计量、设备枚举轮询等；若要显式停用需评估副作用 |
 | **T16** | 自定义页在 `ScrollViewer` 内的尺寸策略 | 中 | `Height` 自适应 vs 固定值；影响滚动行为（AT-22） |
+| **T17** | 底栏按钮**悬停/按下时的填充** | 低 | 已验静止态：**无边框、无填充**、`Foreground` 等效 `TextFillColorSecondary`（`../design.md` §7.5.1）。但 hover 填充**没采到**（截图时鼠标不在按钮上）。PoC 注释假设 `94x40` 框是 hover 高亮 —— **该假设未独立验证**。做法：开面板 → 把鼠标移到「更多音量设置」上 → 截图取像素 |
+| ~~T18~~ | ~~`CheckBox` 类型是否可激活~~ | — | ✅ **已验证**（2026-10-03）。`CheckBox` 可激活、`IsChecked`（`IReference<bool>`）可往返、`MinHeight(0)` 可设、可挂进可视树；`ToggleButton` 的 `Controls.Primitives` 命名空间问题同时闭合。证据：`verified-after-injection/11-checkbox-capability.md` |
+| **T19** | ⭐ **`ToggleSwitch` 类型是否可激活** | 中 | §5.7.8 的「开机启动」要用。**不在已验集合里**（T14 的 10 个 + T18 的 `CheckBox` 都不含它）。同在 `Windows.UI.Xaml.Controls` 下，预计可用。做法同 T18：探针加一行 + 读回 `IsOn` |
+| ~~T20~~ | ~~`NavigatingCancelEventArgs.Cancel` 是否可写~~ | — | ✅ **不需要了**（2026-10-03）：设置页标题行的系统后退键**保持默认行为，不拦**（§5.7.8） |
+| ~~T21~~ | ~~`ContentDialog` 是否可激活~~ | — | ✅ **不需要了**（2026-10-03）：「从系统卸载」改用**连击 5 次**确认，不用浮层（§5.7.8） |
+| ~~T22~~ | ~~打开 URL 用 `exec` 还是新增 `action=open`~~ | — | ✅ **已定：新增 `action=open`**（`ShellExecuteW(..., L"open", url, ...)`），见 §2.3 / §4.2.5 / §5.7.6。⛔ 不复用 `exec`：`CreateProcessW` 只认 exe，URL 不是 exe |
+| **T23** | ⭐ **`Slider.ValueChanged` 里直调 `SetMasterVolumeLevelScalar` 的往返耗时** | 中 | §5.7.9 已定方案 A（TAP 内直调）。这是**跨进程 COM 调用**（到 `audiosrv`），若达数十 ms 且 UI 线程同步等待，拖动会顿。做法：探针里对唯一渲染端点连调 100 次，量单次中位数/p95 |
+| **T24** | ⭐ **`RegisterControlChangeNotify` 的回调在哪个线程** | 中 | §5.7.9 约束 A2。若回调**不在** UI 线程而我们直接改 UI ⇒ 崩。做法：回调里打印 `GetCurrentThreadId()`，与 UI 线程 id 比对；再试一次直接改 `Slider.Value`（看是否抛 `RPC_E_WRONG_THREAD` / `UnauthorizedAccessException`） |
+| **T25** | ⛔ **已关闭（2026-10-03）**：不做控制台子系统改造 | — | `vmex.exe` 是控制台子系统，登录自启会闪一下黑窗。**已决定接受**（换 `Run` 键免不掉这一下 —— 闪不闪由镜像声明的子系统决定）。真要免掉仍需改 `WIN32` 子系统 + `AttachConsole(ATTACH_PARENT_PROCESS)` |
 
 ---
 

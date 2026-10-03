@@ -164,7 +164,8 @@ namespace vmex::config
 
         if (!SourceEncodingIsCanonical())
         {
-            log::Logger::Instance().Write(log::Level::Warn, kChannel, std::wstring(L"config encoding is [" + std::wstring(encoding::ToString(m_sourceEncoding)) + L"], expected [utf-16le-bom]; non-ascii values may be unreliable until the next save"));
+            log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kChannel, L"log.config.encoding",
+                { std::wstring(encoding::ToString(m_sourceEncoding)) });
         }
 
         return Status::Ok();

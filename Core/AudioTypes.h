@@ -120,11 +120,24 @@ namespace vmex::audio
     struct SessionInfo final
     {
         std::uint32_t processId = 0;
+        std::wstring instanceId;
         std::wstring appKey;
         std::wstring displayName;
         float volume = 0.0f;
         bool muted = false;
         SessionState state = SessionState::Inactive;
+    };
+
+    class IAudioSessionHandle
+    {
+    public:
+        virtual ~IAudioSessionHandle() = default;
+
+        [[nodiscard]] virtual std::wstring_view InstanceId() const noexcept = 0;
+        [[nodiscard]] virtual std::uint32_t ProcessId() const noexcept = 0;
+        virtual Status GetState(float& volume, bool& muted) = 0;
+        virtual Status SetVolume(float level) = 0;
+        virtual Status SetMuted(bool muted) = 0;
     };
 
     struct EndpointSupport final
@@ -133,4 +146,23 @@ namespace vmex::audio
         bool perAppDevice = false;
         bool clearAppDevices = false;
     };
+
+    [[nodiscard]] inline std::wstring ShortDeviceName(std::wstring_view friendlyName)
+    {
+        if (friendlyName.size() < 4 || friendlyName.back() != L')') return std::wstring(friendlyName);
+
+        const std::size_t open = friendlyName.rfind(L" (");
+        if (open == std::wstring_view::npos || open == 0) return std::wstring(friendlyName);
+        return std::wstring(friendlyName.substr(0, open));
+    }
+
+    [[nodiscard]] inline std::wstring DisplayDeviceName(std::wstring_view friendlyName, bool showDriverName)
+    {
+        return showDriverName ? std::wstring(friendlyName) : ShortDeviceName(friendlyName);
+    }
+
+    [[nodiscard]] inline std::wstring DisplayDeviceName(const DeviceInfo& device, bool showDriverName)
+    {
+        return DisplayDeviceName(device.friendlyName, showDriverName);
+    }
 }

@@ -6,6 +6,9 @@ set_target_properties(vmex_launcher PROPERTIES
     PREFIX ""
 )
 
-target_link_libraries(vmex_launcher PRIVATE vmex_core)
+target_link_libraries(vmex_launcher PRIVATE
+    vmex_core
+    advapi32
+)
 
 vmex_add_version_resource(vmex_launcher "VolumeMixerExtender injection launcher" "vmex_launcher" "vmex_launcher.dll" VFT_DLL)

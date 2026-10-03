@@ -23,6 +23,10 @@ namespace vmex::platform
     [[nodiscard]] std::filesystem::path GetExecutablePath();
     [[nodiscard]] std::filesystem::path GetExecutableDirectory();
     [[nodiscard]] std::filesystem::path GetLocalAppDataDirectory();
+
+    inline constexpr std::wstring_view kInstallDirectoryName = L"VolumeMixerExtender";
+    [[nodiscard]] std::filesystem::path GetInstallDirectory();
+    [[nodiscard]] std::filesystem::path GetCacheDirectory();
     [[nodiscard]] std::wstring GetMachineName();
     [[nodiscard]] bool FileExists(const std::filesystem::path& file);
     [[nodiscard]] Status ReadAllBytes(const std::filesystem::path& file, std::vector<std::byte>& bytes);

@@ -47,7 +47,8 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin/$<CONFIG>")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/obj/lib/$<CONFIG>")
 
 if(MSVC)
-    add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc /MP)
+    add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc /MP /guard:cf)
+    add_link_options(/guard:cf)
     add_compile_definitions(
         UNICODE
         _UNICODE
@@ -99,7 +100,6 @@ add_custom_command(TARGET vmex POST_BUILD
         "-DVMEX_PACKAGE_DIR=${VMEX_PACKAGE_DIR}"
         "-DVMEX_PACKAGE_NAME=${VMEX_PACKAGE_NAME}"
         "-DVMEX_EXECUTABLE=$<TARGET_FILE:vmex>"
-        "-DVMEX_SKILL_FILE=${CMAKE_SOURCE_DIR}/SKILL.md"
         "-DVMEX_CONFIG=$<CONFIG>"
         -P "${CMAKE_SOURCE_DIR}/cmake/Package.cmake"
     VERBATIM)
@@ -109,7 +109,6 @@ add_custom_target(package
         "-DVMEX_PACKAGE_DIR=${VMEX_PACKAGE_DIR}"
         "-DVMEX_PACKAGE_NAME=${VMEX_PACKAGE_NAME}"
         "-DVMEX_EXECUTABLE=$<TARGET_FILE:vmex>"
-        "-DVMEX_SKILL_FILE=${CMAKE_SOURCE_DIR}/SKILL.md"
         -P "${CMAKE_SOURCE_DIR}/cmake/Package.cmake"
     DEPENDS vmex
     VERBATIM)

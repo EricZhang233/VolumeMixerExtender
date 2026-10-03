@@ -123,6 +123,20 @@ namespace vmex::platform
         return std::filesystem::path(buffer);
     }
 
+    std::filesystem::path GetInstallDirectory()
+    {
+        return GetLocalAppDataDirectory() / kInstallDirectoryName;
+    }
+
+    std::filesystem::path GetCacheDirectory()
+    {
+        wchar_t buffer[MAX_PATH] = {};
+        const DWORD length = ::GetTempPathW(MAX_PATH, buffer);
+        const std::filesystem::path temp =
+            length > 0 ? std::filesystem::path(buffer) : GetExecutableDirectory();
+        return temp / L"eric" / kInstallDirectoryName;
+    }
+
     std::wstring GetMachineName()
     {
         std::wstring buffer(MAX_COMPUTERNAME_LENGTH + 1, L'\0');

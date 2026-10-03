@@ -1,6 +1,7 @@
 #include "App.h"
 #include "CliService.h"
 #include "Platform.h"
+#include "TextService.h"
 
 #include <windows.h>
 
@@ -24,9 +25,9 @@ namespace
     {
         vmex::AppOptions options;
 
-        const auto base = vmex::platform::GetLocalAppDataDirectory() / L"VolumeMixerExtender";
+        const auto base = vmex::platform::GetInstallDirectory();
         options.configFile = base / L"vmex.ini";
-        options.logFile = base / L"vmex.log";
+        options.logFile = vmex::log::SessionLogFile(L"app");
 
         for (const auto& token : arguments)
         {
@@ -54,7 +55,7 @@ int wmain(int argc, wchar_t** argv)
     const auto status = app.Initialize(BuildOptions(arguments));
     if (!status.IsOk())
     {
-        std::wstring message(L"initialization failed: ");
+        std::wstring message(vmex::text::Embedded().Resolve(L"cli.init_failed"));
         message.append(status.detail);
         message.append(L"\r\n");
         vmex::cli::WriteToConsole(message, true);

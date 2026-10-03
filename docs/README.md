@@ -45,7 +45,12 @@ docs/
 │   ├── 06-initdata-channel-limit.md                    ★ T1：配置下发通道的 259 字符上限 + 定稿方案
 │   ├── 07-click-execution-constraints.md               ★ 点击执行指令：3 条约束（.lnk / 引号 / 缓冲）
 │   ├── 08-pipe-action-chain.md                         ★ T3：`action=pipe` 全链路（含 232 竞态实测）
-│   └── 09-ini-encoding.md                              ★ T2：INI 编码矩阵 + 幂等 bug（指针身份误判）
+│   ├── 09-ini-encoding.md                              ★ T2：INI 编码矩阵 + 幂等 bug（指针身份误判）
+│   ├── 10-page-swap-capability.md                      ★ T12/T13/T14：换内容可写可还原 + 10 个控件类型可激活
+│   ├── 11-checkbox-capability.md                       ★ T18：`CheckBox` 可用（录制模式复选框的前置）
+│   ├── 12-audio-interop-safety.md                      ★ 音频互操作安全分界：哪些 API 能在 ShellHost 里调
+│   ├── 13-footer-mount.md                              ★ 产品侧底栏挂载：真实结构 + 3 个 bug + 几何验收
+│   └── 14-page-identification.md                       ★ 怎么认出声音页：其它二级菜单被误接管的根因与判据
 └── reference/
     ├── research-agent-report.md                     外部调研（Windhawk / ExplorerPatcher / 诊断 API，带源码引用）
     └── raw-outputs.md                               全部探针的**原始**捕获输出合集（八节，392 行）
@@ -128,6 +133,11 @@ cmake/           载荷资源生成、版本资源模板、打包脚本
 | `verified‑after‑injection/07-click-execution-constraints.md` | `poc/src/probes/clickprobe.cpp` / `lnkprobe.cpp` / `poc/scripts/click-probe.ps1` | 2026-10-03 | ★★ **按钮能执行命令行（含引号参数）**；3 条设计约束：① `.lnk` 不行（err=193）② ⚠️ 不加引号的含空格路径会被**前缀试探**（可能启动错的程序，已复现；**不作安全项**，见该文件 §5）③ 命令行必须用可写缓冲 + ⛔ 不要在点击里等子进程。另记录一条观察：子进程工作目录继承自 ShellHost（`C:\Windows\System32`）—— **不属本设计规定范围**，由接入程序自理 |
 | `verified‑after‑injection/08-pipe-action-chain.md` | `poc/src/probes/pipeserver.cpp` / `poc/scripts/click-only.ps1` | 2026-10-03 | ★★ **T3：`action=pipe` 全链路通**。报文逐字节正确；**UI 线程未被拖住**（`Invoke` 往返 7–14 ms）；管道 IO 在独立线程（tid 可证）；服务端缺失时瞬时降级。★ 发现文档漏写的一个坑：`ConnectNamedPipe` 的合法失败有两种（110 / **232**），把 232 当致命错误会**静默丢一次点击** |
 | `verified‑after‑injection/09-ini-encoding.md` | `poc/src/probes/initest.cpp` / `poc/scripts/check-button-text.ps1` / `reopen-panel.ps1` | 2026-10-03 | ★★ **T2：INI 编码只有 UTF-16LE + BOM 可用**。UTF-8 无 BOM ⇒ **静默乱码**；UTF-8 有 BOM ⇒ **键都找不到**（设置被静默忽略）；写侧 `WritePrivateProfileStringW` 对全新文件会写成 ANSI。★ 顺带挖出并修掉一个真 bug：**幂等判定用"记住 Footer 指针"，而分配器会复用地址 ⇒ 按钮被静默跳过** |
+| `verified‑after‑injection/10-page-swap-capability.md` | `poc/src/vcxtap.cpp` 内的一次性探针（`ProbeCapabilities`） | 2026-10-03 | ★★ **入口接管方案的三项前置全部通过**：T14 十个控件类型可激活（含 `ComboBox`/`ListView`/`Slider`）；T12 `ListContent.Content` 可写且可还原；T13 `Footer` 触发时结构已就绪。★ 顺带纠正一处文档偏差：实际用 **C++/WinRT 直接激活**，不是 `IVisualTreeService::CreateInstance` |
+| `verified‑after‑injection/11-checkbox-capability.md` | `poc/src/vcxtap.cpp` 内的一次性探针（追加的 T18 组） | 2026-10-03 | ★ **T18 通过：「录制模式」复选框无形态风险**。`CheckBox` 可激活、`IsChecked`（`IReference<bool>`）可往返、`MinHeight(0)` 可设（紧凑模板的前提）、可挂进可视树。★ 顺带闭合 `10-` 留下的 `ToggleButton` 命名空间遗留问题（缺 `Controls.Primitives` 别名 ⇒ C2039），并复查探针未污染可视树（底栏几何与基准逐像素一致） |
+| `verified‑after‑injection/12-audio-interop-safety.md` | 独立探针进程 `poc/src/audiochk.cpp`（已删）+ `poc/src/vcxaudio.h` | 2026-10-03 | ★★ **决定了页面主体不需要 IPC、而设备策略必须走 IPC**。① 枚举/端点音量/会话读写全部走 SDK 文档化接口，**可安全内联**；② `IPolicyConfig` 按 EarTrumpet 的槽位声明实测 **`vtable[13]` 访问违规**（`slot11` 用已知正确的 `PKEY_Device_FriendlyName` 却返回 `S_OK`+`VT_EMPTY` ⇒ 槽位映射就是错的）⇒ **在 ShellHost 里试错 = 崩掉用户 shell**，改走 `action=pipe`；③ `Windows.Media.Internal.AudioPolicyConfig` **可激活**（只认 `ab3d4648`），`set(NULL)` 成功、`set(id)` 返回 `E_INVALIDARG`（未定论，**无 AV 风险**）。★ 顺带修正环境记录：唯一渲染端点是 RDP 的 **`远程音频`**（不是之前记的网易虚拟声卡），**采集端点 0 个** |
+| `verified‑after-injection/13-footer-mount.md` | 产品侧 `Components/inject.tap` + UIA（`poc/scripts/footer-map.ps1`） | 2026-10-03 | ★★ **产品底栏挂载打通，并挖出三个独立原因**：① `FindDescendant` 深度上限 8 而模型按钮在第 **12** 层（PoC 用的是 12，刚好够）⇒ 永远找不到；② `std::atomic` 一次性守卫**从不复位** ⇒ **关掉再打开面板就再也不接管**（XAML 树每次打开都重建）⇒ 判据改为「上次那一页是否仍挂在树上」；③ 纵向 `StackPanel` 只给子元素 desired height ⇒ 三格贴顶且只有 16px 高 ⇒ 用 `MinHeight(ItemsPanel.ActualHeight())` + 抄模型显式 `Height=40`。★ 附 `Footer` 两层嵌套 `ItemsControl` 的完整实测树，以及一条纯工具坑：`injector.exe --call` 会把 ShellHost CFG fast-fail（`0xC0000409` 子码 10），只有不带 `--call` 的自注入路径可用 |
+| `verified‑after‑injection/14-page-identification.md` | 干净 shell 逐页 UIA + TAP 深度 dump；`L2Frame` 导航探针 | 2026-10-03 | ★★ **「其它二级菜单也被接管」的根因与定案**：① 所有 L2 页面**共用同一套壳**（`PageWindow`/`PageHeader`/`PageContent`/`Footer` 逐项同名同结构，`ListContent.Content` 都是 `ItemsControl`）⇒ 只按 `Name=="Footer"` 匹配必然误伤；② **`投影` 也用 `PageTitleText`**（曾误以为它是声音页指纹）；③ `L2Frame` 确实是 `Frame`、`Navigated` 全路径都触发，但 `Parameter`（`ControlCenter.AdvancedPageInfo`）**每次导航都是新对象**且不可读 ⇒ 入口只用来定时机、不能用来自证身份。定案两条判据：**入口**（L1 `VolumeL2Button` 的 `Click`，5s 窗口，快路径不闪；⚠️ `Win+Ctrl+V` 不走它）+ **页面内容**（`OutputGroupTitle`/`MixerGroupTitle`/`SpatialGroupTitle`/`ListWithOutputGroupTitle`，正向判据、失败关闭）。⛔ 两个坑：这些名字在页面根往下 **~25 层**（上限 24 会**静默找不到**）；识别是深度 32 全树遍历，挂在 dispatcher `Low` 上**必须按 25ms 节流**（Low 每秒排空上千次），但"只靠事件驱动"又会漏掉内容落地的那一刻 |
 | `reference/research-agent-report.md` | 外部调研（独立 agent 产出） | 2026-10-03 | 方案选型的外部依据（Windhawk / ExplorerPatcher / XAML 诊断 API，带源码引用） |
 
 > 01–06 号基线证据的内容都是**逐字摘录**（只在文件头加了"来源/时间/用途"说明块），
@@ -248,8 +258,15 @@ $s    = '.\docs\poc\scripts'          # ★ 所有脚本现在只在这一处
 | 3 | ~~"面板已经打开时注入"的确切行为~~ | ❌ **不做支持（产品决定）**：**音量浮层不是常驻窗口**（按快捷键才出现、失焦即消失），产品模型是"注入一次 → TAP 常驻 → 每次打开面板自动注入"，**不需要**往一个已经开着、正在被看的浮层里插东西。故不进验收。 |
 | 4 | 子进程工作目录（`lpCurrentDirectory`） | 📌 **不规定**：由接入程序自理，交付文档不做要求（见 §6.2） |
 | 5 | **字形/渲染层**（中文字体是否缺字、显示是否美观） | ⏳ 未验证。T2 只证明"读到的字符串码点正确"，外观不受编码影响 |
-| 6 | ⭐ **入口接管机制**：`ListContent.Content` 可写性与还原 | ⏳ **未验证**（T12）。**新机制的基石** —— 写入能否渲染、系统内容能否原样恢复。见 `design.md` §7.8 |
-| 7 | ⭐ **换内容的最佳时机**（`Footer` 触发时布局是否已完成） | ⏳ 未验证（T13）。§6.5 记录过"注入早于布局导致静默错位"的坑 |
-| 8 | ⭐ **`ComboBox` / `ListView` / `Slider` 的 `CreateInstance` 可用性** | ⏳ **未验证**（T14）。目前**只验证过 `Button`**；若这三种拿不到，自定义页形态要重设计 |
+| 6 | ~~入口接管机制：`ListContent.Content` 可写性与还原~~ | ✅ **已验证**（T12）。写入与还原均成功，见 `verified-after-injection/10-page-swap-capability.md` |
+| 7 | ~~换内容的最佳时机~~ | ✅ **已验证**（T13）。`Footer` 触发时 `PageWindow`/`ListContent` 已就绪、原内容已非空，无需额外调度 |
+| 8 | ~~`ComboBox` / `ListView` / `Slider` 可用性~~ | ✅ **已验证**（T14）。10 个控件类型全部可激活，自定义页形态不受限 |
 | 9 | 系统页被换下后是否仍在后台活动（音频计量轮询等） | ⏳ 未验证（T15） |
 | 10 | 自定义页在 `ScrollViewer` 内的尺寸策略（自适应 vs 固定） | ⏳ 未验证（T16） |
+| 11 | ~~设置页标题行后退键拦截（T20）~~ | ✅ **不需要了**（2026-10-03）：保持系统默认行为，不拦 —— 两个返回键行为不同是接受的取舍 |
+| 12 | ~~`ContentDialog` 可激活（T21）~~ | ✅ **不需要了**：「从系统卸载」改用**连击 5 次**确认，不用浮层 |
+| 13 | ~~打开 URL 用 `exec` 还是 `action=open`（T22）~~ | ✅ **已定：新增 `action=open`**（`ShellExecuteW(..., L"open", url, ...)`）。⛔ 不复用 `exec` —— `CreateProcessW` 只认 exe |
+| 14 | **`ToggleSwitch` 类型可激活（T19）** | ⏳ 未验证。设置页「开机启动」「显示驱动名」两个开关要用（做法同 T18） |
+| 15 | **滑块直调 WASAPI 的往返耗时（T23）** | ⏳ 未验证。已定方案 A：TAP 在 ShellHost 内**直接调** `SetMasterVolumeLevelScalar`，不走 IPC |
+| 16 | **`RegisterControlChangeNotify` 的回调线程（T24）** | ⏳ 未验证。回调若不在 UI 线程而直接改 UI ⇒ 崩 |
+| 17 | **控制台子系统改造（T25）** | ⛔ **已关闭（2026-10-03）**：登录自启改为 `Run` 键后仍会闪一下黑窗，**决定接受**，不做 `WIN32` 子系统 + `AttachConsole(ATTACH_PARENT_PROCESS)` |

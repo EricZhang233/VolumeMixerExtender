@@ -1,5 +1,6 @@
 #include "App.h"
 
+#include "AutostartEntry.h"
 #include "PayloadResources.h"
 #include "Platform.h"
 #include "Strings.h"
@@ -335,6 +336,44 @@ namespace vmex
             return Unsupported(L"clear-redirect");
         };
         m_impl->commands.Add(std::move(clearRedirect));
+
+        auto autostart = MakeCommand(L"autostart", L"cli.group.config", L"cmd.autostart.summary");
+        autostart.arguments.push_back(cli::ArgumentSpec{ L"state", L"cmd.autostart.arg.state", false });
+        autostart.handler = [](const cli::Invocation& invocation, cli::ICliOutput& output) -> cli::Result {
+            auto& app = App::Instance();
+
+            if (const auto* state = invocation.Positional(0))
+            {
+                std::wstring error;
+                bool applied = false;
+                if (*state == L"on")
+                {
+                    applied = autostart::AutostartEntry::Enable(error);
+                }
+                else if (*state == L"off")
+                {
+                    applied = autostart::AutostartEntry::Disable(error);
+                }
+                else
+                {
+                    output.Error(app.Text().ResolveFormat(L"cli.error.invalid_value", { *state }));
+                    return cli::Result{ cli::Outcome::InvalidArguments, {} };
+                }
+
+                if (!applied)
+                {
+                    output.Error(app.Text().ResolveFormat(L"cli.error.operation_failed", { error }));
+                    return cli::Result{ cli::Outcome::Failed, {} };
+                }
+            }
+
+            output.Field(
+                app.Text().Resolve(L"cli.field.status"),
+                app.Text().Resolve(
+                    autostart::AutostartEntry::IsEnabled() ? L"cli.value.enabled" : L"cli.value.disabled"));
+            return cli::Result{ cli::Outcome::Success, {} };
+        };
+        m_impl->commands.Add(std::move(autostart));
 
         auto config = MakeCommand(L"config", L"cli.group.config", L"cmd.config.summary");
         config.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {

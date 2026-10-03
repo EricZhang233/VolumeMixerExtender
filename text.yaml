@@ -23,6 +23,10 @@ cli.error.missing_value: 缺少参数值: {0}
 cli.error.unknown_option: 未知选项: {0}
 cli.error.missing_required: 缺少必需参数: {0}
 cli.error.service_unavailable: 服务不可用: {0}
+cli.error.invalid_value: 无效取值: {0}
+cli.error.operation_failed: 操作失败: {0}
+cli.value.enabled: 已启用
+cli.value.disabled: 未启用
 cli.field.command: 命令
 cli.field.status: 状态
 cli.field.path: 路径
@@ -59,6 +63,8 @@ cmd.mute.summary: 设置端点或会话静音
 cmd.default.summary: 设置系统默认端点
 cmd.redirect.summary: 设置逐应用端点重定向
 cmd.clear-redirect.summary: 清除全部逐应用重定向
+cmd.autostart.summary: 查询或设置开机自启
+cmd.autostart.arg.state: on 注册自启, off 取消自启, 省略则只查询
 cmd.config.summary: 读写配置项
 cmd.log.summary: 控制日志级别与输出
 log.app.init: 应用初始化, 配置={0}
@@ -80,3 +86,126 @@ log.inject.payload: 注入载荷 launcher={0} tap={1}
 log.cli.start: 命令行启动, 命令={0}
 log.cli.finish: 命令行结束, 命令={0} 结果={1}
 log.cli.unknown: 未知命令 {0}
+log.settings.reg_create_failed: 注册表键创建失败 (error={0})
+log.settings.reg_set_failed: 注册表值写入失败: {0} (error={1})
+log.settings.reg_delete_failed: 注册表键删除失败 (error={0})
+log.audio.state_ignored: 仅枚举活动状态的端点, 请求的状态被忽略
+log.audio.enumerated: 枚举音频端点完成 flow={0} 数量={1}
+log.audio.sessions: 枚举音频会话 device={0} 数量={1}
+audio.session.system_sounds: 系统声音
+audio.session.unknown_app: 未知应用
+log.interop.rogetactivationfactory_unavailable: RoGetActivationFactory 取不到
+log.interop.policy_factory_activation_failed: Windows.Media.Internal.AudioPolicyConfig 激活失败（逐应用重定向不可用）
+log.interop.ipolicyconfig_unavailable: IPolicyConfig 取不到（不能切系统默认设备）
+log.interop.set_default_endpoint_failed: SetDefaultEndpoint 失败 a=0x{0} b=0x{1}
+log.autostart.missing: 自启项不存在 ⇒ 开关=关
+log.autostart.present: 自启项存在且已启用：{0} ⇒ 开关=开
+log.autostart.suppressed: 自启项存在但被系统标记为已禁用：{0} ⇒ 开关=关
+log.autostart.read_failed: 读取自启项失败 (error={0})，开关按「关」显示
+log.autostart.exe_missing: 找不到 {0}，拒绝注册（否则会得到一个永远跑不起来的自启项）
+log.autostart.write_failed: 自启项写入失败：{0} (error={1})
+log.autostart.approved_clear_failed: 清除系统禁用标记失败 (error={0})
+log.autostart.registered: 自启项已注册：{0}
+log.autostart.delete_failed: 自启项删除失败 (error={0})
+log.autostart.deleted: 自启项已删除
+autostart.error.exe_missing: 找不到 {0}，拒绝注册（否则会得到一个永远跑不起来的自启项）
+autostart.error.write_failed: 自启项写入失败 (error={0})
+autostart.error.delete_failed: 自启项删除失败 (error={0})
+log.tap.class_request: DllGetClassObject 类对象请求 {0} {1}
+log.tap.guid.qi_ok: Tap::QueryInterface 返回接口 {0}
+log.tap.guid.qi_nointerface: Tap::QueryInterface 不支持的接口 E_NOINTERFACE {0}
+log.tap.guid.factory_ok: TapFactory::QueryInterface 返回 IClassFactory {0}
+log.tap.guid.factory_nointerface: TapFactory::QueryInterface 不支持的接口 E_NOINTERFACE {0}
+log.tap.guid.create_instance_riid: TapFactory::CreateInstance 请求接口 {0}
+log.tap.setsite_null: SetSite(nullptr) 站点已解除
+log.tap.setsite_site: SetSite(site) 收到站点
+log.tap.setsite_no_diagnostics: SetSite 未取得 IXamlDiagnostics
+log.tap.setsite_no_visual_tree_service: SetSite 未取得 IVisualTreeService
+log.tap.advise_visual_tree_change: 可视树变更订阅完成 {0}
+log.tap.footer_again: 同一活动页面再次出现 Footer, 已忽略
+log.tap.footer_appeared: Footer 出现
+log.tap.entry_hooked: VolumeL2Button 出现, 入口已挂钩
+log.tap.inspectable_failed: GetIInspectableFromHandle 失败
+log.tap.not_framework_element: 元素不是 FrameworkElement
+log.tap.takeover_threw_hr: 接管抛出异常 {0}
+log.tap.takeover_threw: 接管抛出异常
+log.tap.create_instance: TapFactory::CreateInstance 创建实例 {0}
+log.tap.footer_node: 页脚节点: {0}
+log.tap.ancestry_no_parent: 上级[{0}] 无父节点
+log.tap.ancestry_up: 上级[{0}] {1}
+log.tap.pipe_unavailable: 管道不可用, 命令已丢弃 (vmex.exe 是否在运行?)
+log.tap.tree_node: {0}{1}
+log.tap.tree_begin: ---- 页脚树 ----
+log.tap.tree_end: ---------------------
+log.tap.class_mismatch: 类 ID 不匹配, 期望 {0}
+page.section.volume: 音量
+page.section.mixer: 音量合成器
+page.section.general: 常规
+page.label.defaultOutput: 默认输出设备
+page.label.listenOutput: 监听输出设备
+page.label.defaultInput: 默认输入设备
+page.checkbox.recordingMode: 录制模式
+page.toggle.autostart: 开机启动
+page.toggle.showDriverName: 显示驱动名
+page.button.uninstall: 从系统卸载
+page.button.uninstalling: 正在卸载…
+page.button.uninstallCount: 再单击{0}次从系统卸载
+page.none.capture: （没有可用的输入设备）
+page.none.apps: （当前没有正在发声的应用）
+page.device.defaultSuffix: "  (默认)"
+page.capture.caption: 输入设备（{0}）
+page.footer.github: GitHub
+page.footer.clearRedirect: 清除重定向
+page.footer.back: 返回
+page.footer.settings: 设置
+log.page.appsEmpty: 应用列表为空（端点 {0}）
+log.page.openUrlFailed: ShellExecuteW(open) 失败 code={0}
+log.page.mountPage: MountPage({0}={1}) 正文已重建，底栏已同步
+log.page.clearRedirects: 清除重定向（已通知宿主）
+log.page.snapshot: snapshot: render={0} capture={1} apps={2} (apps from {3})
+log.page.entryExpect: 入口「选择声音输出」被点击 -> 下一个声音页直接接管
+log.page.noPageWindow: PageWindow 没找到 -> 不接管（安全退出，绝不改树）
+log.page.noListContent: ListContent 不是 ScrollViewer -> 不接管（不是声音输出页）
+log.page.waitContent: 等页面内容出现再判断（入口按钮没被点过，可能是快捷键进来的）
+log.page.takeover: *** 自定义页已接管（原内容 {0}）***
+log.page.saved: 已保存
+log.page.empty: 为空
+log.page.contentDetected: 页面里有声音页自己的内容 -> 接管
+log.page.notSoundPage: 无法确认是声音页（标题="{0}"）-> 不接管，系统内容原样保留（{1} ms）
+log.page.footerMounted: 底栏三格已挂载（用时 {0} ms）
+log.page.footerMountFailed: 底栏挂载第 {0} 次失败（{1} ms）：{2} | {3}
+log.page.footerGaveUp: 底栏三格挂载放弃（{0} ms，共 {1} 次尝试；事件钩子仍会继续试）
+log.page.noDispatcher: 底栏没有 Dispatcher -> 放弃挂载
+log.page.dispatchFailed: 底栏重试派发失败 -> 放弃挂载
+log.page.footerSizeChanged: 底栏 SizeChanged -> {0}x{1}
+log.page.footerFirstLayout: 底栏 LayoutUpdated 首次触发
+log.page.recordingMode: 录制模式 -> {0}
+log.page.autostart: 开机启动 -> {0}（{1}）
+log.page.autostartFailed: 开机启动：{0} 失败 —— {1}
+log.page.showDriverName: 显示驱动名 -> {0}（已写入 HKCU）
+log.page.autostart.enable: 注册自启项
+log.page.autostart.remove: 删除自启项
+log.page.autostart.enabled: 自启项已启用
+log.page.autostart.missing: 自启项已不存在
+log.page.autostart.enableShort: 注册
+log.page.autostart.removeShort: 删除
+log.page.name.system: 系统页
+log.page.name.custom: 自定义Mixer
+log.page.name.settings: 设置
+log.launcher.tap_load_failed: 加载 TAP 模块失败: {0} (error={1}, {2})
+log.launcher.tap_export_missing: TAP 模块缺少导出 {0} ({1})
+log.launcher.attached: 启动器已挂载 pid={0} CoInitializeEx={1}
+log.launcher.tap_module_missing: TAP 模块不存在: {0} ({1})
+log.launcher.diag_missing: 找不到诊断模块 {0}, 配置={1} ({2})
+log.launcher.xaml_not_loaded: 等待 {0} 超时 ({1})
+log.launcher.xaml_export_missing: {0} 缺少导出 {1} ({2})
+log.launcher.class_id_invalid: 类 ID 无效: {0} ({1})
+log.launcher.payload_paths: 载荷路径 tap={0} diag={1} 初始化数据长度={2}
+log.launcher.endpoint_success: 注入成功 endpoint={0} ({1})
+log.launcher.arguments_rejected: {0} 拒绝参数 endpoint={1} ({2})
+log.launcher.endpoint_probe: 探测 endpoint={0} ({1})
+log.launcher.endpoint_exhausted: 端点探测耗尽 ({0})
+log.payload.missing: 缺少内置载荷: {0}
+log.payload.extracted: 已释放 {0} -> {1} ({2} bytes)
+log.config.encoding: 配置编码为 [{0}], 期望 [utf-16le-bom]; 保存前非 ASCII 值可能不可靠
+cli.init_failed: 初始化失败：

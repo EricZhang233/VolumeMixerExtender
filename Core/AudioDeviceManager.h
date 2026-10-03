@@ -15,8 +15,8 @@ namespace vmex::audio
         virtual Status SetVolume(std::wstring_view deviceId, float level) = 0;
         virtual Status SetMuted(std::wstring_view deviceId, bool muted) = 0;
         virtual Status EnumerateSessions(std::wstring_view deviceId, std::vector<SessionInfo>& sessions) = 0;
-        virtual Status SetSessionVolume(std::wstring_view deviceId, std::uint32_t processId, float level) = 0;
-        virtual Status SetSessionMuted(std::wstring_view deviceId, std::uint32_t processId, bool muted) = 0;
+        virtual Status OpenSession(std::wstring_view deviceId, std::wstring_view instanceId,
+                                   std::unique_ptr<IAudioSessionHandle>& handle) = 0;
     };
 
     [[nodiscard]] std::unique_ptr<IAudioDeviceManager> CreateAudioDeviceManager();

@@ -40,4 +40,7 @@ namespace vmex::text
     [[nodiscard]] std::shared_ptr<ITextSource> CreateEmbeddedTextSource();
     [[nodiscard]] std::shared_ptr<ITextSource> CreateYamlTextSource(std::wstring_view yaml, std::wstring_view name);
     [[nodiscard]] std::shared_ptr<ITextSource> CreateFileTextSource(const std::filesystem::path& file);
+
+    [[nodiscard]] TextService& Embedded();
+    void AttachEmbeddedToLogger();
 }

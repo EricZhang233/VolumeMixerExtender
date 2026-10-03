@@ -40,6 +40,8 @@ namespace vmex::log
     };
 
     [[nodiscard]] std::shared_ptr<ILogSink> CreateFileSink(const std::filesystem::path& file);
+
+    [[nodiscard]] std::filesystem::path SessionLogFile(std::wstring_view role);
     [[nodiscard]] std::shared_ptr<ILogSink> CreateDebugSink();
     [[nodiscard]] std::shared_ptr<ILogSink> CreateMemorySink(std::size_t capacity);
     [[nodiscard]] std::vector<Record> MemorySinkSnapshot(const std::shared_ptr<ILogSink>& sink);
