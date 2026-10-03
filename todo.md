@@ -321,6 +321,36 @@
   —— ✅ `Tap`：`IVisualTreeServiceCallback` + `IObjectWithSite`，`SetSite` 里 QI `IXamlDiagnostics` +
   `IVisualTreeService` → `AdviseVisualTreeChange(this)`
 
+### 重定向状态的真值来源（**明天做 · 2026-10-04 Eric 定方向，本轮先不做**）
+
+- [ ]  ⛔ **结论（Eric 2026-10-04）**：重定向操作的本就是**系统底层维护的那张逐应用持久默认端点表**
+  （`IPolicyConfig::SetPersistedDefaultAudioEndpoint` → AudioSrv 的持久化表），**我们不该自己再维护一份镜像**
+  ⇒ 目标是**删掉 `redirects.ini` 与 `Core/RedirectStore.*`**，面板改为**现读系统真值**
+  —— 相关文档说法一并作废：`16` 号 §2.1/§5 里"页面本地 map""只有生效才写 ini"的说法要回头改写
+- [ ]  **「清除重定向」的语义确认（Eric 的判断，与现行实现一致）**：它就是**把系统那张表整体恢复默认**，
+  **⛔ 与"要清除的应用此刻开没开"无关** ⇒ 现状已经是这样：`CLEARREDIRECT` → `ClearAllPersistedApplicationDefaultEndpoints()`
+  （不需要枚举进程、不需要该应用在跑）；**唯一多余的是"顺手删我们自己的 ini"那一步**，随 ini 一起消失
+- [ ]  **前置探针（先验再动手）**：在 **TAP（ShellHost）内**调 `IAudioPolicyConfigFactory`
+  （`Windows.Media.Internal.AudioPolicyConfig`；IID `ab3d4648-…`（21H2）/ `2a59116d-…`（downlevel））的
+  `GetPersistedDefaultAudioEndpoint(pid, flow, role, &hstring)`，要问清四件事：
+  —— ① 在 ShellHost 里**能不能激活并取到值**（12 号已证"可激活、无 AV 风险"，但**get 未验**）；这是唯一红线：**别崩 shell**
+  —— ② **没设过时返回什么**：若返回"当前系统默认设备 ID"，则**必须再与当前默认对比**才能判定"是否被重定向"
+  （EarTrumpet 就是这么判的），否则会把没重定向的应用画成"已重定向到系统默认"
+  —— ③ per-role 差异（`eConsole` / `eMultimedia` / `eCommunications`）——决定读一次还是读三次、以哪个 role 为准
+  —— ④ 读的耗时（每次开面板要读 N 个应用 ⇒ 可能得按 `eMultimedia` 单次读）＋ pid 复用/僵尸进程的容错
+  —— 参考：`Core/AudioInterop.h` 的 `GetPersistedEndpointForRole` / `GetPersistedEndpoint` 已实现（`detail` 层），
+  `IEndpointPolicyService::GetAppDefaultDevice` 也在，但**目前是死代码没人调**
+- [ ]  **备选路（只在①' 失败时才考虑）**：宿主读真值 + 新增一条**宿主 → 页面**的回推通道（管道改双向或另开通知）
+  —— 读操作留在宿主最安全，但成本高（管道契约、生命周期、时序都要重做）
+- [ ]  ⚠️ **不改就会一直存在的三处"记录 ≠ 事实"**（存档，改完自然消失）：
+  —— ① **CLI 不写它**：`vmex redirect` / `vmex clear-redirect` 直接改系统状态 ⇒ CLI 改完再开面板**显示旧值**
+  （与"CLI 全功能"原则天然冲突）
+  —— ② `appKey` 是**小写 exe 全路径** ⇒ 应用升级/换目录后留下**孤儿条目**，永不清理
+  —— ③ 用户在系统设置里手改、或被系统清掉 ⇒ 记录过时（现有实现只挡了"策略失败也写"这一种假象）
+- [ ]  现状使用面（存档）：**写** = 宿主 `RecordAppRedirect`（仅当策略真的成功）；**读** = TAP 页面
+  （下拉框选中值 + 应用行「→ 端点名」）；**删** = `HandleClearRedirect` 删整个文件。
+  ⚠️ 本机（RDP）策略全失败 ⇒ `redirects.ini` **至今根本没被创建过**
+
 ### 注入链（已通 · 剩余未验）
 
 - [X]  **载荷必须用静态 CRT**（`CMAKE_MSVC_RUNTIME_LIBRARY = MultiThreaded[Debug]`）
