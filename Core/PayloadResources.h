@@ -17,6 +17,7 @@ namespace vmex::payload
 
     [[nodiscard]] bool Exists(Item item);
     [[nodiscard]] std::uint32_t Size(Item item);
+    [[nodiscard]] std::uint64_t PayloadContentHash();
     [[nodiscard]] Status Extract(Item item, const std::filesystem::path& destination);
 
     struct ExtractedPair final

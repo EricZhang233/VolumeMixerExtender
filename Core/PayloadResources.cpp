@@ -47,6 +47,45 @@ namespace vmex::payload
         return ::SizeofResource(nullptr, resource);
     }
 
+    namespace
+    {
+        std::uint64_t HashLocked(std::uint64_t seed, Item item)
+        {
+            const auto resource = Locate(item);
+            if (resource == nullptr)
+            {
+                return seed;
+            }
+
+            const auto handle = ::LoadResource(nullptr, resource);
+            if (handle == nullptr)
+            {
+                return seed;
+            }
+
+            const auto size = static_cast<std::size_t>(::SizeofResource(nullptr, resource));
+            const auto data = static_cast<const std::byte*>(::LockResource(handle));
+            if (data == nullptr || size == 0)
+            {
+                return seed;
+            }
+
+            std::uint64_t value = seed;
+            for (std::size_t index = 0; index < size; ++index)
+            {
+                value ^= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(data[index]));
+                value *= 0x100000001B3ull;
+            }
+            return value;
+        }
+    }
+
+    std::uint64_t PayloadContentHash()
+    {
+        const std::uint64_t seed = HashLocked(0xCBF29CE484222325ull, Item::Launcher);
+        return HashLocked(seed, Item::Tap);
+    }
+
     Status Extract(Item item, const std::filesystem::path& destination)
     {
         const auto resource = Locate(item);

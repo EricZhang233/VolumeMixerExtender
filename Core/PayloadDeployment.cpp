@@ -18,8 +18,11 @@ namespace vmex::inject
     Status DeployPayloads(const std::filesystem::path& root, unsigned long sessionId, Deployment& deployment)
     {
         std::error_code error;
-        const std::wstring version = L"payload-" + std::to_wstring(payload::Size(payload::Item::Launcher)) +
-                                     L"-" + std::to_wstring(payload::Size(payload::Item::Tap));
+        wchar_t digest[24] = {};
+        ::swprintf_s(digest, L"%016llX", static_cast<unsigned long long>(payload::PayloadContentHash()));
+        const std::wstring version = L"payload-" + std::wstring(digest) + L"-" +
+                                     std::to_wstring(payload::Size(payload::Item::Launcher)) + L"-" +
+                                     std::to_wstring(payload::Size(payload::Item::Tap));
 
         deployment.directory = root / version;
         deployment.launcher = deployment.directory / payload::DefaultFileName(payload::Item::Launcher);
