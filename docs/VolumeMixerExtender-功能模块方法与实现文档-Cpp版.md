@@ -611,7 +611,7 @@ entry1.height=0
 | 方向 | **单向**：TAP → App。App 不回包（避免 TAP 等回复而阻塞 UI 线程） |
 | 服务端 | App：`CreateNamedPipeW` + `ConnectNamedPipe` 阻塞循环（§3.12） |
 | 客户端 | TAP：`CreateFileW` + `WriteFile` + `CloseHandle` |
-| 报文 | `<VERB> <args…>\n`。**VERB 是第一段**，App 先取 VERB 再分支（⛔ ⛔ 别按"第一段一定是 CLICK"写死）：<br>`CLICK <entryId> <unixMillis>\n` —— 点击条目<br>`SETDEFAULT <render\|capture> <deviceId>\n` —— 切系统默认设备<br>`SETREDIRECT <render\|capture> <pid> <deviceId>\n` —— 逐应用重定向（`deviceId` 为空 = 清除该应用）<br>`CLEARREDIRECT\n` —— 清空所有逐应用重定向<br>`UNINSTALL\n` —— 「从系统卸载」全套流程（§5.7.8） |
+| 报文 | `<VERB> <args…>\n`。**VERB 是第一段**，App 先取 VERB 再分支（⛔ ⛔ 别按"第一段一定是 CLICK"写死）：<br>`CLICK <entryId> <unixMillis>\n` —— 点击条目<br>`SETDEFAULT <render\|capture> <deviceId\|@virtual>\n` —— 切系统默认设备（`@virtual` = 由宿主解析虚拟端点 V 的真实 ID）<br>`SETREDIRECT <render\|capture> <pid> [deviceId]\n` —— 逐应用重定向（`deviceId` 省略/为空 = 清除该应用）<br>`CLEARREDIRECT\n` —— 清空所有逐应用重定向<br>`UNINSTALL\n` —— 「从系统卸载」全套流程（§5.7.8）<br>⚠️ **参数按空格切分，且个数受校验**：`SETDEFAULT` 必须 2 段、`SETREDIRECT` 2–3 段、`CLEARREDIRECT`/`UNINSTALL` 0 段，不符即记 `报文参数不合法, 已忽略` 并丢弃（⛔ 别塞带空格的显示名进报文——实测会被截断成第一段） |
 | 超时 | 客户端：`WaitNamedPipeW` 200ms；失败则**记日志并放弃**（不重试、不弹窗） |
 | 线程 | ⚠️ **必须**在 TAP 的独立线程里做（或保证 200ms 上限），避免阻塞 XAML UI 线程 |
 
@@ -3182,7 +3182,7 @@ hits = 0，文案 = 「从系统卸载」
   | 操作 | 在哪执行 | 为什么 |
   |---|---|---|
   | 枚举设备、读端点音量/静音、**读写**逐应用音量/静音 | **TAP 内联**（ShellHost 里） | 全走 SDK 文档化接口，实测无风险 |
-  | **切系统默认设备**、**逐应用重定向**、**清空重定向** | **走 `action=pipe` → 宿主** | 未公开接口。`IPolicyConfig` 按 EarTrumpet 的槽位声明实测 **`vtable[13]` 访问违规** ⇒ **在 ShellHost 里试错 = 崩掉用户的 shell**；宿主崩了只是重启 |
+  | **切系统默认设备**、**逐应用重定向**、**清空重定向** | **走 `action=pipe` → 宿主** | 未公开接口，**在 ShellHost 里试错 = 崩掉用户的 shell**；宿主崩了只是重启（2026-10-04 更正：当初的 `vtable[13]` AV 是探针槽位偏移所致，槽 13 就是 `SetDefaultEndpoint`） |
   | 开机自启、从系统卸载 | **走 `action=pipe` → 宿主** | 生命周期/进程身份原因（§5.7.8） |
 
   ⚠️ **代价要认**：`pipe` 是**单向**的，宿主不回包 ⇒ **切换结果拿不到确认**。

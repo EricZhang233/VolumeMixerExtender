@@ -149,6 +149,16 @@ namespace vmex::platform
         return buffer;
     }
 
+    std::uint32_t GetCurrentSessionId()
+    {
+        DWORD session = 0;
+        if (::ProcessIdToSessionId(::GetCurrentProcessId(), &session) == FALSE || session == 0)
+        {
+            return 1;
+        }
+        return session;
+    }
+
     bool FileExists(const std::filesystem::path& file)
     {
         std::error_code error;

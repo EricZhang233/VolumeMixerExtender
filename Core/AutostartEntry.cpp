@@ -21,7 +21,7 @@ namespace vmex::autostart
             L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
 
         constexpr wchar_t kHostExecutable[] = L"vmex.exe";
-        constexpr wchar_t kHostArguments[] = L"--tray";
+        constexpr wchar_t kHostArguments[] = L"host";
 
         constexpr std::size_t kApprovedHeaderBytes = 2;
 

@@ -63,7 +63,19 @@ int wmain(int argc, wchar_t** argv)
     }
 
     const vmex::cli::CliService service(app.Commands(), app.Text());
-    const auto exitCode = service.Run(arguments);
+
+    std::vector<std::wstring> commandArguments;
+    commandArguments.reserve(arguments.size());
+    for (const auto& token : arguments)
+    {
+        if (token == L"--verbose" || token == L"--trace")
+        {
+            continue;
+        }
+        commandArguments.push_back(token);
+    }
+
+    const auto exitCode = service.Run(commandArguments);
 
     app.Shutdown();
     return exitCode;

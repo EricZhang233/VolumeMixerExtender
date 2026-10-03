@@ -792,7 +792,7 @@ V 重现时 Windows 会不会**抢默认**、未插入端点是否真的从 Win1
 | 操作 | 在哪执行 | 为什么 |
 |---|---|---|
 | 枚举设备、读端点音量/静音、**读写**逐应用音量/静音 | **TAP 内联**（ShellHost 里） | 全走 SDK 文档化接口，实测无风险 |
-| **切系统默认设备**、**逐应用重定向**、**清空重定向** | **走 `action=pipe` → 宿主** | 未公开接口；`IPolicyConfig` 的 `vtable[13]` 实测**访问违规** ⇒ **在 ShellHost 里试错 = 崩掉用户的 shell** |
+| **切系统默认设备**、**逐应用重定向**、**清空重定向** | **走 `action=pipe` → 宿主** | 未公开接口，**在 ShellHost 里试错 = 崩掉用户的 shell**（2026-10-04 更正：当初的 `vtable[13]` AV 是探针槽位偏移所致；槽 13 就是 `SetDefaultEndpoint`，见 `verified-after-injection/15-host-pipe-and-device-policy.md` §3） |
 | **开机自启**（查/注册/删除自启项） | **TAP → `Core/AutostartEntry` 就地** | ① 写的是 `HKCU` 的 `Run` 值，纯注册表操作，无未公开接口风险；② 开关**初值 = `Run` 值存在 && 未被系统禁用**（§7.9.2），而 `pipe` 是**单向**的 —— 就地查才拿得到"现在开着吗" |
 | 从系统卸载 | **走 `action=pipe` → 宿主** | 生命周期原因：要**重启 shell**，而 TAP 就活在那个 shell 里 |
 

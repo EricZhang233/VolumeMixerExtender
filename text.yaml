@@ -25,6 +25,8 @@ cli.error.missing_required: 缺少必需参数: {0}
 cli.error.service_unavailable: 服务不可用: {0}
 cli.error.invalid_value: 无效取值: {0}
 cli.error.operation_failed: 操作失败: {0}
+cli.error.host_running: 后台进程已在运行
+cli.error.host_failed: 后台进程启动失败
 cli.value.enabled: 已启用
 cli.value.disabled: 未启用
 cli.field.command: 命令
@@ -33,6 +35,26 @@ cli.field.path: 路径
 cli.field.value: 值
 cli.field.count: 数量
 cli.field.missing: 缺失
+cli.field.id: 标识
+cli.field.state: 状态
+cli.field.default: 默认
+cli.value.yes: 是
+cli.value.no: 否
+audio.state.active: 活动
+audio.state.disabled: 已禁用
+audio.state.not-present: 不存在
+audio.state.unplugged: 未插入
+audio.state.all: 全部
+cli.field.host: 后台进程
+cli.field.pipe: 管道
+cli.field.inject: 注入
+cli.field.pid: 进程号
+cli.value.running: 运行中
+cli.value.stopped: 未运行
+cli.value.hosting: 已启动
+cli.value.injected: 已注入
+cli.value.pending: 待就绪
+cli.value.not_injected: 未注入
 skill.title: VolumeMixerExtender 接入文档
 skill.section.purpose: 用途
 skill.purpose.text: 通过命令行完整驱动快速设置音量面板的注入入口与自定义声音页面, 不依赖图形界面。
@@ -50,11 +72,22 @@ cmd.skill.summary: 输出完整接入文档
 cmd.inject.summary: 注入 TAP 到 ShellHost
 cmd.inject.opt.tap: TAP 模块路径
 cmd.inject.opt.wait: 等待目标就绪的超时毫秒数
+cmd.inject.example.run: 立即注入一次并报告结果
 cmd.eject.summary: 卸载当前注入
 cmd.status.summary: 查询注入状态
+cmd.host.summary: 以后台进程常驻, 接收页面操作命令
+cmd.host.example.run: 以后台进程方式运行 (开机自启使用此形式)
 cmd.devices.summary: 列出音频端点
 cmd.devices.opt.flow: 数据流 render 或 capture 或 all
 cmd.devices.opt.state: 端点状态 active 或 all
+cmd.devices.example.list: 列出渲染端点
+cmd.default.arg.device: 目标端点标识
+cmd.default.opt.role: 只设置指定角色 console 或 multimedia 或 communications, 省略则设置全部角色
+cmd.default.example.set: 把指定端点设为系统默认设备
+cmd.redirect.arg.process: 目标进程号
+cmd.redirect.arg.device: 目标端点标识, 省略或留空表示清除该应用的重定向
+cmd.redirect.opt.flow: 数据流 render 或 capture
+cmd.redirect.opt.role: 只设置指定角色, 省略则设置全部角色
 cmd.sessions.summary: 列出音频会话
 cmd.sessions.arg.device: 端点标识
 cmd.volume.summary: 设置端点或会话音量
@@ -70,6 +103,23 @@ cmd.log.summary: 控制日志级别与输出
 log.app.init: 应用初始化, 配置={0}
 log.app.ready: 应用就绪, 文本项={0}
 log.app.shutdown: 应用关闭
+log.app.serve: 后台进程已启动, 管道={0}
+log.app.serve_stopped: 后台进程已停止
+log.app.serve_failed: 后台进程启动失败: 管道不可用
+log.app.serve_conflict: 后台进程已在运行, 本次启动被拒绝
+log.pipe.create_failed: 管道创建失败 (error={0})
+log.pipe.connect_failed: 管道连接失败 (error={0})
+log.pipe.unknown: 未知报文, 已忽略: {0}
+log.pipe.received: 收到报文 {0}: {1}
+log.pipe.handler_threw: 报文处理抛出异常, 已忽略
+log.pipe.invalid: 报文参数不合法, 已忽略: {0}
+log.pipe.set_default: 切换默认设备 flow={0} role={1} 结果={2}
+log.pipe.set_default_no_virtual: 未找到虚拟端点 V, 未切换默认设备 flow={0}
+log.pipe.set_redirect: 逐应用重定向 pid={0} role={1} 结果={2}
+log.pipe.redirect_not_applied: 逐应用重定向未生效(本机 RDP 限制?), 未记录状态 pid={0}
+log.pipe.clear_redirect: 清空逐应用重定向 结果={0}
+log.pipe.click_unhandled: 收到点击, 当前没有可点击条目: {0}
+log.pipe.uninstall_pending: 收到卸载请求, 卸载流程尚未实现
 log.text.loaded: 文本资源载入完成, 共 {0} 项
 log.text.missing: 文本键缺失: {0}
 log.logger.sink: 已挂载日志接收器: {0}
@@ -79,10 +129,33 @@ log.config.saved: 配置已保存: {0}
 log.config.created: 配置不存在, 使用默认值: {0}
 log.audio.enumerate: 枚举音频端点 flow={0} state={1}
 log.audio.not_implemented: 音频设备服务尚未实现: {0}
-log.audio.policy_not_implemented: 端点策略服务尚未实现: {0}
+log.audio.policy_set_default_failed: 切换系统默认设备失败: {0} (hr=0x{1}, role={2})
+log.audio.policy_set_redirect_failed: 设置逐应用重定向失败 pid={0}
+log.audio.policy_clear_redirect_failed: 清空逐应用重定向失败
+log.app.monitor: 注入监视已启动, 载荷目录={0}
+log.app.monitor_failed: 注入监视启动失败: {0}
 log.inject.find_target: 查找注入目标进程
-log.inject.not_implemented: 注入服务尚未实现: {0}
+log.inject.target_found: 找到目标进程 pid={0} ({1})
+log.inject.target_missing: 本会话没有 ShellHost.exe, 等待它出现
+log.inject.launcher_missing: 注入载荷不存在: {0}
+log.inject.already_loaded: pid={0} 已装载 TAP, 跳过重复注入
+log.inject.stale_tap: ShellHost 里是旧载荷, 需重启 ShellHost 才能换新: 已加载={0} 当前={1}
 log.inject.payload: 注入载荷 launcher={0} tap={1}
+log.inject.failed: 注入失败 pid={0} 原因={1}
+log.inject.launcher_loaded: 注入载荷已装载 pid={0}
+log.inject.tap_ready: TAP 已就绪 pid={0}
+log.inject.tap_pending: TAP 未在超时内就绪 pid={0} (看 launcher/tap 日志)
+log.inject.eject_unsupported: TAP 卸载尚未实现 (需要注销 XAML 诊断会话)
+log.monitor.started: 注入监视启动, 轮询间隔={0} ms
+log.monitor.stopped: 注入监视停止
+log.payload.deployed: 注入载荷已部署: {0}
+log.payload.directory_failed: 载荷目录创建失败: {0}
+log.icons.extracted: 应用图标已提取 {0} -> {1}
+log.icons.missing: 应用没有可用图标: {0}
+log.icons.encode_failed: 应用图标编码失败 {0}: {1}
+log.redirect.stored: 记录应用重定向 app={0} device={1}
+log.redirect.store_failed: 记录应用重定向失败 app={0}: {1}
+log.redirect.clear_failed: 清除重定向记录失败: {0}
 log.cli.start: 命令行启动, 命令={0}
 log.cli.finish: 命令行结束, 命令={0} 结果={1}
 log.cli.unknown: 未知命令 {0}
@@ -97,7 +170,7 @@ audio.session.unknown_app: 未知应用
 log.interop.rogetactivationfactory_unavailable: RoGetActivationFactory 取不到
 log.interop.policy_factory_activation_failed: Windows.Media.Internal.AudioPolicyConfig 激活失败（逐应用重定向不可用）
 log.interop.ipolicyconfig_unavailable: IPolicyConfig 取不到（不能切系统默认设备）
-log.interop.set_default_endpoint_failed: SetDefaultEndpoint 失败 a=0x{0} b=0x{1}
+log.interop.set_default_endpoint_failed_role: SetDefaultEndpoint 失败 role={0} hr=0x{1}
 log.autostart.missing: 自启项不存在 ⇒ 开关=关
 log.autostart.present: 自启项存在且已启用：{0} ⇒ 开关=开
 log.autostart.suppressed: 自启项存在但被系统标记为已禁用：{0} ⇒ 开关=关
@@ -152,6 +225,8 @@ page.button.uninstalling: 正在卸载…
 page.button.uninstallCount: 再单击{0}次从系统卸载
 page.none.capture: （没有可用的输入设备）
 page.none.apps: （当前没有正在发声的应用）
+page.app.redirect: 重定向到
+page.app.redirectDefault: 默认设备
 page.device.defaultSuffix: "  (默认)"
 page.capture.caption: 输入设备（{0}）
 page.footer.github: GitHub
@@ -161,7 +236,14 @@ page.footer.settings: 设置
 log.page.appsEmpty: 应用列表为空（端点 {0}）
 log.page.openUrlFailed: ShellExecuteW(open) 失败 code={0}
 log.page.mountPage: MountPage({0}={1}) 正文已重建，底栏已同步
-log.page.clearRedirects: 清除重定向（已通知宿主）
+log.page.appRowToggle: 应用行{0}
+log.page.appMute: 应用静音 app={0} {1}
+log.page.appVolume: 应用音量 app={0} 值={1}
+log.page.appRedirectOpened: 重定向下拉已展开 app={0}
+log.page.appRedirectClosed: 重定向下拉已收起 app={0}
+log.page.appRedirectPick: 选择重定向 pid={0} 目标={1}
+log.page.commandDropped: 命令未送达宿主(后台进程未运行?), 已丢弃: {0}
+log.page.clearRedirects: 已清除全部重定向并重置列表
 log.page.snapshot: snapshot: render={0} capture={1} apps={2} (apps from {3})
 log.page.entryExpect: 入口「选择声音输出」被点击 -> 下一个声音页直接接管
 log.page.noPageWindow: PageWindow 没找到 -> 不接管（安全退出，绝不改树）
@@ -180,6 +262,7 @@ log.page.dispatchFailed: 底栏重试派发失败 -> 放弃挂载
 log.page.footerSizeChanged: 底栏 SizeChanged -> {0}x{1}
 log.page.footerFirstLayout: 底栏 LayoutUpdated 首次触发
 log.page.recordingMode: 录制模式 -> {0}
+log.page.redirect: 应用重定向 pid={0} device={1}
 log.page.autostart: 开机启动 -> {0}（{1}）
 log.page.autostartFailed: 开机启动：{0} 失败 —— {1}
 log.page.showDriverName: 显示驱动名 -> {0}（已写入 HKCU）

@@ -135,11 +135,12 @@ cmake/           载荷资源生成、版本资源模板、打包脚本
 | `verified‑after‑injection/09-ini-encoding.md` | `poc/src/probes/initest.cpp` / `poc/scripts/check-button-text.ps1` / `reopen-panel.ps1` | 2026-10-03 | ★★ **T2：INI 编码只有 UTF-16LE + BOM 可用**。UTF-8 无 BOM ⇒ **静默乱码**；UTF-8 有 BOM ⇒ **键都找不到**（设置被静默忽略）；写侧 `WritePrivateProfileStringW` 对全新文件会写成 ANSI。★ 顺带挖出并修掉一个真 bug：**幂等判定用"记住 Footer 指针"，而分配器会复用地址 ⇒ 按钮被静默跳过** |
 | `verified‑after‑injection/10-page-swap-capability.md` | `poc/src/vcxtap.cpp` 内的一次性探针（`ProbeCapabilities`） | 2026-10-03 | ★★ **入口接管方案的三项前置全部通过**：T14 十个控件类型可激活（含 `ComboBox`/`ListView`/`Slider`）；T12 `ListContent.Content` 可写且可还原；T13 `Footer` 触发时结构已就绪。★ 顺带纠正一处文档偏差：实际用 **C++/WinRT 直接激活**，不是 `IVisualTreeService::CreateInstance` |
 | `verified‑after‑injection/11-checkbox-capability.md` | `poc/src/vcxtap.cpp` 内的一次性探针（追加的 T18 组） | 2026-10-03 | ★ **T18 通过：「录制模式」复选框无形态风险**。`CheckBox` 可激活、`IsChecked`（`IReference<bool>`）可往返、`MinHeight(0)` 可设（紧凑模板的前提）、可挂进可视树。★ 顺带闭合 `10-` 留下的 `ToggleButton` 命名空间遗留问题（缺 `Controls.Primitives` 别名 ⇒ C2039），并复查探针未污染可视树（底栏几何与基准逐像素一致） |
-| `verified‑after‑injection/12-audio-interop-safety.md` | 独立探针进程 `poc/src/audiochk.cpp`（已删）+ `poc/src/vcxaudio.h` | 2026-10-03 | ★★ **决定了页面主体不需要 IPC、而设备策略必须走 IPC**。① 枚举/端点音量/会话读写全部走 SDK 文档化接口，**可安全内联**；② `IPolicyConfig` 按 EarTrumpet 的槽位声明实测 **`vtable[13]` 访问违规**（`slot11` 用已知正确的 `PKEY_Device_FriendlyName` 却返回 `S_OK`+`VT_EMPTY` ⇒ 槽位映射就是错的）⇒ **在 ShellHost 里试错 = 崩掉用户 shell**，改走 `action=pipe`；③ `Windows.Media.Internal.AudioPolicyConfig` **可激活**（只认 `ab3d4648`），`set(NULL)` 成功、`set(id)` 返回 `E_INVALIDARG`（未定论，**无 AV 风险**）。★ 顺带修正环境记录：唯一渲染端点是 RDP 的 **`远程音频`**（不是之前记的网易虚拟声卡），**采集端点 0 个** |
+| `verified‑after‑injection/12-audio-interop-safety.md` | 独立探针进程 `poc/src/audiochk.cpp`（已删）+ `poc/src/vcxaudio.h` | 2026-10-03 | ★★ **决定了页面主体不需要 IPC、而设备策略必须走 IPC**。① 枚举/端点音量/会话读写全部走 SDK 文档化接口，**可安全内联**；② `IPolicyConfig` 按 EarTrumpet 的槽位声明实测 **`vtable[13]` 访问违规**（`slot11` 用已知正确的 `PKEY_Device_FriendlyName` 却返回 `S_OK`+`VT_EMPTY` ⇒ 槽位映射就是错的）⇒ **在 ShellHost 里试错 = 崩掉用户 shell**，改走 `action=pipe`；⚠️ **此条结论已于 2026-10-04 更正**（探针槽位整体偏移，槽 13 就是 `SetDefaultEndpoint`，见 15 号），但**分流方案不变**；③ `Windows.Media.Internal.AudioPolicyConfig` **可激活**（只认 `ab3d4648`），`set(NULL)` 成功、`set(id)` 返回 `E_INVALIDARG`（未定论，**无 AV 风险**）。★ 顺带修正环境记录：唯一渲染端点是 RDP 的 **`远程音频`**（不是之前记的网易虚拟声卡），**采集端点 0 个** |
 | `verified‑after-injection/13-footer-mount.md` | 产品侧 `Components/inject.tap` + UIA（`poc/scripts/footer-map.ps1`） | 2026-10-03 | ★★ **产品底栏挂载打通，并挖出三个独立原因**：① `FindDescendant` 深度上限 8 而模型按钮在第 **12** 层（PoC 用的是 12，刚好够）⇒ 永远找不到；② `std::atomic` 一次性守卫**从不复位** ⇒ **关掉再打开面板就再也不接管**（XAML 树每次打开都重建）⇒ 判据改为「上次那一页是否仍挂在树上」；③ 纵向 `StackPanel` 只给子元素 desired height ⇒ 三格贴顶且只有 16px 高 ⇒ 用 `MinHeight(ItemsPanel.ActualHeight())` + 抄模型显式 `Height=40`。★ 附 `Footer` 两层嵌套 `ItemsControl` 的完整实测树，以及一条纯工具坑：`injector.exe --call` 会把 ShellHost CFG fast-fail（`0xC0000409` 子码 10），只有不带 `--call` 的自注入路径可用 |
 | `verified‑after‑injection/14-page-identification.md` | 干净 shell 逐页 UIA + TAP 深度 dump；`L2Frame` 导航探针 | 2026-10-03 | ★★ **「其它二级菜单也被接管」的根因与定案**：① 所有 L2 页面**共用同一套壳**（`PageWindow`/`PageHeader`/`PageContent`/`Footer` 逐项同名同结构，`ListContent.Content` 都是 `ItemsControl`）⇒ 只按 `Name=="Footer"` 匹配必然误伤；② **`投影` 也用 `PageTitleText`**（曾误以为它是声音页指纹）；③ `L2Frame` 确实是 `Frame`、`Navigated` 全路径都触发，但 `Parameter`（`ControlCenter.AdvancedPageInfo`）**每次导航都是新对象**且不可读 ⇒ 入口只用来定时机、不能用来自证身份。定案两条判据：**入口**（L1 `VolumeL2Button` 的 `Click`，5s 窗口，快路径不闪；⚠️ `Win+Ctrl+V` 不走它）+ **页面内容**（`OutputGroupTitle`/`MixerGroupTitle`/`SpatialGroupTitle`/`ListWithOutputGroupTitle`，正向判据、失败关闭）。⛔ 两个坑：这些名字在页面根往下 **~25 层**（上限 24 会**静默找不到**）；识别是深度 32 全树遍历，挂在 dispatcher `Low` 上**必须按 25ms 节流**（Low 每秒排空上千次），但"只靠事件驱动"又会漏掉内容落地的那一刻 |
+| `verified‑after-injection/15-host-pipe-and-device-policy.md` | 产品侧 `Core/TapPipeServer.*` / `Core/TapCommand.*` / `Core/HostPresence.*` + 独立 COM 探针 | 2026-10-04 | ★★ **宿主侧 TAP 动作接收端打通，并终结 `IPolicyConfig` 槽位之谜**：① `vmex host` 常驻 + 命名互斥体单实例 + `vmex status` 跨进程查询，管道报文（合法/参数不足/未知动词/未实现）四类分支实测；② `CoCreateInstance(PolicyConfigClient)` + `QI(IID F8679F50)` 在 26H2 **成功**，**槽 13 = `SetDefaultEndpoint`**（传真实端点 ID → `E_NOINTERFACE`，传其它任何 ID → `E_INVALIDARG`，说明它确实在解析设备 ID）⇒ 旧记录里的"`vtable[13]` 访问违规"是**探针槽位映射偏移**所致，现行声明不再 AV；③ `ClearAllPersistedApplicationDefaultEndpoints`（槽 27）`S_OK`、`SetPersisted`（槽 25）`E_INVALIDARG` ⇒ 本机 RDP 虚拟端点**拒绝一切对具体端点的改动**，属环境限制、待实体机复验；④ 顺带修掉两个真 bug：进程从未 `CoInitializeEx`（音频命令必失败）、`--verbose`/`--trace` 被 CLI 当未知选项 | 
+| `verified‑after‑injection/16-app-icon-and-per-app-redirect.md` | 产品侧 `Components/inject.tap/Page.h` + `Core/AppIcons.*` / `Core/RedirectStore.*`；日志 `tap-20261004-023535.log` / `tap-20261004-025324.log` / `app-20261004-025324.log` / `app-20261004-030240.log` | 2026-10-04 | ★★ **面板内的图标与逐应用重定向落地，并修掉三个"看起来能用"的真 bug**：① 图标 = exe → `HICON` → WIC PNG 缓存 → `Image` + `file:///`（取不到回落首字母色块，缓存命中不再重复提取）；② 重定向交互从"右侧小 chevron"（**实测点不动**：trailing 区不可点 + `Background(nullptr)` 只有字形参与命中测试）改为**整条标题带 = 一个透明底 Button** + 展开一个 `ComboBox`；③ **在 `Collapsed` 父容器里创建 `ComboBox` ⇒ 弹出层残留、吃掉整页输入**（改"先 `Visible` → 再创建 → 再挂树"）；④ 清除重定向"命令成功但界面毫无变化"⇒ 清本地选择 + `MountPage` 重建正文；⑤ 顺带挖出录制模式发**硬编码设备名**（被空格切分截成 `OC`）⇒ 改哨兵 `@virtual` + **收紧报文参数个数校验**（五类分支实测） | 
 | `reference/research-agent-report.md` | 外部调研（独立 agent 产出） | 2026-10-03 | 方案选型的外部依据（Windhawk / ExplorerPatcher / XAML 诊断 API，带源码引用） |
-
 > 01–06 号基线证据的内容都是**逐字摘录**（只在文件头加了"来源/时间/用途"说明块），
 > 原始合集在 `reference/raw-outputs.md`（九节）。
 > ⚠️ 那份合集里含一条**后来被证伪**的结论（"`xamldiagnostics.dll` NOT FOUND"），
@@ -270,3 +271,30 @@ $s    = '.\docs\poc\scripts'          # ★ 所有脚本现在只在这一处
 | 15 | **滑块直调 WASAPI 的往返耗时（T23）** | ⏳ 未验证。已定方案 A：TAP 在 ShellHost 内**直接调** `SetMasterVolumeLevelScalar`，不走 IPC |
 | 16 | **`RegisterControlChangeNotify` 的回调线程（T24）** | ⏳ 未验证。回调若不在 UI 线程而直接改 UI ⇒ 崩 |
 | 17 | **控制台子系统改造（T25）** | ⛔ **已关闭（2026-10-03）**：登录自启改为 `Run` 键后仍会闪一下黑窗，**决定接受**，不做 `WIN32` 子系统 + `AttachConsole(ATTACH_PARENT_PROCESS)` |
+| 18 | **`IPolicyConfig` 的正确槽位** | ✅ **已定论（2026-10-04）**：IID `F8679F50` 可 QI，**槽 13 = `SetDefaultEndpoint`**（按设备 ID 是否真实存在返回不同 HRESULT 可证）。见 §6.7 |
+| 19 | **切换系统默认设备 / 逐应用重定向在实体机能否成功** | ⏳ 未验证（**本机不可验**）：本机是 RDP、唯一渲染端点是虚拟的 `远程音频`，系统对具体端点的改动一律拒绝（`E_NOINTERFACE` / `E_INVALIDARG`）；`ClearAll` 为 `S_OK` 说明调用形态无误 |
+
+### 6.7 ✅ 已完成：宿主侧 TAP 动作接收端与设备策略（2026-10-04）
+
+| 项 | 结论 |
+|---|---|
+| 后台进程 | `vmex host` 常驻 + `Local\VmExt.Host.S<sid>` 命名互斥体单实例；`vmex status` 跨进程查询"在不在跑"与管道名 |
+| 管道服务端 | `Core/TapPipeServer`：`ConnectNamedPipe` 的 `110` / `232` 都按成功处理、按 `\n` 切行、`DisconnectNamedPipe` 收尾；`Stop()` 用"自连一次"唤醒阻塞线程 |
+| 报文派发 | `SETDEFAULT` / `SETREDIRECT` / `CLEARREDIRECT` / `UNINSTALL` 全部有落点；参数不足、**参数过多**、未知动词、尚未实现四类都**显式记日志**，不静默失败（参数个数在 16 号那轮收紧） |
+| 设备策略 | `Core/EndpointPolicyService` 从桩换成真实实现，复用 `Core/AudioInterop.h` 既有封装（宿主进程内执行，不在 ShellHost 里试错） |
+| CLI 等价 | `vmex devices` / `default` / `redirect` / `clear-redirect` 已接线；`clear-redirect` 本机端到端成功 |
+| 环境限制 | RDP 虚拟端点下"改具体端点"被系统拒绝（详见 §6.6 #19），**需实体机复验**；`SetDefaultEndpoint` 的调用路径本身已确认正确 |
+
+⇒ 详见 `verified-after-injection/15-host-pipe-and-device-policy.md`。
+
+### 6.8 ✅ 已完成：面板内的应用图标与逐应用重定向（2026-10-04）
+
+| 项 | 结论 |
+|---|---|
+| 应用图标 | `Core/AppIcons`：进程 exe → `HICON` → WIC 编码 PNG 缓存到 `<缓存根>\icons\<hash>.png`，TAP 用 `Image` + `file:///` 渲染；取不到时回落"首字母色块"。**缓存命中后不再重复提取** |
+| 重定向交互 | 应用行**整条标题带**（图标 + 名称 + chevron）是一个**透明底** `Button`，点开向下展开一个 `ComboBox`（首项「默认设备」= 清除），选中即发 `SETREDIRECT` |
+| 修掉的真 bug | ① 在 `Collapsed` 的父容器里创建 `ComboBox` ⇒ **弹出层残留、吃掉整页输入**（改"先 Visible 再创建"）；② `Button.Background(nullptr)` ⇒ 只有字形能命中（改透明画刷）；③ 录制模式发**硬编码设备名** ⇒ 被空格切分截成 `OC`（改哨兵 `@virtual` 由宿主解析 + 收紧参数个数校验） |
+| 清除重定向 | 命令本来就成功，缺的是**反馈**：现在清本地选择 + `MountPage` 重建正文，所有下拉回到「默认设备」；下拉当前值由页面本地 map 维护，消除与宿主删文件的竞态 |
+| 边界 | `#system`（`pid=0`）行不给重定向；策略全失败时**不写** `redirects.ini`（不画假象） |
+
+⇒ 详见 `verified-after-injection/16-app-icon-and-per-app-redirect.md`；"重定向真的搬运声音"与"切到 V"仍需实体机复验。

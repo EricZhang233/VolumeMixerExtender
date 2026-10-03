@@ -16,6 +16,8 @@ namespace vmex::inject
 
     inline constexpr std::string_view kXamlEntryPointExport = "InitializeXamlDiagnosticsEx";
 
+    inline constexpr std::wstring_view kVirtualDeviceTarget = L"@virtual";
+
     [[nodiscard]] inline std::wstring DiagEndPointName(unsigned long sessionId)
     {
         return L"VisualDiagConnection" + std::to_wstring(sessionId);
@@ -24,6 +26,11 @@ namespace vmex::inject
     [[nodiscard]] inline std::wstring TapPipeName(unsigned long sessionId)
     {
         return L"\\\\.\\pipe\\VmExt.Tap.S" + std::to_wstring(sessionId);
+    }
+
+    [[nodiscard]] inline std::wstring HostMutexName(unsigned long sessionId)
+    {
+        return L"Local\\VmExt.Host.S" + std::to_wstring(sessionId);
     }
 
     inline constexpr std::wstring_view kTapConfigFileName = L"vmex_tap.ini";

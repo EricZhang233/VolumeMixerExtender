@@ -3,8 +3,10 @@
 | 目标 | 在写自定义页之前，先确认"设备枚举 / 端点音量 / 会话 / 切默认设备 / 逐应用重定向"这五类调用里，
 **哪些可以安全地在 ShellHost 进程内直接调**，哪些必须绕到我们自己的进程 |
 |---|---|
-| 结论 | **前三类安全，后两类不安全** —— 后两类的未公开接口在这个 build 上**会访问违规**，
-在 ShellHost 里调 = 崩掉用户的 shell。⇒ 一律改走 `action=pipe` 由宿主执行 |
+| 结论 | **前三类安全**；后两类**一律改走 `action=pipe` 由宿主执行**。⚠️ 当初判"不安全"的理由（
+"未公开接口在这个 build 上**会访问违规**"）**已于 2026-10-04 更正** —— AV 是旧探针槽位映射偏移所致，
+不是接口本身的属性（见 [15](./15-host-pipe-and-device-policy.md) §3）。**分流方案不变**：代价（崩掉用户 shell）
+仍由"宿主执行"这个隔离挡住 |
 | 环境 | Windows 11 build 26100 系，**当前是通过远程桌面（RDP）访问**，全机只有 1 个渲染端点 |
 | 证据 | 独立探针进程 `docs/poc/src/audiochk.cpp`（已删）、`docs/poc/src/vcxaudio.h` |
 
@@ -40,6 +42,12 @@ EnumEndpoints(capture) ok=1 count=0         ← 采集端点 0 个（四个 stat
 ⇒ **两端（设备列表 + 端点音量 + 逐应用音量）的全部读写都可以内联**，页面的主体不需要 IPC。
 
 ## 2. ⛔ 不能安全内联的：`IPolicyConfig`（切系统默认设备）
+
+> ⚠️ **2026-10-04 更正（见 [15](./15-host-pipe-and-device-policy.md) §3）**：下面这段的结论「槽位映射是错的」
+> **不成立** —— 是**旧探针的槽位编号整体偏移了一位**。重做探针后确认 **槽 13 就是 `SetDefaultEndpoint`**：
+> 传真实端点 ID 得 `E_NOINTERFACE`、传任何别的 ID 得 `E_INVALIDARG`，**不 AV**。
+> 本节保留原始实测记录（当时的观察是真的），但**"正确槽位未知"这句已作废**。
+> 两节的共同结论不变：**设备策略走 `action=pipe` 到宿主**。
 
 EarTrumpet 的声明（`Interop/MMDeviceAPI/IPolicyConfig.cs`）把前 8 个方法收成 8 个占位，
 于是 `SetDefaultEndpoint` 落在 **vtable[13]**。我们照抄后实测：

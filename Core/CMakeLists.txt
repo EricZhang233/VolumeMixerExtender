@@ -12,6 +12,7 @@ configure_file(
 
 add_library(vmex_core STATIC
     App.cpp
+    AppIcons.cpp
     AudioDeviceManager.cpp
     AutostartEntry.cpp
     CliTypes.cpp
@@ -19,12 +20,18 @@ add_library(vmex_core STATIC
     ConfigService.cpp
     EndpointPolicyService.cpp
     Foundation.cpp
+    HostPresence.cpp
+    InjectionMonitor.cpp
     InjectionService.cpp
     Log.cpp
     Logger.cpp
+    PayloadDeployment.cpp
     PayloadResources.cpp
     Platform.cpp
+    RedirectStore.cpp
     Strings.cpp
+    TapCommand.cpp
+    TapPipeServer.cpp
     TextEncoding.cpp
     TextService.cpp
     UserSettings.cpp
@@ -40,6 +47,8 @@ target_link_libraries(vmex_core PUBLIC
     ole32
     oleaut32
     mmdevapi
+    shell32
     uuid
     version
+    windowscodecs
 )

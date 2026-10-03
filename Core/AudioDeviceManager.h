@@ -10,6 +10,7 @@ namespace vmex::audio
         virtual ~IAudioDeviceManager() = default;
 
         virtual Status EnumerateDevices(DataFlow flow, DeviceState state, std::vector<DeviceInfo>& devices) = 0;
+        virtual Status FindVirtualDevice(DeviceInfo& device) = 0;
         virtual Status GetDefaultDevice(DataFlow flow, DeviceRole role, DeviceInfo& device) = 0;
         virtual Status GetVolume(std::wstring_view deviceId, EndpointVolume& volume) = 0;
         virtual Status SetVolume(std::wstring_view deviceId, float level) = 0;

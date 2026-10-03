@@ -144,6 +144,23 @@ namespace vmex::audio
                 return Status::Ok();
             }
 
+            Status FindVirtualDevice(DeviceInfo& device) override
+            {
+                device = {};
+
+                std::wstring id;
+                std::wstring friendly;
+                if (!detail::FindVirtualEndpoint(id, friendly))
+                {
+                    return Status::Failed(L"virtual-endpoint-not-found");
+                }
+
+                device.id = id;
+                device.friendlyName = friendly.empty() ? id : friendly;
+                device.state = DeviceState::Active;
+                return Status::Ok();
+            }
+
             Status GetDefaultDevice(DataFlow flow, DeviceRole role, DeviceInfo& device) override
             {
                 device = {};

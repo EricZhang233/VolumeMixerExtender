@@ -42,6 +42,18 @@ namespace vmex
         void Report(log::Level level, std::wstring_view channel, std::wstring_view key);
         void ReportFormat(log::Level level, std::wstring_view channel, std::wstring_view key, const std::vector<std::wstring>& arguments);
 
+        Status Serve();
+        void StopServing();
+        void WaitForShutdown();
+        [[nodiscard]] bool IsServing() const noexcept;
+        [[nodiscard]] std::wstring PipeName() const;
+
+        Status InjectNow(inject::State& state);
+        Status StartMonitoring();
+        void StopMonitoring();
+        [[nodiscard]] bool IsMonitoring() const noexcept;
+        [[nodiscard]] inject::State InjectionState() const;
+
     private:
         App();
         ~App();

@@ -88,7 +88,7 @@ set_target_properties(vmex PROPERTIES VS_DPI_AWARE "PerMonitor")
 
 add_dependencies(vmex vmex_launcher vmex_tap)
 
-target_link_libraries(vmex PRIVATE vmex_core)
+target_link_libraries(vmex PRIVATE vmex_core WindowsApp.lib)
 
 vmex_add_version_resource(vmex "VolumeMixerExtender command line interface" "vmex" "vmex.exe" VFT_APP)
 

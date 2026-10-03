@@ -1,16 +1,103 @@
 #include "App.h"
 
 #include "AutostartEntry.h"
+#include "HostPresence.h"
+#include "InjectionContract.h"
+#include "InjectionMonitor.h"
+#include "PayloadDeployment.h"
 #include "PayloadResources.h"
 #include "Platform.h"
+#include "RedirectStore.h"
 #include "Strings.h"
+#include "TapCommand.h"
+#include "TapPipeServer.h"
 #include "Version.h"
+
+#include <windows.h>
+
+#include <objbase.h>
+
+#include <array>
 
 namespace vmex
 {
     namespace
     {
         constexpr std::wstring_view kChannel = L"app";
+        constexpr std::wstring_view kPipeChannel = L"pipe";
+
+        constexpr std::uint32_t kInjectionTimeoutMs = 20000;
+        constexpr unsigned long kMonitorIntervalMs = 1000;
+
+        constexpr std::array<audio::DeviceRole, 3> kPolicyRoles{
+            audio::DeviceRole::Console,
+            audio::DeviceRole::Multimedia,
+            audio::DeviceRole::Communications,
+        };
+
+        HANDLE ShutdownEvent()
+        {
+            static const HANDLE event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            return event;
+        }
+
+        BOOL WINAPI HandleConsoleSignal(DWORD type)
+        {
+            if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT || type == CTRL_CLOSE_EVENT ||
+                type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT)
+            {
+                if (const HANDLE event = ShutdownEvent())
+                {
+                    ::SetEvent(event);
+                }
+                return TRUE;
+            }
+            return FALSE;
+        }
+
+        std::vector<audio::DeviceRole> SelectRoles(const cli::Invocation& invocation, bool& valid)
+        {
+            const auto roleText = invocation.Option(L"role", L"");
+            if (roleText.empty())
+            {
+                valid = true;
+                return { kPolicyRoles.begin(), kPolicyRoles.end() };
+            }
+
+            audio::DeviceRole role{};
+            if (strings::EqualsIgnoreCase(roleText, L"console"))
+            {
+                role = audio::DeviceRole::Console;
+            }
+            else if (strings::EqualsIgnoreCase(roleText, L"multimedia"))
+            {
+                role = audio::DeviceRole::Multimedia;
+            }
+            else if (strings::EqualsIgnoreCase(roleText, L"communications"))
+            {
+                role = audio::DeviceRole::Communications;
+            }
+            else
+            {
+                valid = false;
+                return {};
+            }
+
+            valid = true;
+            return { role };
+        }
+
+        std::wstring_view StateKey(audio::DeviceState state)
+        {
+            switch (state)
+            {
+            case audio::DeviceState::Disabled: return L"audio.state.disabled";
+            case audio::DeviceState::NotPresent: return L"audio.state.not-present";
+            case audio::DeviceState::Unplugged: return L"audio.state.unplugged";
+            case audio::DeviceState::All: return L"audio.state.all";
+            default: return L"audio.state.active";
+            }
+        }
 
         cli::Result Unsupported(std::wstring_view operation)
         {
@@ -28,7 +115,7 @@ namespace vmex
         }
     }
 
-    struct App::Impl final
+    struct App::Impl final : inject::ITapCommandHandler
     {
         AppOptions options;
         text::TextService text;
@@ -37,7 +124,24 @@ namespace vmex
         std::unique_ptr<audio::IAudioDeviceManager> audioDevices;
         std::unique_ptr<audio::IEndpointPolicyService> endpointPolicy;
         std::unique_ptr<inject::IInjectionService> injection;
+        std::unique_ptr<inject::TapPipeServer> tapPipe;
+        std::unique_ptr<inject::InjectionMonitor> monitor;
+        inject::Deployment deployment;
+        host::HostPresence presence;
+        bool comInitialized = false;
         bool ready = false;
+
+        Status PrepareDeployment()
+        {
+            return inject::DeployPayloads(
+                platform::GetCacheDirectory(), platform::GetCurrentSessionId(), deployment);
+        }
+
+        void HandleTapCommand(const inject::TapCommand& command) override;
+        void HandleSetDefault(const inject::TapCommand& command);
+        void HandleSetRedirect(const inject::TapCommand& command);
+        void HandleClearRedirect();
+        void RecordAppRedirect(std::uint32_t processId, const std::wstring& deviceId);
     };
 
     App::App()
@@ -62,6 +166,13 @@ namespace vmex
         {
             return Status::Failed(L"unsupported-windows:" + versionStatus.detail);
         }
+
+        const HRESULT comStatus = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        if (FAILED(comStatus) && comStatus != RPC_E_CHANGED_MODE)
+        {
+            return Status::FromHResult(L"com-init", comStatus);
+        }
+        m_impl->comInitialized = SUCCEEDED(comStatus);
 
         if (!options.logFile.empty())
         {
@@ -125,6 +236,8 @@ namespace vmex
             return;
         }
 
+        StopServing();
+
         if (!m_impl->options.configFile.empty())
         {
             m_impl->config.Save();
@@ -132,6 +245,13 @@ namespace vmex
 
         log::Logger::Instance().WriteKey(log::Level::Info, kChannel, L"log.app.shutdown");
         log::Logger::Instance().Flush();
+
+        if (m_impl->comInitialized)
+        {
+            ::CoUninitialize();
+            m_impl->comInitialized = false;
+        }
+
         m_impl->ready = false;
     }
 
@@ -190,6 +310,331 @@ namespace vmex
         log::Logger::Instance().WriteKeyFormat(level, channel, key, arguments);
     }
 
+    Status App::Serve()
+    {
+        if (!m_impl->ready)
+        {
+            return Status::Failed(L"not-ready");
+        }
+
+        if (m_impl->tapPipe != nullptr)
+        {
+            return Status::Ok();
+        }
+
+        const auto presence = m_impl->presence.Acquire();
+        if (!presence.IsOk())
+        {
+            log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.app.serve_conflict");
+            return presence;
+        }
+
+        auto server = std::make_unique<inject::TapPipeServer>(
+            inject::TapPipeName(platform::GetCurrentSessionId()),
+            *m_impl);
+
+        if (!server->Start())
+        {
+            m_impl->presence.Release();
+            log::Logger::Instance().WriteKey(log::Level::Error, kChannel, L"log.app.serve_failed");
+            return Status::Failed(L"pipe-start");
+        }
+
+        log::Logger::Instance().WriteKeyFormat(
+            log::Level::Info,
+            kChannel,
+            L"log.app.serve",
+            { server->PipeName() });
+
+        m_impl->tapPipe = std::move(server);
+
+        const auto monitoring = StartMonitoring();
+        if (!monitoring.IsOk())
+        {
+            log::Logger::Instance().WriteKeyFormat(
+                log::Level::Warn, kChannel, L"log.app.monitor_failed", { monitoring.detail });
+        }
+
+        return Status::Ok();
+    }
+
+    void App::StopServing()
+    {
+        if (m_impl->tapPipe == nullptr)
+        {
+            return;
+        }
+
+        StopMonitoring();
+        m_impl->tapPipe.reset();
+        m_impl->presence.Release();
+        log::Logger::Instance().WriteKey(log::Level::Info, kChannel, L"log.app.serve_stopped");
+    }
+
+    bool App::IsServing() const noexcept
+    {
+        return m_impl->tapPipe != nullptr;
+    }
+
+    std::wstring App::PipeName() const
+    {
+        return m_impl->tapPipe == nullptr ? std::wstring() : m_impl->tapPipe->PipeName();
+    }
+
+    Status App::InjectNow(inject::State& state)
+    {
+        state = {};
+
+        if (!m_impl->ready)
+        {
+            return Status::Failed(L"not-ready");
+        }
+
+        const auto prepared = m_impl->PrepareDeployment();
+        if (!prepared.IsOk())
+        {
+            return prepared;
+        }
+
+        return m_impl->injection->Inject(
+            inject::BuildInjectionOptions(m_impl->deployment, kInjectionTimeoutMs), state);
+    }
+
+    Status App::StartMonitoring()
+    {
+        if (!m_impl->ready)
+        {
+            return Status::Failed(L"not-ready");
+        }
+
+        if (m_impl->monitor != nullptr)
+        {
+            return Status::Ok();
+        }
+
+        const auto prepared = m_impl->PrepareDeployment();
+        if (!prepared.IsOk())
+        {
+            log::Logger::Instance().WriteKeyFormat(
+                log::Level::Error, kChannel, L"log.app.monitor_failed", { prepared.detail });
+            return prepared;
+        }
+
+        auto monitor = std::make_unique<inject::InjectionMonitor>(
+            *m_impl->injection,
+            inject::BuildInjectionOptions(m_impl->deployment, kInjectionTimeoutMs),
+            kMonitorIntervalMs);
+        monitor->Start();
+
+        log::Logger::Instance().WriteKeyFormat(
+            log::Level::Info, kChannel, L"log.app.monitor", { m_impl->deployment.directory.wstring() });
+
+        m_impl->monitor = std::move(monitor);
+        return Status::Ok();
+    }
+
+    void App::StopMonitoring()
+    {
+        m_impl->monitor.reset();
+    }
+
+    bool App::IsMonitoring() const noexcept
+    {
+        return m_impl->monitor != nullptr;
+    }
+
+    inject::State App::InjectionState() const
+    {
+        if (m_impl->monitor != nullptr)
+        {
+            return m_impl->monitor->Snapshot();
+        }
+
+        inject::State state;
+        m_impl->injection->QueryState(state);
+        return state;
+    }
+
+    void App::WaitForShutdown()
+    {
+        ::SetConsoleCtrlHandler(HandleConsoleSignal, TRUE);
+        ::WaitForSingleObject(ShutdownEvent(), INFINITE);
+        ::SetConsoleCtrlHandler(HandleConsoleSignal, FALSE);
+    }
+
+    void App::Impl::HandleTapCommand(const inject::TapCommand& command)
+    {
+        const HRESULT comStatus = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        const bool release = SUCCEEDED(comStatus);
+
+        switch (command.verb)
+        {
+        case inject::TapVerb::SetDefault:
+            HandleSetDefault(command);
+            break;
+        case inject::TapVerb::SetRedirect:
+            HandleSetRedirect(command);
+            break;
+        case inject::TapVerb::ClearRedirect:
+            HandleClearRedirect();
+            break;
+        case inject::TapVerb::Uninstall:
+            log::Logger::Instance().WriteKey(log::Level::Warn, kPipeChannel, L"log.pipe.uninstall_pending");
+            break;
+        default:
+            log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kPipeChannel, L"log.pipe.click_unhandled", { command.raw });
+            break;
+        }
+
+        if (release)
+        {
+            ::CoUninitialize();
+        }
+    }
+
+    void App::Impl::HandleSetDefault(const inject::TapCommand& command)
+    {
+        if (command.arguments.size() < 2)
+        {
+            log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kPipeChannel, L"log.pipe.invalid", { command.raw });
+            return;
+        }
+
+        audio::DataFlow flow{};
+        if (!audio::TryParseDataFlow(command.arguments[0], flow))
+        {
+            log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kPipeChannel, L"log.pipe.invalid", { command.raw });
+            return;
+        }
+
+        std::wstring deviceId = command.arguments[1];
+        if (deviceId == inject::kVirtualDeviceTarget)
+        {
+            audio::DeviceInfo virtualDevice;
+            if (!audioDevices->FindVirtualDevice(virtualDevice).IsOk())
+            {
+                log::Logger::Instance().WriteKeyFormat(
+                    log::Level::Warn,
+                    kPipeChannel,
+                    L"log.pipe.set_default_no_virtual",
+                    { std::wstring(audio::ToString(flow)) });
+                return;
+            }
+
+            deviceId = virtualDevice.id;
+        }
+
+        for (const auto role : kPolicyRoles)
+        {
+            const auto status = endpointPolicy->SetDefaultDevice(deviceId, role);
+            log::Logger::Instance().WriteKeyFormat(
+                log::Level::Info,
+                kPipeChannel,
+                L"log.pipe.set_default",
+                { std::wstring(audio::ToString(flow)), std::wstring(audio::ToString(role)), std::to_wstring(status.code) });
+        }
+    }
+
+    void App::Impl::HandleSetRedirect(const inject::TapCommand& command)
+    {
+        if (command.arguments.size() < 2)
+        {
+            log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kPipeChannel, L"log.pipe.invalid", { command.raw });
+            return;
+        }
+
+        audio::DataFlow flow{};
+        std::int64_t processId = 0;
+        if (!audio::TryParseDataFlow(command.arguments[0], flow) ||
+            !strings::TryParseInt(command.arguments[1], processId) ||
+            processId <= 0)
+        {
+            log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kPipeChannel, L"log.pipe.invalid", { command.raw });
+            return;
+        }
+
+        const std::wstring deviceId = command.arguments.size() > 2 ? command.arguments[2] : std::wstring();
+        bool applied = false;
+        for (const auto role : kPolicyRoles)
+        {
+            const auto status = endpointPolicy->SetAppDefaultDevice(
+                static_cast<std::uint32_t>(processId),
+                flow,
+                role,
+                deviceId);
+            if (status.IsOk())
+            {
+                applied = true;
+            }
+            log::Logger::Instance().WriteKeyFormat(
+                log::Level::Info,
+                kPipeChannel,
+                L"log.pipe.set_redirect",
+                { std::to_wstring(processId), std::wstring(audio::ToString(role)), std::to_wstring(status.code) });
+        }
+
+        if (applied)
+        {
+            RecordAppRedirect(static_cast<std::uint32_t>(processId), deviceId);
+        }
+        else
+        {
+            log::Logger::Instance().WriteKeyFormat(
+                log::Level::Warn, kPipeChannel, L"log.pipe.redirect_not_applied", { std::to_wstring(processId) });
+        }
+    }
+
+    void App::Impl::RecordAppRedirect(std::uint32_t processId, const std::wstring& deviceId)
+    {
+        std::vector<audio::DeviceInfo> endpoints;
+        if (!audioDevices->EnumerateDevices(audio::DataFlow::Render, audio::DeviceState::Active, endpoints).IsOk())
+        {
+            return;
+        }
+
+        for (const auto& endpoint : endpoints)
+        {
+            std::vector<audio::SessionInfo> sessions;
+            if (!audioDevices->EnumerateSessions(endpoint.id, sessions).IsOk())
+            {
+                continue;
+            }
+
+            for (const auto& session : sessions)
+            {
+                if (session.processId == processId && !session.appKey.empty())
+                {
+                    const auto status = audio::SetAppRedirect(platform::GetCacheDirectory(), session.appKey, deviceId);
+                    if (!status.IsOk())
+                    {
+                        log::Logger::Instance().WriteKeyFormat(
+                            log::Level::Warn, kPipeChannel, L"log.redirect.store_failed", { session.appKey, status.detail });
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    void App::Impl::HandleClearRedirect()
+    {
+        const auto status = endpointPolicy->ClearAppDefaultDevices();
+        log::Logger::Instance().WriteKeyFormat(
+            log::Level::Info,
+            kPipeChannel,
+            L"log.pipe.clear_redirect",
+            { std::to_wstring(status.code) });
+
+        const auto file = audio::RedirectStorePath(platform::GetCacheDirectory());
+        std::error_code error;
+        std::filesystem::remove(file, error);
+        if (error)
+        {
+            log::Logger::Instance().WriteKeyFormat(
+                log::Level::Warn, kPipeChannel, L"log.redirect.clear_failed", { file.wstring() });
+        }
+    }
+
     void App::RegisterCommands()
     {
         auto help = MakeCommand(L"help", L"cli.group.core", L"cmd.help.summary");
@@ -241,17 +686,75 @@ namespace vmex
         auto status = MakeCommand(L"status", L"cli.group.inject", L"cmd.status.summary");
         status.handler = [](const cli::Invocation&, cli::ICliOutput& output) -> cli::Result {
             auto& app = App::Instance();
+
+            const bool hosting = app.IsServing() || host::HostPresence::IsRunning();
             output.Field(app.Text().Resolve(L"cli.field.command"), L"status");
-            output.Field(app.Text().Resolve(L"cli.field.status"), app.Text().Resolve(L"cli.outcome.not_supported"));
-            return cli::Result{ cli::Outcome::NotSupported, {} };
+            output.Field(
+                app.Text().Resolve(L"cli.field.host"),
+                app.Text().Resolve(hosting ? L"cli.value.running" : L"cli.value.stopped"));
+
+            if (hosting)
+            {
+                output.Field(
+                    app.Text().Resolve(L"cli.field.pipe"),
+                    app.IsServing() ? app.PipeName() : inject::TapPipeName(platform::GetCurrentSessionId()));
+            }
+
+            inject::State state = app.InjectionState();
+            const std::wstring_view injectionKey = state.target.processId == 0
+                ? L"cli.value.not_injected"
+                : (state.tapLoaded ? L"cli.value.injected" : L"cli.value.pending");
+            output.Field(app.Text().Resolve(L"cli.field.inject"), app.Text().Resolve(injectionKey));
+            if (state.target.processId != 0)
+            {
+                output.Field(app.Text().Resolve(L"cli.field.pid"), std::to_wstring(state.target.processId));
+            }
+
+            return cli::Result{ cli::Outcome::Success, {} };
         };
         m_impl->commands.Add(std::move(status));
+
+        auto hostCommand = MakeCommand(L"host", L"cli.group.core", L"cmd.host.summary");
+        hostCommand.examples.push_back(cli::ExampleSpec{ L"vmex host", L"cmd.host.example.run" });
+        hostCommand.handler = [](const cli::Invocation&, cli::ICliOutput& output) -> cli::Result {
+            auto& app = App::Instance();
+
+            const auto started = app.Serve();
+            if (!started.IsOk())
+            {
+                output.Error(app.Text().Resolve(
+                    started.detail == L"host-running" ? L"cli.error.host_running" : L"cli.error.host_failed"));
+                return cli::Result{ cli::Outcome::Failed, {} };
+            }
+
+            output.Field(app.Text().Resolve(L"cli.field.pipe"), app.PipeName());
+            output.Field(app.Text().Resolve(L"cli.field.status"), app.Text().Resolve(L"cli.value.hosting"));
+            app.WaitForShutdown();
+            app.StopServing();
+            return cli::Result{ cli::Outcome::Success, {} };
+        };
+        m_impl->commands.Add(std::move(hostCommand));
 
         auto inject = MakeCommand(L"inject", L"cli.group.inject", L"cmd.inject.summary");
         inject.options.push_back(cli::OptionSpec{ L"tap", L"path", L"cmd.inject.opt.tap", true, false });
         inject.options.push_back(cli::OptionSpec{ L"wait", L"ms", L"cmd.inject.opt.wait", true, false });
-        inject.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {
-            return Unsupported(L"inject");
+        inject.examples.push_back(cli::ExampleSpec{ L"vmex inject", L"cmd.inject.example.run" });
+        inject.handler = [](const cli::Invocation&, cli::ICliOutput& output) -> cli::Result {
+            auto& app = App::Instance();
+
+            inject::State state;
+            const auto status = app.InjectNow(state);
+            if (!status.IsOk())
+            {
+                output.Error(app.Text().ResolveFormat(L"cli.error.operation_failed", { status.detail }));
+                return cli::Result{ cli::Outcome::Failed, {} };
+            }
+
+            output.Field(app.Text().Resolve(L"cli.field.pid"), std::to_wstring(state.target.processId));
+            output.Field(
+                app.Text().Resolve(L"cli.field.inject"),
+                app.Text().Resolve(state.tapLoaded ? L"cli.value.injected" : L"cli.value.pending"));
+            return cli::Result{ cli::Outcome::Success, {} };
         };
         m_impl->commands.Add(std::move(inject));
 
@@ -294,8 +797,46 @@ namespace vmex
         auto devices = MakeCommand(L"devices", L"cli.group.audio", L"cmd.devices.summary");
         devices.options.push_back(cli::OptionSpec{ L"flow", L"flow", L"cmd.devices.opt.flow", true, false });
         devices.options.push_back(cli::OptionSpec{ L"state", L"state", L"cmd.devices.opt.state", true, false });
-        devices.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {
-            return Unsupported(L"devices");
+        devices.examples.push_back(cli::ExampleSpec{ L"vmex devices --flow render", L"cmd.devices.example.list" });
+        devices.handler = [](const cli::Invocation& invocation, cli::ICliOutput& output) -> cli::Result {
+            auto& app = App::Instance();
+
+            audio::DataFlow flow = audio::DataFlow::All;
+            const auto flowText = invocation.Option(L"flow", L"");
+            if (!flowText.empty() && !audio::TryParseDataFlow(flowText, flow))
+            {
+                output.Error(app.Text().ResolveFormat(L"cli.error.invalid_value", { flowText }));
+                return cli::Result{ cli::Outcome::InvalidArguments, {} };
+            }
+
+            audio::DeviceState state = audio::DeviceState::Active;
+            const auto stateText = invocation.Option(L"state", L"");
+            if (!stateText.empty() && !audio::TryParseDeviceState(stateText, state))
+            {
+                output.Error(app.Text().ResolveFormat(L"cli.error.invalid_value", { stateText }));
+                return cli::Result{ cli::Outcome::InvalidArguments, {} };
+            }
+
+            std::vector<audio::DeviceInfo> found;
+            const auto status = app.AudioDevices().EnumerateDevices(flow, state, found);
+            if (!status.IsOk())
+            {
+                output.Error(app.Text().ResolveFormat(L"cli.error.operation_failed", { status.detail }));
+                return cli::Result{ cli::Outcome::Failed, {} };
+            }
+
+            output.Field(app.Text().Resolve(L"cli.field.count"), std::to_wstring(found.size()));
+            for (const auto& device : found)
+            {
+                output.Line(device.friendlyName);
+                output.Field(app.Text().Resolve(L"cli.field.id"), device.id);
+                output.Field(app.Text().Resolve(L"cli.field.state"), app.Text().Resolve(StateKey(device.state)));
+                output.Field(
+                    app.Text().Resolve(L"cli.field.default"),
+                    app.Text().Resolve(device.isDefault ? L"cli.value.yes" : L"cli.value.no"));
+            }
+
+            return cli::Result{ cli::Outcome::Success, {} };
         };
         m_impl->commands.Add(std::move(devices));
 
@@ -320,20 +861,104 @@ namespace vmex
         m_impl->commands.Add(std::move(mute));
 
         auto defaultDevice = MakeCommand(L"default", L"cli.group.audio", L"cmd.default.summary");
-        defaultDevice.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {
-            return Unsupported(L"default");
+        defaultDevice.arguments.push_back(cli::ArgumentSpec{ L"device", L"cmd.default.arg.device", true });
+        defaultDevice.options.push_back(cli::OptionSpec{ L"role", L"role", L"cmd.default.opt.role", true, false });
+        defaultDevice.examples.push_back(cli::ExampleSpec{ L"vmex default {endpoint-id}", L"cmd.default.example.set" });
+        defaultDevice.handler = [](const cli::Invocation& invocation, cli::ICliOutput& output) -> cli::Result {
+            auto& app = App::Instance();
+
+            bool valid = false;
+            const auto roles = SelectRoles(invocation, valid);
+            if (!valid)
+            {
+                output.Error(app.Text().ResolveFormat(L"cli.error.invalid_value", { invocation.Option(L"role", L"") }));
+                return cli::Result{ cli::Outcome::InvalidArguments, {} };
+            }
+
+            const auto deviceId = *invocation.Positional(0);
+            std::size_t failures = 0;
+            for (const auto role : roles)
+            {
+                if (!app.EndpointPolicy().SetDefaultDevice(deviceId, role).IsOk())
+                {
+                    ++failures;
+                }
+            }
+
+            if (failures != 0)
+            {
+                output.Error(app.Text().ResolveFormat(L"cli.error.operation_failed", { std::to_wstring(failures) }));
+                return cli::Result{ cli::Outcome::Failed, {} };
+            }
+
+            output.Field(app.Text().Resolve(L"cli.field.value"), deviceId);
+            return cli::Result{ cli::Outcome::Success, {} };
         };
         m_impl->commands.Add(std::move(defaultDevice));
 
         auto redirect = MakeCommand(L"redirect", L"cli.group.audio", L"cmd.redirect.summary");
-        redirect.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {
-            return Unsupported(L"redirect");
+        redirect.arguments.push_back(cli::ArgumentSpec{ L"process", L"cmd.redirect.arg.process", true });
+        redirect.arguments.push_back(cli::ArgumentSpec{ L"device", L"cmd.redirect.arg.device", false });
+        redirect.options.push_back(cli::OptionSpec{ L"flow", L"flow", L"cmd.redirect.opt.flow", true, false });
+        redirect.options.push_back(cli::OptionSpec{ L"role", L"role", L"cmd.redirect.opt.role", true, false });
+        redirect.handler = [](const cli::Invocation& invocation, cli::ICliOutput& output) -> cli::Result {
+            auto& app = App::Instance();
+
+            std::int64_t processId = 0;
+            if (!strings::TryParseInt(*invocation.Positional(0), processId) || processId <= 0)
+            {
+                output.Error(app.Text().ResolveFormat(L"cli.error.invalid_value", { *invocation.Positional(0) }));
+                return cli::Result{ cli::Outcome::InvalidArguments, {} };
+            }
+
+            audio::DataFlow flow = audio::DataFlow::Render;
+            const auto flowText = invocation.Option(L"flow", L"");
+            if (!flowText.empty() && !audio::TryParseDataFlow(flowText, flow))
+            {
+                output.Error(app.Text().ResolveFormat(L"cli.error.invalid_value", { flowText }));
+                return cli::Result{ cli::Outcome::InvalidArguments, {} };
+            }
+
+            bool valid = false;
+            const auto roles = SelectRoles(invocation, valid);
+            if (!valid)
+            {
+                output.Error(app.Text().ResolveFormat(L"cli.error.invalid_value", { invocation.Option(L"role", L"") }));
+                return cli::Result{ cli::Outcome::InvalidArguments, {} };
+            }
+
+            const std::wstring deviceId = invocation.Positional(1) == nullptr ? std::wstring() : *invocation.Positional(1);
+            std::size_t failures = 0;
+            for (const auto role : roles)
+            {
+                if (!app.EndpointPolicy().SetAppDefaultDevice(
+                        static_cast<std::uint32_t>(processId), flow, role, deviceId).IsOk())
+                {
+                    ++failures;
+                }
+            }
+
+            if (failures != 0)
+            {
+                output.Error(app.Text().ResolveFormat(L"cli.error.operation_failed", { std::to_wstring(failures) }));
+                return cli::Result{ cli::Outcome::Failed, {} };
+            }
+
+            output.Field(app.Text().Resolve(L"cli.field.value"), deviceId);
+            return cli::Result{ cli::Outcome::Success, {} };
         };
         m_impl->commands.Add(std::move(redirect));
 
         auto clearRedirect = MakeCommand(L"clear-redirect", L"cli.group.audio", L"cmd.clear-redirect.summary");
-        clearRedirect.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {
-            return Unsupported(L"clear-redirect");
+        clearRedirect.handler = [](const cli::Invocation&, cli::ICliOutput& output) -> cli::Result {
+            auto& app = App::Instance();
+            const auto status = app.EndpointPolicy().ClearAppDefaultDevices();
+            if (!status.IsOk())
+            {
+                output.Error(app.Text().ResolveFormat(L"cli.error.operation_failed", { status.detail }));
+                return cli::Result{ cli::Outcome::Failed, {} };
+            }
+            return cli::Result{ cli::Outcome::Success, {} };
         };
         m_impl->commands.Add(std::move(clearRedirect));
 

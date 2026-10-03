@@ -28,6 +28,7 @@ namespace vmex::platform
     [[nodiscard]] std::filesystem::path GetInstallDirectory();
     [[nodiscard]] std::filesystem::path GetCacheDirectory();
     [[nodiscard]] std::wstring GetMachineName();
+    [[nodiscard]] std::uint32_t GetCurrentSessionId();
     [[nodiscard]] bool FileExists(const std::filesystem::path& file);
     [[nodiscard]] Status ReadAllBytes(const std::filesystem::path& file, std::vector<std::byte>& bytes);
     [[nodiscard]] Status WriteAllBytes(const std::filesystem::path& file, std::span<const std::byte> bytes);

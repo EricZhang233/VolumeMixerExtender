@@ -247,6 +247,33 @@ inline bool EnumEndpoints(EDataFlow flow, std::vector<Endpoint>& out)
     return EnumEndpointsOnce(flow, out);
 }
 
+inline bool FindVirtualEndpoint(std::wstring& id, std::wstring& friendly)
+{
+    id.clear();
+    friendly.clear();
+
+    auto e = MakeEnumerator();
+    if (!e) return false;
+
+    Ptr<IMMDeviceCollection> coll;
+    if (FAILED(e->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, coll.put())) || !coll) return false;
+
+    UINT count = 0;
+    if (FAILED(coll->GetCount(&count))) return false;
+
+    for (UINT i = 0; i < count; ++i) {
+        Ptr<IMMDevice> dev;
+        if (FAILED(coll->Item(i, dev.put())) || !dev) continue;
+        Endpoint ep;
+        if (!ReadEndpoint(dev.get(), eRender, ep)) continue;
+        if (!IsOurVirtualDevice(ep)) continue;
+        id = ep.id;
+        friendly = ep.friendly;
+        return true;
+    }
+    return false;
+}
+
 inline bool EndpointVolume(const std::wstring& devId, Ptr<IAudioEndpointVolume>& out)
 {
     auto e = MakeEnumerator();
@@ -490,7 +517,7 @@ inline std::wstring UnpackDeviceId(const std::wstring& packed)
     return r;
 }
 
-inline bool SetPersistedEndpoint(EDataFlow flow, DWORD pid, const std::wstring& rawDeviceId)
+inline bool SetPersistedEndpointForRole(EDataFlow flow, DWORD pid, ERole role, const std::wstring& rawDeviceId)
 {
     auto f = MakePolicyFactory();
     if (!f) return false;
@@ -500,19 +527,24 @@ inline bool SetPersistedEndpoint(EDataFlow flow, DWORD pid, const std::wstring& 
         const std::wstring packed = PackDeviceId(rawDeviceId, flow);
         if (FAILED(::WindowsCreateString(packed.c_str(), (UINT32)packed.size(), &hs))) return false;
     }
-    const HRESULT a = f->SetPersistedDefaultAudioEndpoint(pid, flow, eConsole, hs);
-    const HRESULT b = f->SetPersistedDefaultAudioEndpoint(pid, flow, eMultimedia, hs);
+    const HRESULT hr = f->SetPersistedDefaultAudioEndpoint(pid, flow, role, hs);
     if (hs) ::WindowsDeleteString(hs);
-    return SUCCEEDED(a) && SUCCEEDED(b);
+    return SUCCEEDED(hr);
 }
 
-inline bool GetPersistedEndpoint(EDataFlow flow, DWORD pid, std::wstring& rawOut)
+inline bool SetPersistedEndpoint(EDataFlow flow, DWORD pid, const std::wstring& rawDeviceId)
+{
+    return SetPersistedEndpointForRole(flow, pid, eConsole, rawDeviceId) &&
+           SetPersistedEndpointForRole(flow, pid, eMultimedia, rawDeviceId);
+}
+
+inline bool GetPersistedEndpointForRole(EDataFlow flow, DWORD pid, ERole role, std::wstring& rawOut)
 {
     rawOut.clear();
     auto f = MakePolicyFactory();
     if (!f) return false;
     HSTRING hs = nullptr;
-    if (FAILED(f->GetPersistedDefaultAudioEndpoint(pid, flow, eMultimedia, &hs))) return false;
+    if (FAILED(f->GetPersistedDefaultAudioEndpoint(pid, flow, role, &hs))) return false;
     if (!hs) return true;
     UINT32 len = 0;
     const wchar_t* p = ::WindowsGetStringRawBuffer(hs, &len);
@@ -522,6 +554,11 @@ inline bool GetPersistedEndpoint(EDataFlow flow, DWORD pid, std::wstring& rawOut
     return true;
 }
 
+inline bool GetPersistedEndpoint(EDataFlow flow, DWORD pid, std::wstring& rawOut)
+{
+    return GetPersistedEndpointForRole(flow, pid, eMultimedia, rawOut);
+}
+
 inline bool ClearAllAppRedirects()
 {
     auto f = MakePolicyFactory();
@@ -529,27 +566,67 @@ inline bool ClearAllAppRedirects()
     return SUCCEEDED(f->ClearAllPersistedApplicationDefaultEndpoints());
 }
 
-inline bool SetSystemDefaultEndpoint(const std::wstring& rawDeviceId)
+inline const IID kIidPolicyConfig =
+    { 0xF8679F50, 0x850A, 0x41CF, { 0x9C, 0x72, 0x43, 0x0F, 0x29, 0x02, 0x90, 0xC8 } };
+inline const IID kIidPolicyConfigVista =
+    { 0x568B9108, 0x44BF, 0x40B4, { 0x90, 0x06, 0x86, 0xAF, 0xE5, 0xB5, 0xA6, 0x20 } };
+
+inline Ptr<IPolicyConfig> CreatePolicyConfig()
 {
-    if (rawDeviceId.empty()) return false;
-    Ptr<IPolicyConfig> pc;
-    if (FAILED(::CoCreateInstance(__uuidof(PolicyConfigClient), nullptr, CLSCTX_ALL,
-                                  __uuidof(IPolicyConfig), pc.putv())) || !pc) {
+    Ptr<::IUnknown> unknown;
+    const HRESULT created = ::CoCreateInstance(__uuidof(PolicyConfigClient), nullptr, CLSCTX_ALL,
+                                               __uuidof(::IUnknown), unknown.putv());
+    if (FAILED(created) || !unknown) {
         log::Logger::Instance().WriteKey(log::Level::Debug, L"audio", L"log.interop.ipolicyconfig_unavailable");
-        return false;
+        return {};
     }
-    const HRESULT a = pc->SetDefaultEndpoint(rawDeviceId.c_str(), eConsole);
-    const HRESULT b = pc->SetDefaultEndpoint(rawDeviceId.c_str(), eMultimedia);
-    if (FAILED(a) || FAILED(b)) {
-        wchar_t aHex[16] = {};
-        wchar_t bHex[16] = {};
-        ::swprintf_s(aHex, L"%08lX", static_cast<unsigned long>(a));
-        ::swprintf_s(bHex, L"%08lX", static_cast<unsigned long>(b));
+
+    for (const IID& iid : { kIidPolicyConfig, kIidPolicyConfigVista }) {
+        void* raw = nullptr;
+        if (SUCCEEDED(unknown->QueryInterface(iid, &raw)) && raw != nullptr) {
+            Ptr<IPolicyConfig> pc;
+            pc.attach(reinterpret_cast<IPolicyConfig*>(raw));
+            return pc;
+        }
+    }
+
+    log::Logger::Instance().WriteKey(log::Level::Debug, L"audio", L"log.interop.ipolicyconfig_unavailable");
+    return {};
+}
+
+inline HRESULT SetSystemDefaultEndpointForRoleResult(const std::wstring& rawDeviceId, ERole role)
+{
+    if (rawDeviceId.empty()) return E_INVALIDARG;
+
+    auto pc = CreatePolicyConfig();
+    if (!pc) return E_NOINTERFACE;
+
+    return pc->SetDefaultEndpoint(rawDeviceId.c_str(), role);
+}
+
+inline bool CanSetSystemDefaultEndpoint()
+{
+    return static_cast<bool>(CreatePolicyConfig());
+}
+
+inline bool SetSystemDefaultEndpointForRole(const std::wstring& rawDeviceId, ERole role)
+{
+    const HRESULT hr = SetSystemDefaultEndpointForRoleResult(rawDeviceId, role);
+    if (FAILED(hr)) {
+        wchar_t hex[16] = {};
+        ::swprintf_s(hex, L"%08lX", static_cast<unsigned long>(hr));
         log::Logger::Instance().WriteKeyFormat(log::Level::Debug, L"audio",
-            L"log.interop.set_default_endpoint_failed", { aHex, bHex });
+            L"log.interop.set_default_endpoint_failed_role",
+            { std::to_wstring(static_cast<int>(role)), hex });
         return false;
     }
     return true;
+}
+
+inline bool SetSystemDefaultEndpoint(const std::wstring& rawDeviceId)
+{
+    return SetSystemDefaultEndpointForRole(rawDeviceId, eConsole) &&
+           SetSystemDefaultEndpointForRole(rawDeviceId, eMultimedia);
 }
 
 }
