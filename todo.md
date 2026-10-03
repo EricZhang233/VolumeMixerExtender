@@ -28,7 +28,7 @@
 - [X]  `text.yaml` 构建期嵌入二进制；`-help` 与 `skill` 由命令注册表自动生成，无第二来源
 - [X]  ⛔ **不再有 `SKILL.md`**：发布包只含 `vmex.exe`，接入文档完全内置于程序（`vmex skill`）。
   包内明文说明文件是第二来源，迟早和内置文档不一致 ⇒ 打包链路（`cmake/Package.cmake` +
-  `CMakeLists.txt` 两处 `-DVMEX_SKILL_FILE`）与 `agent.md` §6 已同步改掉
+  `CMakeLists.txt` 两处 `-DVMEX_SKILL_FILE`）与母法 §6 已同步改掉
 - [X]  **存储位置已定**（2026-10-03）—— 三层，各有唯一来源：
   —— **用户配置**（要跨重启的东西）：`HKCU\Software\EricSoft\VolumeMixerExtender`（`Core/UserSettings.*`）。
   ⛔ 不再有任何 ini/文件副本充当"用户设置"，⛔ 也不存任何"事实的镜像"（如自启任务状态）
@@ -41,10 +41,15 @@
   （`role` = `app` / `launcher` / `tap`）—— 对齐隔壁 EricGameLauncher 的 `log\app-<stamp>.log`；
   同秒同角色再来一个进程时加 `-2` 后缀（⛔ 不是删掉别人的会话日志）
   —— **载荷配置**：`vmex_tap.ini` 在**载荷自己所在目录**（launcher 从自身目录读，不是"放哪都行"）
-- [X]  **无注释原则**（`agent.md` §1）已落实到产品代码：`Core/`、`Components/`、根目录的 `.h/.cpp` 全无注释
+- [X]  **无注释原则**（母法 §1）已落实到产品代码：`Core/`、`Components/`、根目录的 `.h/.cpp` 全无注释
   —— ⚠️ **`docs/poc/` 是例外**（已与 Eric 确认，2026-10-03）：那是 PoC 证据归档，注释保持原样
-  —— ⚠️ 改文件只用编辑器工具，⛔ 不用 `Remove-Item`/脚本重写（`agent.md` §2）
+  —— ⚠️ 改文件只用编辑器工具，⛔ 不用 `Remove-Item`/脚本重写（母法 §2）
 - [X]  build >= 26300 门禁（`Platform::VerifySupportedWindowsVersion`），不满足直接拒绝
+- [X]  **宿主侧运行时已定并落地（2026-10-04）** —— ⛔ 不做托盘态/窗口态，只有「注入 + 后台进程」：
+  `vmex host` 常驻（命名互斥体单实例）+ `Core/TapPipeServer` 收 TAP 动作报文 + `vmex status` 查状态；
+  `Core/EndpointPolicyService` 从桩换成真实实现（`IPolicyConfig` 槽 13 已证实）；
+  音频 CLI（`devices`/`default`/`redirect`/`clear-redirect`）接线；顺带修掉「进程从未 `CoInitializeEx`」
+  与「`--verbose` 被 CLI 拒绝」两个真 bug。证据 `docs/verified-after-injection/15-host-pipe-and-device-policy.md`
 - [X]  打包仅本地：Release 构建后自动产出 `output/VolumeMixerExtender_<version>.zip`；CI 只保留 `post_release`（上传产物 + 发完自动清理 output）与 `promote_prerelease`（48 小时后提升），不做 CI 编译
 - [X]  修复：CLI 输出在重定向时全丢（`WriteConsoleW` 对非控制台句柄失败），改为控制台走宽字符、管道走 UTF-8
 - [X]  **T12 / T13 / T14 前置验证** —— 全部通过：
@@ -63,8 +68,9 @@
   应用行宽度恒定 330px、高度从 44 起按需长高；名称过长最多折两行；端点行单行省略 + `title` 全名；
   「默认输出设备」行右上角右对齐的「录制模式」复选框）
   —— ✅ 正文左右边距 `kBodyInset = 8`，底栏保持 `4`（镜像系统项）
-- [ ]  默认输入/输出设备两个下拉框（Body 第一顺位）
-- [ ]  「默认输出设备」行右上角**右对齐**的「录制模式」复选框
+- [X]  默认输入/输出设备两个下拉框（Body 第一顺位）—— ✅ 已落地 `MakeDeviceCombo`（`Page.h`）；
+  选中即发 `SETDEFAULT <render|capture> <id>`（宿主侧 3 个 role 全设）
+- [X]  「默认输出设备」行右上角**右对齐**的「录制模式」复选框
   （紧凑模板 `MinHeight=0` + 16px 方框；默认模板会把 16px 标签行撑到 32）
   —— **自动、双向对称**：勾选 → 记住当前默认 D、系统默认切到 V、`R := D`、标题 →「监听输出设备」；
   取消 → 系统默认切回 R、标题 →「默认输出设备」
@@ -79,21 +85,36 @@
   —— ✅ **前置已验（T18）**：`CheckBox` 可激活、`IsChecked` 可往返、`MinHeight(0)` 可设、可挂树
   （证据 `docs/verified-after-injection/11-checkbox-capability.md`）
   —— ⛔ **UI 部分本机可做；"切到 V / 切回 R"要到实体机才能验**（本机没有 V，也没有第二个真实渲染端点）
-- [ ]  **端点音量层**（插在「默认输入设备」与「音量合成器」之间）
+  —— ⛔ **2026-10-04 修掉一个真 bug（用户实测日志暴露）**：勾选时发的报文是**硬编码设备名**
+  `SETDEFAULT render OC Virtual Speaker` —— ① 违反"文本不硬编码"；② **设备名带空格，在按空格切分的报文里被截成 `OC`**，
+  宿主于是拿 `OC` 去调策略（`E_INVALIDARG`），**命令看起来发了、实际全是垃圾**
+  ⇒ 现在改发哨兵 **`@virtual`**，由宿主自己解析 V 的真实端点 ID（`IAudioDeviceManager::FindVirtualDevice`，
+  ⛔ 页面侧枚举被"过滤 V"挡住了，本来也拿不到）；V 不存在时**明确记 `未找到虚拟端点 V, 未切换默认设备` 后放弃**
+  —— ⛔ 同时**收紧了报文参数的个数校验**（`SETDEFAULT` 必须 2 段、`SETREDIRECT` 2 或 3 段、`CLEARREDIRECT`/`UNINSTALL` 0 段）：
+  以前多余段会被**静默忽略**（正是上面 `OC` 的成因）
+- [ ]  ⚠️ **录制模式里"选 R"的语义待定（本机无 V，测不出来）**：按设计，勾着时本行下拉框是 **R 的选择器**，
+  但现行实现无论哪种模式都发 `SETDEFAULT <id>` ⇒ 会**把系统默认从 V 切走**（V 一出现，录制模式就自毁）
+  —— 需要先定：选 R 只更新页面/宿主的 R（⇒ 还得有一条把 R 告诉**监听程序**的通道），还是允许它顺带改默认输出？
+  —— ⚠️ 另一个相关缺口：`GetDefaultDevice` 走的是**过滤 V** 的枚举 ⇒ 录制模式开着时 `defaultRender` 只有 id 没有名字
+  （`DeviceInfo.friendlyName` 为空），页面下拉框会处于"没有选中项"的状态
+- [X]  **端点音量层**（插在「默认输入设备」与「音量合成器」之间）—— ✅ 已落地 `MakeEndpointRow` +
+  采集侧折叠组 `「输入设备（N）」`（`Settings().inputExpanded`，默认不展开）
   —— **每个端点各一条**（不是按通道）；`EnumAudioEndpoints(DEVICE_STATE_ACTIVE)`；**过滤 V**
   —— **采集侧收成一行折叠组「输入设备（N）」，默认不展开**（渲染侧逐条展开）⇒ 输入侧高度封顶
   —— ✅ 滑块架构**已定方案 A：TAP 在 ShellHost 内直接调 WASAPI**，滑块流量**不走 IPC**
   （`action=pipe` 继续只承载"点击/命令"）
   —— ⛔ **安全分界已定（证据 `docs/verified-after-injection/12-audio-interop-safety.md`）**：
   枚举 / 端点音量/静音 / 逐应用音量/静音 **可安全内联**；
-  **切默认设备 / 逐应用重定向 / 清空重定向必须走 `action=pipe` 到宿主** ——
-  `IPolicyConfig` 按 EarTrumpet 槽位声明实测 **`vtable[13]` 访问违规**，
-  **在 ShellHost 里试错 = 崩掉用户的 shell**
-  —— 代价：pipe 单向、拿不到回包 ⇒ UI **乐观更新**，下次开面板重新枚举即对齐
-  —— ⚠️ **待验（实体机）**：`IPolicyConfig` 的正确槽位；AV 是 build 变了还是 RDP 虚拟端点造成的
-  （EarTrumpet 在真实硬件上同路径工作正常）
+  **切默认设备 / 逐应用重定向 / 清空重定向必须走 `action=pipe` 到宿主**；
+  —— ✅ **2026-10-04 更正**：`IPolicyConfig` 的**槽 13 就是 `SetDefaultEndpoint`**（`QI(IID F8679F50)` 成功；
+  传真实端点 ID → `E_NOINTERFACE`、传其它任何 ID → `E_INVALIDARG` ⇒ 它确实在解析设备 ID）。
+  早先记的"`vtable[13]` 访问违规"是**探针槽位映射偏移**，不是接口本身的问题
+  —— ⚠️ **仍未定论（实体机）**：为什么对**本机 RDP 虚拟端点**调用会 `E_NOINTERFACE`
+  （EarTrumpet 在真实硬件上同路径工作正常）⇒ 需实体机复验
   —— ⚠️ 实测环境（2026-10-03）：本机在 **RDP** 里，唯一渲染端点是 **`远程音频`**（不是之前记的网易虚拟声卡），
   **采集端点 0 个** ⇒ 页面要能优雅处理"0 个采集端点"（别画一个空的输入折叠组）
+  —— ✅ **已按此实现**：`capture.empty()` 时不画折叠组，改画一行灰色「无采集设备」（`page.none.capture`），
+  且「默认输入设备」下拉框 `IsEnabled(false)` + 占位文本 —— 已由 Eric 实机确认
   —— ⚠️ WASAPI 封装必须**两边共链**（TAP + App 各链一份，⛔ 绝不写两份 ——
   enumerations 顺序 / `DEVICE_STATE` 过滤 / V 过滤迟早不一致）
   —— ⚠️ `RegisterControlChangeNotify` 把外部改动（键盘音量键等）回写 UI；
@@ -104,7 +125,27 @@
   —— ⚠️ 用 `SetMasterVolumeLevelScalar`（0..1），**不要用 dB 版**
   —— ⚠️ 实测代价：收起态内容需 603px / 可用 306px ⇒ 超出 297px；展开 691px ⇒ 超出 385px
   —— ✅ **溢出已定：接受现状，不压缩**（行高保持 44px，靠共用滚动区消化；四个压缩旋钮全部否决）
-- [ ]  逐应用音量与输出端点（Body 第二顺位，复刻 EarTrumpet）
+- [X]  逐应用音量与输出端点（Body 第二顺位，复刻 EarTrumpet）
+  —— ✅ 逐应用音量/静音已落地（TAP 内联 WASAPI，实测出值 22→100）
+  —— ✅ **app 图标已落地（2026-10-04）**：`Core/AppIcons` 从进程 exe 提取 HICON → WIC 编码 PNG 缓存到
+  `<缓存根>\icons\<hash>.png`，TAP 用 `Image` + `file:///` URI 渲染；取不到时回落"首字母色块"
+  （实测日志 `应用图标已提取 …QQMusic.exe -> …\icons\FEA0F34CB67105FB.png`）
+  —— ✅ **重定向 UI 已落地（2026-10-04，Eric 定稿：不用列表，用下拉框）**：
+  点**整条标题带**（图标 + 名称 + 右侧 chevron，透明底保证空白处也可命中）向下展开 → 一个 `ComboBox`
+  （第一项「默认设备」= 清除；其余为渲染端点，走 `显示驱动名` 设置）→ 选中即发 `SETREDIRECT`
+  —— ⛔ **下拉框改为"首次展开时才创建"**：原先在父面板还 `Collapsed` 时就建 `ComboBox`，
+  实测会让弹出层残留、**整页输入被吃掉**；现在顺序是 先 `Visible` → 再创建 → 再挂树，
+  且收起前先 `IsDropDownOpen(false)`
+  —— ⛔ **系统声音行（`#system`）不给重定向**（对齐 EarTrumpet `IsMovable = !IsSystemSoundsSession`）：
+  `pid=0` 的报文会被宿主判为非法，UI 上也不再出现 chevron/下拉
+  —— ⛔ **状态记录只在真的生效时写**：策略调用全失败（本机 RDP 端点必然失败）时不写 `redirects.ini`，
+  避免"UI 显示已重定向、实际没生效"的假象
+  —— ✅ **底栏「清除重定向」现在有可见反馈（2026-10-04）**：点击 → 清页面本地选择 → `MountPage` 重建正文
+  ⇒ 所有下拉框回到「默认设备」（此前命令虽成功但界面毫无变化，看起来像"没用"）
+  —— ✅ 下拉当前值改由**页面本地 map 维护**（首次从 `redirects.ini` 播种，选择即更新，清除即清空）：
+  ⛔ 不再每次读文件 —— 既省 IO，也消除"宿主删文件 / 页面重建"的竞态
+  —— ⚠️ **本机可观察边界**：选「默认设备」→ 真生效（实测 `结果=0`）；选具体端点 → 系统拒绝
+  （本机只有 RDP 虚拟端点）⇒ 真搬家只能到实体机验
 
 ### 设置页与开机自启
 
@@ -131,7 +172,8 @@
 - [X]  「开机启动」= **`Run` 键**（2026-10-03 从"计划任务"改过来），
   **实现落点 `Core/AutostartEntry.*`（`IsEnabled` / `Enable` / `Disable`）**，规格见 `docs/design.md` §7.9.2：
   —— 值：`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下 `VolumeMixerExtender`
-  = `"<InstallRoot>\vmex.exe" --tray`（⚠️ 路径必须带引号：整条是一根命令行字符串）
+  = `"<InstallRoot>\vmex.exe" host`（⚠️ 路径必须带引号：整条是一根命令行字符串；
+  原 `--tray` 已废 —— 见"不做托盘态/窗口态"的新决定）
   —— **登录时**由 explorer 拉起（⛔ 不是开机时 —— 要注入的 ShellHost 是每会话进程）；
   天然继承当前用户**未提权**的令牌 ⇒ 与 ShellHost 同完整性级别，注入契约天然成立
   —— 开关语义：初值 = `Run` 值存在 **&& 未被系统标记为禁用**；开 = 写值 + 清标记；
@@ -153,7 +195,7 @@
   ② 点开 → `Run` 值出现 + 开关停在"开"；
   ③ 在「任务管理器 → 启动」里禁用 → 重开设置页显示"关"；
   ④ 点关 → 两个值都消失（⛔ 不留灰项）；
-  ⑤ 真登录一次，确认 `vmex.exe --tray` 起来了（⚠️ 会闪一下黑窗，已接受）
+  ⑤ 真登录一次，确认 `vmex.exe host` 起来了（⚠️ 会闪一下黑窗，已接受）
 - [ ]  「从系统卸载」的实际执行者（连击 5 次确认的 UI 已完成，`Core/UninstallService` 未做 —— 见宿主侧）
 
 ### 入口接管与页面识别（已通）
@@ -193,6 +235,33 @@
 
 ### 宿主侧与 Core（本机可做）
 
+- [X]  **运行时形态已定（2026-10-04，Eric）**：⛔ **不做托盘态、不做窗口态** —— 只有「注入 + 后台进程」，
+  状态一律由 `vmex status` 查询
+- [X]  **后台进程 + TAP 动作接收端**（2026-10-04）—— 三步链路已通，证据 `docs/verified-after-injection/15-host-pipe-and-device-policy.md`
+  —— `Core/TapCommand.*`：`<VERB> <args…>` 解析（`CLICK` / `SETDEFAULT` / `SETREDIRECT` / `CLEARREDIRECT` / `UNINSTALL`），
+  未知动词返回空、**参数个数不符**（`SETDEFAULT` 2 / `SETREDIRECT` 2–3 / `CLEARREDIRECT`、`UNINSTALL` 0）
+  与参数不足一律由派发侧丢弃并记 `报文参数不合法, 已忽略`
+  —— `Core/TapPipeServer.*`：named pipe 服务端（`PIPE_ACCESS_INBOUND` 单实例）
+  —— ⚠️ **三个坑照 `08-pipe-action-chain.md` 落实**：`ConnectNamedPipe` 的 `ERROR_PIPE_CONNECTED(110)` 与
+  **`ERROR_NO_DATA(232)`** 都算成功（缓冲仍可读）、逐行累积（防半行/多行）、末尾必须 `DisconnectNamedPipe`；
+  `Stop()` 用"自连一次"唤醒阻塞线程（不引入 overlapped）
+  —— `Core/HostPresence.*`：`Local\VmExt.Host.S<sid>` 命名互斥体 ⇒ **单实例** + 另一个进程可查"在不在跑"
+  —— CLI：`vmex host` 常驻（`Ctrl+C` 优雅退出）；`vmex status` 真实回显「后台进程：运行中/未运行」+ 管道名
+  —— ✅ 实测：报文四类分支（合法 / 参数不足 / 未知动词 / 尚未实现）全部按预期落日志；第二个 `vmex host` 被拒（`host-running`）
+  —— ✅ 实测：`vmex default <id>` / `vmex devices` / `vmex clear-redirect` 接线完成；`clear-redirect` 端到端 `S_OK`
+  —— ⚠️ **本轮发现并修掉两个真 bug**：① 进程从未 `CoInitializeEx`（音频命令此前全是桩，故未暴露）
+  ⇒ 现主线程 MTA 初始化 + 管道线程每次派发自行初始化；② `--verbose`/`--trace` 被 CLI 当未知选项拒绝
+  ⇒ `Program.cpp` 在交给 `CliService` 前剔除这两个全局开关
+- [X]  **`Core/EndpointPolicyService` 接 `IPolicyConfig` / `IAudioPolicyConfigFactory`**（2026-10-04）
+  —— ✅ 已落地：复用 `Core/AudioInterop.h` 既有封装（宿主进程内执行，⛔ 不在 ShellHost 里试错）
+  —— ✅ **槽位之谜有定论**：`CoCreateInstance(PolicyConfigClient)` + `QI(IID F8679F50)` 在 26H2 **成功**；
+  **槽 13 = `SetDefaultEndpoint`**（传真实端点 ID → `E_NOINTERFACE`，传其它任何 ID → `E_INVALIDARG`，
+  说明它确实在解析设备 ID）⇒ 旧记录"`vtable[13]` 访问违规"是**探针槽位映射偏移**，现行声明不再 AV
+  —— ⛔ **本机仍然验不了**：RDP 虚拟端点下"改具体端点"被系统拒绝
+  （`SetDefaultEndpoint` → `E_NOINTERFACE`；`SetPersistedDefaultAudioEndpoint` → `E_INVALIDARG`，
+  raw/packed 设备 ID 与 `pid=0`/真实 pid 都试过；**`ClearAll` → `S_OK`** 证明调用形态无误）⇒ **实体机复验**
+  —— 对应 pipe 报文：`SETDEFAULT` / `SETREDIRECT` / `CLEARREDIRECT`（`AUTOSTART` 已从协议表删除）
+
 - [X]  ⛔ **子系统改造：不做（2026-10-03 决定，原 T25 关闭）**
   —— `vmex.exe` 保持控制台子系统 ⇒ 登录自启时**会闪一下黑窗**，**接受**
   —— ⚠️ 换成 `Run` 键**免不掉**这一下：闪不闪由**镜像声明的子系统**决定，与"谁拉起它"无关
@@ -205,24 +274,30 @@
   —— 由 TAP 经 `action=pipe` 发 `UNINSTALL` 报文触发；**pipe 不可用时 TAP 拒绝执行**（不降级）
   —— ⛔ **必须由 App 执行，不能由 TAP 执行**：TAP 活在 ShellHost 里，重启 shell = 它当场自杀；
   且只有 App 能在杀 ShellHost **之前**先停 Watcher，否则 TAP 会被立刻重新注入回来
+  —— ✅ **接收端已就绪**（2026-10-04）：`UNINSTALL` 报文已能被宿主收到并记日志，现在只差"执行体"本身
   —— ⚠️ 重启 explorer 的坑：杀完**必须确认它起来了**（Windows 有 `AutoRestartShell`，但别指望）——
   没起来就自己拉起，否则用户没有桌面和任务栏（`§1.6` 已实测 ShellHost 会随 explorer 重启换新进程）
   —— ⚠️ App 启动时**必须写回 `enabled=1`**，覆盖卸载留下的 0，否则手动重开会出现"在跑但不注入"
   —— ✅ 不用管驱动：**没有端点时 Windows 不会显示它** ⇒ 卸载后无"看得见的残留"
-- [ ]  `Core/EndpointPolicyService` 接 `IPolicyConfig` / `IAudioPolicyConfigFactory`，只留现代分支
-  —— ⭐ **它是这些操作的唯一执行者**（TAP 内联会 AV）：切系统默认设备、逐应用重定向、清空重定向
-  —— 对应 pipe 报文：`SETDEFAULT` / `SETREDIRECT` / `CLEARREDIRECT`
-  （`AUTOSTART` 已从协议表删除 —— 自启开关就地做，理由见上）
-  —— ⛔ **必须在宿主进程里做**：`IPolicyConfig` 的槽位未证实，试错会访问违规；
-  宿主崩了能重启，**ShellHost 崩了是整个桌面没了**
-  —— ⚠️ 先要在宿主里**扫出正确槽位**（探针逐槽试，允许 AV），再落地
-  —— ⛔ **可以在本机写，但不能在"本机验"**：切默认设备至少要 2 个渲染端点，本机只有 1 个（还是 RDP 虚拟的）
-- [ ]  `Core/InjectionService` 接目标定位 + 载荷释放 + launcher 装载（现为桩）
 - [ ]  ⚠️ **外部改动回写**：`RegisterControlChangeNotify` → `Dispatcher.RunAsync`（约束 A2）—— **未做**
 - [X]  载荷 DLL 自身的日志文本已走 text.yaml（`text::Embedded()` + `LogKey`）
   —— ✅ 已落地：`Tap.cpp` / `Page.h` 的日志全部改成文本键（`log.tap.*` / `log.page.*`）
-- [ ]  把 PoC 已验通的逻辑搬进 Core：Footer 定位、样式抄写、2 列 Grid 换行、幂等判定（基于"结果存在性"而非指针）、
+- [X]  **注入已落地（2026-10-04）** —— `Core/InjectionService` 从桩换成真实实现，`vmex host` 常驻时自动监视并注入
+  —— `Core/PayloadDeployment`：按 **载荷尺寸** 生成版本目录 `<缓存根>\payload-<launcherSize>-<tapSize>`，
+  释放 `vmex_launcher.dll` / `vmex_tap.dll` 并写 `vmex_tap.ini`（UTF-16LE+BOM，复用 `ConfigService`）
+  ⇒ 重建后自动换新目录，不会与 ShellHost 里已加载的旧 DLL 抢文件
+  —— `Core/InjectionService`：`ShellHost.exe` 定位（本会话 + `ProcessIdToSessionId` 校验）、
+  远程 `LoadLibraryW`（**远程 kernel32 基址 + 本地 RVA**，⛔ 不用本进程地址）、等 TAP 模块出现（100 ms 轮询）
+  —— `Core/InjectionMonitor`：1000 ms 轮询，`tapLoaded` 就不再动手；ShellHost 换进程会自动重新注入
+  —— ⚠️ **发现并规避**：ShellHost 里已有 TAP 时**不做二次注入**（否则会出现两个按钮）；若已加载的载荷路径与当前不一致，
+  记 `ShellHost 里是旧载荷, 需重启 ShellHost 才能换新` —— 开发期换代码必须重启 ShellHost
+  —— ✅ 实测：`vmex inject` → 载荷部署 → 定位 pid → `TAP 已就绪`（约 340 ms）；
+  launcher 日志 `注入成功 endpoint=VisualDiagConnection1`；TAP 日志 `自定义页已接管` + `底栏三格已挂载（219 ms）`
+  —— ⛔ **`eject` 仍未实现**（需要先注销 XAML 诊断会话，贸然卸载会带走 ShellHost）—— 保持 `NotSupported` 并记日志
+- [X]  把 PoC 已验通的逻辑搬进产品：Footer 定位、样式抄写、2 列 Grid 换行、幂等判定（基于"结果存在性"而非指针）、
   `action=pipe` 动作链（`ERROR_NO_DATA`(232) 视为正常）
+  —— ✅ 已落地：Footer 定位/接管/幂等判定在 `Components/inject.tap/Tap.cpp`（**必须活在 ShellHost 里**，
+  ⛔ 不能搬进 App 进程），管道服务端在 `Core/TapPipeServer.cpp`（110/232 都算成功、逐行累积、末尾 `DisconnectNamedPipe`）
 - [X]  `Core/AudioDeviceManager` 接 WASAPI（枚举 / 默认设备 / 端点音量 / 会话枚举 / 会话句柄）
   —— ✅ 已落地：`Core/AudioInterop.h`（detail 层，实测过）+ `Core/AudioDeviceManager.cpp`
   —— ⚠️ **必须做成 TAP 与 App 共链的静态库/仅头实现**（§5.7.9 约束 A1）：已满足（`vmex_core`）
@@ -253,16 +328,21 @@
   —— ℹ️ 只有"从外部**间接调用**载荷导出"才会踩到；`DllMain` 自走那条路不受影响（loader 直接调用）
   —— ⛔ 工具坑：`injector.exe --call` 会让 ShellHost CFG fast-fail（`0xC0000409` 子码 10，日志一行不写）；
   可用的是**不带 `--call`** 的自注入路径（`DllMain → BeginSelfInjection`）
-- [ ]  **T26** ⚠️ `InitializeXamlDiagnosticsEx` 的**端点名编号**：
-  实测 `VisualDiagConnection2..10000` **全部**返回 `HRESULT_FROM_WIN32(ERROR_NOT_FOUND)`（0x80070490）
-  —— ⇒ "端点被占就退到下一个编号"这条假设**未被证实**；已把起点改回 **1**（`endpoint=` 键，缺省 1）
-  —— 待验：只有 `VisualDiagConnection1` 可用？还是编号必须等于某个别的东西（进程会话？）
+- [X]  **T26** `InitializeXamlDiagnosticsEx` 的**端点名编号** —— ✅ 产品路径已定并实测：
+  起点固定 **1**（`endpoint=` 键，缺省 1），launcher 日志 `注入成功 endpoint=VisualDiagConnection1`
+  —— ⚠️ **仍未被证实的假设**："端点被占就退到下一个编号"（实测 `VisualDiagConnection2..10000`
+  全部返回 `HRESULT_FROM_WIN32(ERROR_NOT_FOUND)` = 0x80070490）⇒ 当前实现**不依赖**该假设（固定 1）
+  —— 待验（低优先）：占着 1 再注入第二个实例会怎样；编号是否与其它东西（如进程会话）绑定
   —— ℹ️ PoC 当年只试过 `1` 就成功了，所以这条从来没被区分过
-- [ ]  **T27** ⚠️ 注入器/宿主**不能用本进程 `LoadLibraryW` 去解析导出地址**：
-  载荷的 `DllMain` 会自走注入流程 ⇒ 整套逻辑（和日志）发生在**错误的进程**里
-  —— ✅ 已改：`docs/poc/src/injector.cpp` 直接**解析 PE 导出表**取 RVA（零副作用）
+- [X]  **T27** 注入器/宿主**不能用本进程 `LoadLibraryW` 去解析导出地址**
+  —— ✅ 产品侧 `Core/InjectionService`：**远程 kernel32 基址 + 本地算出的 RVA**（⛔ 不用本进程地址）
+  —— ✅ PoC 侧 `docs/poc/src/injector.cpp`：直接**解析 PE 导出表**取 RVA（零副作用）
   —— ⛔ 该文件同时新增 `--call <导出> [--arg <串>]`，用于同步拿 HRESULT / 已加载进程内重试
-- [ ]  注入后开面板截图，确认自定义页 + 底栏三格行为与 `layout-preview.html` 一致
+- [X]  注入后开面板验证，确认自定义页 + 底栏三格行为与 `layout-preview.html` 一致
+  —— ✅ 已由 Eric 实机交互确认（两轮）：页面接管、底栏、逐应用音量/静音、**整条标题带可点开重定向**、
+  下拉选「默认设备」= 清除且有可见反馈、`#system` 行不给重定向（pid=0 非法）
+  —— ⛔ 唯一未通：**改具体音频端点**（本机 RDP 端点下 `SetPersistedDefaultAudioEndpoint` → `E_INVALIDARG`，环境限制）
+  —— ℹ️ 逐像素对齐未单独出报告；几何验收见 `docs/verified-after-injection/13-footer-mount.md`
   —— 载荷目录（含日志/配置）建议用 `%TEMP%\<某个目录>`；⛔ 别放 ShellHost 自己目录（不可写）
   —— ℹ️ 面板 band=4 ⇒ `EnumWindows` / `FindWindow` / UIA `RootElement` 都看不到，只能前台窗口截图
   —— ⚠️ UIA 还得先钻到 `FrameworkId == "XAML"` 的**子 HWND**，否则 `Descendants` 一个都找不到
@@ -296,5 +376,5 @@
 
 ### 收尾
 
-- [ ]  `.releasenote.md` 已按 `.releasenoteguide.md` 建立，后续发版前更新
+- [ ]  `.releasenote.md` 已按母法 `releasenoteguide.md` 建立（**内容在母法迁移时清空**，发版前按该指南重写）
 - [ ]  等 `install` 类能力落地后，补 `.install.cmd`（隔壁的本地安装入口）

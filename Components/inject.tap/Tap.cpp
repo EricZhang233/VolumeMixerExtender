@@ -483,21 +483,23 @@ void LogFooterAncestry(winrt::Windows::UI::Xaml::FrameworkElement const& footer)
     }
 }
 
-void TapPageSendPipe(const char* line)
+int TapPageSendPipe(const char* line)
 {
-    if (line == nullptr) return;
+    if (line == nullptr) return 0;
 
     const std::wstring pipe = vmex::inject::TapPipeName(vmex::tap::ConfiguredSessionId());
     HANDLE handle = ::CreateFileW(pipe.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
     {
         vmex::log::Logger::Instance().WriteKey(vmex::log::Level::Warn, L"tap", L"log.tap.pipe_unavailable");
-        return;
+        return 0;
     }
 
+    const DWORD length = static_cast<DWORD>(::strlen(line));
     DWORD written = 0;
-    ::WriteFile(handle, line, static_cast<DWORD>(::strlen(line)), &written, nullptr);
+    const BOOL ok = ::WriteFile(handle, line, length, &written, nullptr);
     ::CloseHandle(handle);
+    return (ok != FALSE && written == length) ? 1 : 0;
 }
 
 namespace

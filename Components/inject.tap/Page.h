@@ -1,8 +1,12 @@
 #pragma once
 
 #include "AutostartEntry.h"
+#include "AppIcons.h"
 #include "AudioDeviceManager.h"
+#include "InjectionContract.h"
 #include "Logger.h"
+#include "Platform.h"
+#include "RedirectStore.h"
 #include "Strings.h"
 #include "TextService.h"
 #include "UserSettings.h"
@@ -24,17 +28,19 @@
 #include <winrt/Windows.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Windows.UI.Xaml.Input.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
+#include <winrt/Windows.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.UI.Xaml.Shapes.h>
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
 
-extern void TapPageSendPipe(const char* line);
+extern int TapPageSendPipe(const char* line);
 
 struct FooterMount final
 {
@@ -56,10 +62,12 @@ namespace vmex::tap::page
     namespace PGXC  = winrt::Windows::UI::Xaml::Controls;
     namespace PGXCP = winrt::Windows::UI::Xaml::Controls::Primitives;
     namespace PGXM  = winrt::Windows::UI::Xaml::Media;
+    namespace PGXMI = winrt::Windows::UI::Xaml::Media::Imaging;
     namespace PGXSH = winrt::Windows::UI::Xaml::Shapes;
     namespace PGXAU = winrt::Windows::UI::Xaml::Automation;
     namespace PGUI  = winrt::Windows::UI;
     namespace PGF   = winrt::Windows::Foundation;
+    namespace PGXIN = winrt::Windows::UI::Xaml::Input;
 
     inline void LogKey(std::wstring_view key, const std::vector<std::wstring>& args = {})
     {
@@ -128,6 +136,7 @@ namespace vmex::tap::page
         PGXC::Button slotMid{nullptr};
         PGXC::Button slotRight{nullptr};
         PGX::UIElement systemItem{nullptr};
+        std::map<std::wstring, std::wstring> redirects;
         std::shared_ptr<PageData> data;
 
         bool mounting = false;
@@ -420,24 +429,216 @@ namespace vmex::tap::page
         return layer;
     }
 
-    inline PGXC::Grid MakeAppRow(const audio::SessionInfo& session, audio::IAudioSessionHandle* handle)
+    inline bool SendPipeLine(const std::string& line) { return TapPageSendPipe(line.c_str()) != 0; }
+
+    inline void SendOrLog(const std::string& line, std::wstring_view verb)
     {
-        PGXC::Grid grid = Row(44);
+        if (!SendPipeLine(line))
+        {
+            LogKey(L"log.page.commandDropped", { std::wstring(verb) });
+        }
+    }
+
+    inline void SendSetRedirect(std::uint32_t processId, const std::wstring& deviceId)
+    {
+        SendOrLog("SETREDIRECT render " + std::to_string(processId) + " " + Narrow(deviceId) + "\n", L"SETREDIRECT");
+    }
+
+    [[nodiscard]] inline winrt::hstring InitialLetter(const std::wstring& name)
+    {
+        for (const wchar_t value : name)
+        {
+            if (::iswalnum(value) != 0)
+            {
+                return winrt::hstring(std::wstring(1, static_cast<wchar_t>(::towupper(value))));
+            }
+        }
+        return winrt::hstring(L"?");
+    }
+
+    [[nodiscard]] inline PGX::FrameworkElement MakeAppChip(const std::wstring& name)
+    {
+        PGXC::Grid holder;
+        holder.Width(20);
+        holder.Height(20);
+        holder.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 10, 0));
+        holder.VerticalAlignment(PGX::VerticalAlignment::Center);
 
         PGXSH::Rectangle chip;
-        chip.Width(20);
-        chip.Height(20);
         chip.RadiusX(4);
         chip.RadiusY(4);
         chip.Fill(PGXM::SolidColorBrush(PGUI::ColorHelper::FromArgb(0x40, 0xA0, 0xA0, 0xA0)));
-        chip.VerticalAlignment(PGX::VerticalAlignment::Center);
-        chip.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 10, 0));
-        PGXC::Grid::SetColumn(chip, 0);
-        grid.Children().Append(chip);
+        holder.Children().Append(chip);
+
+        PGXC::TextBlock letter = Text(InitialLetter(name), 10);
+        letter.HorizontalAlignment(PGX::HorizontalAlignment::Center);
+        letter.VerticalAlignment(PGX::VerticalAlignment::Center);
+        letter.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
+        holder.Children().Append(letter);
+        return holder;
+    }
+
+    [[nodiscard]] inline PGX::FrameworkElement MakeAppIcon(const audio::SessionInfo& session)
+    {
+        std::wstring iconFile;
+        if (session.processId != 0 && session.appKey != L"#system" &&
+            icons::FileForProcess(session.processId, platform::GetCacheDirectory(), iconFile).IsOk())
+        {
+            std::wstring uri(L"file:///");
+            for (const wchar_t value : iconFile)
+            {
+                uri.push_back(value == L'\\' ? L'/' : value);
+            }
+
+            PGXMI::BitmapImage source;
+            source.UriSource(PGF::Uri(winrt::hstring(uri)));
+            source.DecodePixelWidth(40);
+
+            PGXC::Image image;
+            image.Source(source);
+            image.Width(20);
+            image.Height(20);
+            image.Stretch(PGXM::Stretch::Uniform);
+            image.VerticalAlignment(PGX::VerticalAlignment::Center);
+            image.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 10, 0));
+            return image;
+        }
+
+        return MakeAppChip(session.displayName);
+    }
+
+    [[nodiscard]] inline const std::wstring& RedirectSelection(ContextPtr const& context, const std::wstring& appKey)
+    {
+        const auto found = context->redirects.find(appKey);
+        if (found != context->redirects.end())
+        {
+            return found->second;
+        }
+
+        return context->redirects
+            .emplace(appKey, audio::GetAppRedirect(platform::GetCacheDirectory(), appKey))
+            .first->second;
+    }
+
+    [[nodiscard]] inline PGXC::ComboBox MakeRedirectCombo(ContextPtr const& context, const audio::SessionInfo& session)
+    {
+        PGXC::ComboBox combo;
+        combo.HorizontalAlignment(PGX::HorizontalAlignment::Stretch);
+        combo.MinHeight(32);
+
+        const std::wstring current = RedirectSelection(context, session.appKey);
+
+        PGXC::ComboBoxItem none;
+        none.Content(winrt::box_value(winrt::hstring(text::Embedded().Resolve(L"page.app.redirectDefault"))));
+        none.Tag(winrt::box_value(winrt::hstring(L"")));
+        combo.Items().Append(none);
+        if (current.empty())
+        {
+            combo.SelectedIndex(0);
+        }
+
+        for (std::size_t i = 0; i < context->data->render.size(); ++i)
+        {
+            const auto& device = context->data->render[i];
+            PGXC::ComboBoxItem item;
+            item.Content(winrt::box_value(winrt::hstring(audio::DisplayDeviceName(device, Settings().showDriverName))));
+            item.Tag(winrt::box_value(winrt::hstring(device.id)));
+            combo.Items().Append(item);
+
+            if (device.id == current)
+            {
+                combo.SelectedIndex(static_cast<int>(i) + 1);
+            }
+        }
+
+        const std::vector<audio::DeviceInfo> snapshot = context->data->render;
+        const std::uint32_t processId = session.processId;
+        const std::wstring appKey = session.appKey;
+        combo.DropDownOpened([appKey](PGF::IInspectable const&, PGF::IInspectable const&)
+        {
+            LogKey(L"log.page.appRedirectOpened", { appKey });
+        });
+        combo.DropDownClosed([appKey](PGF::IInspectable const&, PGF::IInspectable const&)
+        {
+            LogKey(L"log.page.appRedirectClosed", { appKey });
+        });
+        combo.SelectionChanged([snapshot, processId, appKey, context](PGF::IInspectable const& sender,
+                                                                     PGXC::SelectionChangedEventArgs const&)
+        {
+            if (auto self = sender.try_as<PGXC::ComboBox>())
+            {
+                const int index = self.SelectedIndex();
+                if (index <= 0)
+                {
+                    context->redirects[appKey] = std::wstring();
+                    LogKey(L"log.page.appRedirectPick", { std::to_wstring(processId), L"(默认)" });
+                    SendSetRedirect(processId, std::wstring());
+                    return;
+                }
+
+                const std::size_t position = static_cast<std::size_t>(index) - 1;
+                if (position < snapshot.size())
+                {
+                    context->redirects[appKey] = snapshot[position].id;
+                    LogKey(L"log.page.appRedirectPick", { std::to_wstring(processId), snapshot[position].friendlyName });
+                    SendSetRedirect(processId, snapshot[position].id);
+                }
+            }
+        });
+        return combo;
+    }
+
+    inline PGXC::StackPanel MakeAppRow(ContextPtr const& context, const audio::SessionInfo& session, audio::IAudioSessionHandle* handle)
+    {
+        const std::wstring appKey = session.appKey;
+        const bool movable = session.processId != 0 && !appKey.empty() && appKey != L"#system";
+        PGXC::Grid grid = Row(44);
+
+        PGXC::TextBlock chevron = Glyph(L"\xE70D", 12);
+        chevron.Margin(PGX::ThicknessHelper::FromLengths(8, 0, 0, 0));
+
+        PGXC::Grid titleBand;
+        PGXC::ColumnDefinition leading;
+        PGXC::ColumnDefinition flexible;
+        PGXC::ColumnDefinition arrow;
+        leading.Width(PGX::GridLengthHelper::Auto());
+        flexible.Width(PGX::GridLengthHelper::FromValueAndType(1, PGX::GridUnitType::Star));
+        arrow.Width(PGX::GridLengthHelper::Auto());
+        titleBand.ColumnDefinitions().Append(leading);
+        titleBand.ColumnDefinitions().Append(flexible);
+        titleBand.ColumnDefinitions().Append(arrow);
+
+        PGX::FrameworkElement icon = MakeAppIcon(session);
+        PGXC::Grid::SetColumn(icon, 0);
+        titleBand.Children().Append(icon);
 
         PGXC::StackPanel block = NameBlock(session.displayName, std::wstring());
         PGXC::Grid::SetColumn(block, 1);
-        grid.Children().Append(block);
+        titleBand.Children().Append(block);
+
+        PGXC::Button head{nullptr};
+        if (movable)
+        {
+            PGXC::Grid::SetColumn(chevron, 2);
+            titleBand.Children().Append(chevron);
+
+            head = BareButton(winrt::hstring());
+            head.Content(titleBand);
+            head.Background(PGXM::SolidColorBrush(PGUI::Colors::Transparent()));
+            head.MinHeight(0);
+            head.Padding(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
+            head.HorizontalAlignment(PGX::HorizontalAlignment::Stretch);
+            head.HorizontalContentAlignment(PGX::HorizontalAlignment::Stretch);
+            PGXC::Grid::SetColumn(head, 0);
+            PGXC::Grid::SetColumnSpan(head, 2);
+            grid.Children().Append(head);
+        }
+        else
+        {
+            PGXC::Grid::SetColumn(titleBand, 0);
+            PGXC::Grid::SetColumnSpan(titleBand, 2);
+            grid.Children().Append(titleBand);
+        }
 
         PGXC::StackPanel trailing;
         trailing.Orientation(PGXC::Orientation::Horizontal);
@@ -446,12 +647,13 @@ namespace vmex::tap::page
         PGXC::Button mute = MakeMuteButton(session.muted);
         if (handle)
         {
-            mute.Click([handle, mute](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
+            mute.Click([handle, mute, appKey](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
             {
                 float level = 0.0f;
                 bool muted = false;
                 if (!handle->GetState(level, muted).IsOk()) return;
                 if (handle->SetMuted(!muted).IsOk()) SetMuteGlyph(mute, !muted);
+                LogKey(L"log.page.appMute", { appKey, muted ? L"取消静音" : L"静音" });
             });
         }
         else
@@ -463,11 +665,12 @@ namespace vmex::tap::page
         PGXC::Slider slider = MakeVolumeSlider(session.volume);
         if (handle)
         {
-            slider.ValueChanged([handle](PGF::IInspectable const& sender, PGXCP::RangeBaseValueChangedEventArgs const&)
+            slider.ValueChanged([handle, appKey](PGF::IInspectable const& sender, PGXCP::RangeBaseValueChangedEventArgs const&)
             {
                 if (auto s = sender.try_as<PGXC::Slider>())
                 {
                     handle->SetVolume(static_cast<float>(s.Value() / 100.0));
+                    LogKey(L"log.page.appVolume", { appKey, std::to_wstring(static_cast<int>(s.Value())) });
                 }
             });
         }
@@ -479,7 +682,52 @@ namespace vmex::tap::page
 
         PGXC::Grid::SetColumn(trailing, 2);
         grid.Children().Append(trailing);
-        return grid;
+
+        PGXC::StackPanel container;
+        container.Children().Append(grid);
+
+        if (movable)
+        {
+            PGXC::StackPanel expand;
+            expand.Visibility(PGX::Visibility::Collapsed);
+            expand.Margin(PGX::ThicknessHelper::FromLengths(30, 0, 0, 6));
+
+            PGXC::TextBlock caption = Text(winrt::hstring(text::Embedded().Resolve(L"page.app.redirect")), 11);
+            caption.Opacity(0.65);
+            caption.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 0, 4));
+            expand.Children().Append(caption);
+
+            auto comboRef = std::make_shared<PGXC::ComboBox>(nullptr);
+            head.Click([expand, chevron, comboRef, context, session](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
+            {
+                const bool open = expand.Visibility() != PGX::Visibility::Visible;
+
+                if (open)
+                {
+                    expand.Visibility(PGX::Visibility::Visible);
+                    if (!*comboRef)
+                    {
+                        *comboRef = MakeRedirectCombo(context, session);
+                        expand.Children().Append(*comboRef);
+                    }
+                }
+                else
+                {
+                    if (*comboRef)
+                    {
+                        (*comboRef).IsDropDownOpen(false);
+                    }
+                    expand.Visibility(PGX::Visibility::Collapsed);
+                }
+
+                chevron.Text(open ? winrt::hstring(L"\xE70E") : winrt::hstring(L"\xE70D"));
+                LogKey(L"log.page.appRowToggle", { open ? L"展开" : L"收起" });
+            });
+
+            container.Children().Append(expand);
+        }
+
+        return container;
     }
 
     inline PGXC::StackPanel BuildAppLayer(ContextPtr const& context)
@@ -500,7 +748,7 @@ namespace vmex::tap::page
         {
             audio::IAudioSessionHandle* handle =
                 (i < context->data->handles.size()) ? context->data->handles[i].get() : nullptr;
-            layer.Children().Append(MakeAppRow(context->data->apps[i], handle));
+            layer.Children().Append(MakeAppRow(context, context->data->apps[i], handle));
         }
         return layer;
     }
@@ -541,15 +789,14 @@ namespace vmex::tap::page
         return combo;
     }
 
-    inline void SendPipeLine(const std::string& line) { TapPageSendPipe(line.c_str()); }
-
     inline void SendSetDefault(bool render, const std::wstring& deviceId)
     {
-        SendPipeLine(std::string("SETDEFAULT ") + (render ? "render " : "capture ") + Narrow(deviceId) + "\n");
+        SendOrLog(std::string("SETDEFAULT ") + (render ? "render " : "capture ") + Narrow(deviceId) + "\n", L"SETDEFAULT");
     }
 
-    inline void SendClearRedirects() { SendPipeLine("CLEARREDIRECT\n"); }
-    inline void SendUninstall() { SendPipeLine("UNINSTALL\n"); }
+    inline void SendClearRedirects() { SendOrLog("CLEARREDIRECT\n", L"CLEARREDIRECT"); }
+
+    inline void SendUninstall() { SendOrLog("UNINSTALL\n", L"UNINSTALL"); }
 
     inline void OpenUrl(const std::wstring& url)
     {
@@ -635,6 +882,8 @@ namespace vmex::tap::page
             else if (Settings().page == 0)
             {
                 SendClearRedirects();
+                weakContext->redirects.clear();
+                MountPage(weakContext, 0);
                 LogKey(L"log.page.clearRedirects");
             }
         });
@@ -1041,7 +1290,7 @@ namespace vmex::tap::page
             {
                 Settings().savedDefaultRender = context->data->defaultRender;
                 Settings().listenEndpoint = Settings().savedDefaultRender;
-                SendSetDefault(true, L"OC Virtual Speaker");
+                SendSetDefault(true, std::wstring(inject::kVirtualDeviceTarget));
             }
             else if (!Settings().listenEndpoint.empty())
             {
