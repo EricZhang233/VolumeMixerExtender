@@ -1,6 +1,6 @@
 # 原始捕获输出（2026-10-03，开发机，Windows 11 build 26300.9550）
 
-> 全部为当时探针的**原样输出**，未改写。对应脚本在 `../probes/`、`../hooks/`、`../recon/`。
+> 全部为当时探针的**原样输出**，未改写。对应脚本现位于 `../poc/src/probes/`、`../poc/archive/hooks/`、`../poc/archive/recon/`。
 > 结论汇总见仓库根目录的 `Win11-QuickSettings-XAML-Injection-Notes.md` §9。
 
 ---
@@ -390,3 +390,66 @@ CoreMessaging.dll / InputHost.dll / dcomp.dll / directmanipulation.dll
 **缺席的**：`Microsoft.UI.Content.*`、`Microsoft.UI.Windowing.*`、`Microsoft.UI.Dispatching.dll` → ShellHost 里的 WinUI3 **没有在驱动窗口**；
 加上 island 宿主窗口类是 `Windows.UI.Input.InputSite.WindowClass`（`DesktopWindowXamlSource` 的宿主类），
 ⇒ **快速设置面板是 System XAML（`Windows.UI.Xaml`）**，不是 WinUI3。
+
+---
+
+## 09 · L1 主面板元素树（hooks/qs-panel-probe.ps1，2026-10-03 补采）
+
+> 此前 §03/§04 只覆盖 L2（声音输出页）。本节补采 **L1（主快速设置页）**，
+> 用于给「入口接管」方案选址。开面板方式为 `Win+A`（**不是** `Win+Ctrl+V`，后者直接进 L2）。
+
+```text
+=== 1. locate panel (foreground only -- enumeration cannot see it) ===
+  panel hwnd = 0x000200F0 pid=7536 class=[ControlCenterWindow] title=[快速设置]
+  FindWindow('ControlCenterWindow') would return : 0
+  window band                                : 4
+
+=== 2. child HWNDs of the panel ===
+  0x00010342 class=[Windows.UI.Input.InputSite.WindowClass] vis=True
+
+=== 3. find the XAML host (UIA FrameworkId = XAML) ===
+  xaml host = 0x00010342 class=[Windows.UI.Input.InputSite.WindowClass]
+
+=== 4. XAML automation tree: ControlType | Name | AutomationId | ClassName ===
+  Pane |  | id= | Windows.UI.Input.InputSite.WindowClass
+  | Group | 媒体传输控件 | id=MediaTransportControls | NamedContainerAutomationPeer | offscreen
+  | Group | 快速设置 | id=ControlCenterRegion | NamedContainerAutomationPeer
+  | | Button | 飞行模式 | id=Microsoft.QuickAction.AirplaneMode |  | DISABLED
+  | | Text | 飞行模式 | id=TitleText | TextBlock
+  | | Button | 辅助功能 | id=Microsoft.QuickAction.Accessibility | 
+  | | Text | 辅助功能 | id=TitleText | TextBlock
+  | | Button | 节能模式 | id=Microsoft.QuickAction.BatterySaver | 
+  | | Text | 节能模式 | id=TitleText | TextBlock
+  | | Button | 实时字幕 | id=Microsoft.QuickAction.LiveCaptions | 
+  | | Text | 实时字幕 | id=TitleText | TextBlock
+  | | Button | 夜间模式 | id=Microsoft.QuickAction.BlueLightReduction | 
+  | | Text | 夜间模式 | id=TitleText | TextBlock
+  | | Button | 就近共享 | id=Microsoft.QuickAction.NearShare | 
+  | | Text | 就近共享 | id=TitleText | TextBlock
+  | | Button | 投放 | id=Microsoft.QuickAction.Cast |  | offscreen
+  | | Text | 有线显示器 | id=StatusText | TextBlock | offscreen
+  | | Button | 投影 | id=Microsoft.QuickAction.ProjectL2 |  | offscreen
+  | | Text | 投影 | id=TitleText | TextBlock | offscreen
+  | | Menu | 寻呼机 | id=QuickActionsPager | Microsoft.UI.Xaml.Controls.PipsPager
+  | | | Button | 上一页 | id=PreviousPageButton | Button | DISABLED
+  | | | Pane |  | id=PipsPagerScrollViewer | ScrollViewer
+  | | | | Button | 页面 1 | id= | Button
+  | | | | Button | 页面 2 | id= | Button
+  | | | Button | 下一页 | id=NextPageButton | Button
+  | | Button | 静音音量 | id=Microsoft.QuickAction.VolumeNoTimer | ToggleButton
+  | | Slider | 声音输出 | id= | Slider
+  | | Button | 选择声音输出 | id=VolumeL2Button | Button
+  | | Group |  | id=FooterGrid | LandmarkTarget
+  | | | Button | 电池 | id=Microsoft.QuickAction.Battery | Button
+  | | | Button | 所有设置 | id=Microsoft.QuickAction.AllSettings | Button
+
+  total elements = 31
+```
+
+**要点**：
+
+- 入口按钮 = `VolumeL2Button`，`Name` = 「选择声音输出」（与 tooltip 一致），`ControlType` = `Button`；
+- 音量行由三个同级元素组成：`静音音量`(ToggleButton) / `声音输出`(Slider) / `选择声音输出`(Button)；
+- ⚠️ `Microsoft.QuickAction.ProjectL2` 证明 **L2 入口是一组**（命名规律 `L2` 后缀 = 导航到二级页），
+  因此"拦 `L2Frame.Navigating` 并无条件 Cancel"会误伤兄弟入口；
+- `FooterGrid` 属于 L1 自身底栏（含「电池」「所有设置」），与声音页的 `Footer` 同名不同物。

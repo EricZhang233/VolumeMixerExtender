@@ -1,12 +1,14 @@
-# 注入设计：在「声音输出」页 Footer 右侧加一个居右入口
+# 注入设计：接管「选择声音输出」入口，用自绘页面替换系统声音页
 
-> 目标（Eric 定稿）：在快速设置音量面板**底栏「更多音量设置」按钮右侧的空位**，加一个**居右对齐**的入口（落 XAML，不是悬浮层）。
+> 目标（Eric 定稿）：点击快速设置**主面板（L1）的「选择声音输出」按钮**后，
+> 直接进入**自定义页面**；声音页原有的底栏按钮改为**系统页 ↔ 自定义页的切换**。
 > 目标机：Windows 11 build 26300.9550，ShellHost.exe，System XAML。
-> 所有实测数据见 `logs/raw-outputs.md`。
+> 所有实测数据见 `reference/raw-outputs.md`。
 >
-> **状态更新（2026-10-03）**：本文原来主推的**方案 A 已被证伪**（见 §2 与 §3），
-> **方案 B（XAML 诊断 TAP）已跑通并落地**：按钮"TestLink"出现在底栏同一行右侧，点击启动 `winver.exe`。
-> 实现与最终实测几何见 **§6**。
+> **演进脉络（2026-10-03）**：
+> - 最初目标是"在声音页底栏加一个居右入口" —— 该技术路线**已跑通**，见 §6
+> - 方案 A（vtable 打补丁）**已证伪**，仅作历史记录，见 §2 §3
+> - **当前方向见 §7**：入口接管 + 页面内容替换（底栏注入法本身仍然复用）
 
 ---
 
@@ -16,10 +18,10 @@
 |---|---|---|
 | F1 | 面板窗口类 `ControlCenterWindow`，**band=4**；`EnumWindows`/`FindWindow`/UIA `RootElement` 都看不到它 | §01 §02 |
 | F2 | 面板窗口 **HWND 常驻**（开关都是 `0x000100FE`），只有首建发 `OBJECT_CREATE` | §05 |
-| F3 | **XAML 元素实例每次打开都重建**（runtime id `.4.76` → `.4.114`，5/5 全变） | 见 `logs/element-persistence.txt` |
+| F3 | **XAML 元素实例每次打开都重建**（runtime id `.4.76` → `.4.114`，5/5 全变） | 见 `baseline-before-injection/element-persistence.txt` |
 | F4 | 真 XAML 树挂在子窗口 `Windows.UI.Input.InputSite.WindowClass`（`FrameworkId=XAML`）下 | §03 |
 | F5 | 面板是 **System XAML**（`Windows.UI.Xaml.dll` 10.0.26100.8972 已加载；`Microsoft.Internal.FrameworkUdk.dll` / `Microsoft.UI.Content.*` **均未加载**） | §08 |
-| F6 | ShellHost 与我们的进程**同为 Medium IL**，**非 PPL**，`OpenProcess(ALL_ACCESS)` **成功** → 经典 DLL 注入可行 | `logs/injection-feasibility.txt` |
+| F6 | ShellHost 与我们的进程**同为 Medium IL**，**非 PPL**，`OpenProcess(ALL_ACCESS)` **成功** → 经典 DLL 注入可行 | `baseline-before-injection/injection-feasibility.txt` |
 | F7 | `Windows.UI.Xaml.dll` 导出 `InitializeXamlDiagnosticsEx`、`GetDependencyObjectAddress`、`OverrideXamlMetadataProvider`；WinUI3 侧无诊断入口 | §07 |
 | F8 | `XamlDiagnostics.dll`（诊断 tap DLL）**在机器上找到了**：`C:\Program Files (x86)\Windows Kits\10\bin\x64\XamlDiagnostics\xamldiagnostics.dll`（arm64/x86 也有）。见 F13 | 实测（此前一次递归搜索漏报，已更正） |
 | F13 | **本机有原生工具链**：`cl.exe` = `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.50.35717\bin\Hostx64\x64\cl.exe`（另有 VS2022 BuildTools 14.44）；CMake 在 `C:\Program Files\CMake\bin\cmake.exe`；dotnet SDK 8.0.425 / 10.0.103。注意：**都不在 PATH 上**，也没有 vswhere/msbuild.exe | 实测 |
@@ -162,7 +164,7 @@ Footer 现在只有 1 个子元素（「更多音量设置」按钮，`94x40` �
 
 ---
 
-## 5. 参考（来自调研 agent 报告，见 `logs/research-agent-report.md`）
+## 5. 参考（来自调研 agent 报告，见 `reference/research-agent-report.md`）
 
 - Windhawk mod `taskbar-content-presenter-injector.wh.cpp`：**在 WinRT 实现方法里往 `panel.Children().Append(presenter)`** —— 与我们 V4 的做法同类；它还给出 `GetFrameworkElementFromNative`（从 native `this` 反查 WinRT 对象，偏移 `+3` 指针）与 `SYMBOL_HOOK` 表。
 - ExplorerPatcher `ShellExperienceHostPatches.cpp`：hook `NetworkUX::App::LoadResourceDictionaries` + 改 `Application.Resources` 的 `QuickActionControlStyle.Setters()`。**注意**：那是**旧**的 ShellExperienceHost/NetworkUX 路径；我们这台 build 26300 的快速设置在 `ControlCenter.dll`（F9），ShellHost 里并没有 `NetworkUX.dll` —— 所以**不能照抄**，但"在进程内改 XAML 对象"的范式一致。
@@ -251,7 +253,7 @@ Button[更多音量设置]
 | `更多音量设置` | `(2193,1420) 94x40` | 位置与注入前完全一致 |
 | `TestLink` | `(2472,1419) 71x40` | 同一行、右边缘 2543 = 距底栏右边 **4 px**、高 **40** 与模型一致 |
 
-点击验证：UIA `InvokePattern` 调用后 `winver.exe` 启动（标题「关于"Windows"」），已确认。验证脚本 `recon/click-testlink.ps1`。
+点击验证：UIA `InvokePattern` 调用后 `winver.exe` 启动（标题「关于"Windows"」），已确认。验证脚本 `poc/scripts/click-testlink.ps1`。
 
 顺带修正一个误判：`FooterGrid` / `LeftFooter` / `RightFooter` **不是**这条底栏。它们挂在 `L1Grid` 下，属于 **L1（主快速设置页）的底栏**，而且一直是空的。声音输出页的底栏是页面级的 `Footer`（`PageWindow → FullScreenPage → L2Frame → PageContent → Footer`）。所以匹配条件只认 `Footer`。
 
@@ -286,3 +288,100 @@ TAP DLL 一旦载入就跟着 ShellHost 活到进程退出。但它**不影响�
 - 匹配条件是 `Name=="Footer"` 这个**字符串**。它在 `ControlCenter.dll` 的编译期 XAML 里，属于"改了就不工作"的软依赖（但比 RVA/特征码稳得多）。
 - 目前按钮的 `Click` 是硬编码 `winver.exe`，还没有真正的"扩展入口"语义。
 - 交付形态（怎么在登录时自动注入、要不要做成服务/启动项、Defender 排除项）还没定。
+
+---
+
+## 7. 方向修订：接管入口 + 页面内容替换（2026-10-03 定稿）
+
+§6 跑通的是「**在系统页里加一个按钮**」。本节记录目标变更后的设计：
+让「选择声音输出」**直接进入我们的页面**，系统页降级为可来回切换的备用视图。
+
+### 7.1 目标对比
+
+| | 原 | 现 |
+|---|---|---|
+| 入口 | 底栏注入的按钮 | L1 的「选择声音输出」→ **自定义页** |
+| 底栏按钮语义 | 启动一个外部进程 | **系统页 ↔ 自定义页** 切换 |
+| 自定义页内容 | 无 | 默认输入/输出设备下拉框、逐应用音量与端点、清除重定向 |
+
+### 7.2 为什么**不**走"拦导航"
+
+L1 树实测（[06-l1-main-panel-tree.md](baseline-before-injection/06-l1-main-panel-tree.md)）发现两个事实：
+
+```text
+| | Button | 选择声音输出 | id=VolumeL2Button                  | Button    ← 目标入口
+| | Button | 投影         | id=Microsoft.QuickAction.ProjectL2 | offscreen
+```
+
+1. **`L2` 后缀是"导航到二级页"的命名规律** ⇒ 进入 L2 的入口是**一组**，不是唯一一个。
+   在 `L2Frame` 上挂 `Navigating` 并无条件 `Cancel`，会把「投影」等一并劫持。
+   （若坚持拦截，必须按 `SourcePageType` 精确甄别目标页类型。）
+2. Cancel 之后**帧停在 L1**，我们的页面无处安放，等于连页骨架（后退键 / 标题 / 底栏）都要自建。
+
+两点叠起来 ⇒ 拦截路线代价高且风险外溢。**弃用。**
+
+### 7.3 采用的机制：不动导航，改内容
+
+```text
+① 用户点「选择声音输出」(VolumeL2Button)      ← 保持原样，不碰
+② 系统照常导航到声音页                        ← 不拦、不 Cancel
+③ OnVisualTreeChange 命中声音页出现           ← 复用已验机制（同 §6 的 Footer 触发）
+④ 取 ListContent，保存其 Content，换成我们的页面
+⑤ 底栏按钮切换：还原保存的内容 / 再次替换
+```
+
+**误伤面为零** —— 只在声音页真正出现时动作，其他 L2 入口完全不受影响。
+
+### 7.4 挂载点
+
+```text
+PageWindow
+├ BackButton        「后退」      ← 保留（免费）
+├ PageTitleText     「声音输出」  ← 保留，或按需改写
+├ ListContent       ScrollViewer   ← ★ 换掉它的 Content
+└ Footer            底栏           ← 保留；我们的按钮在这里，天然跨两态存续
+```
+
+选 `ListContent` 而非整页替换的理由：
+
+- **底栏天然跨两态存续** —— 正是"切换"所需的载体，不必另造底栏；
+- 后退键与标题免费保留，页面看起来仍是系统页的一部分；
+- 不必与 `Frame` 的内容模型打交道，风险面小。
+
+### 7.5 底栏布局（两态）
+
+```text
+列0 = *                 列1 = Auto
+[ 原行「更多音量设置」 ][ 切换按钮 ]     ← 系统态
+[ 清除重定向 ][ 原行   ][ 切换按钮 ]     ← 自定义态（左位新增）
+```
+
+沿用 §6.3 的两列 `Grid` 包裹法（列 0 必须 `*`）。左位新增按钮需把网格扩成三列。
+切换按钮的文案随状态变化：系统态显示"进入"，自定义态显示"退出"。
+
+### 7.6 动作类型要扩展
+
+现有 `action=exec` / `action=pipe` 都面向"拉起外部进程"。页面切换是 **in-proc 行为**，
+需新增一种动作（如 `action=page`），否则配置语义错位。
+
+### 7.7 ⚠️ 最大成本：界面只能逐元素搭
+
+**没有 XAML 标记编译** —— 那需要 UWP 工程体系（`xamlcompiler` + 应用包结构），
+在注入用的普通 DLL 里不成立。所以界面只能用 `CreateInstance` 逐元素构建：
+
+| 界面元素 | 代价 |
+|---|---|
+| 两个下拉框 | 每个 `ComboBox` + N 个 `ComboBoxItem` 手工创建 |
+| 应用列表 | N 项 ×（图标 + 名称 + `Slider` + 静音键）全部手工 |
+| 事件 | 每个 `Slider` 单独挂 `ValueChanged` |
+
+参照 §6 中单个 `Button`（含样式抄写）约 60 行，一个带应用列表的页面保守估计
+**1500–2500 行 C++**。这是本方案最大的成本项，排期时不可按"写个 XAML"估。
+
+### 7.8 待验证（进入实现前必须先落）
+
+- [ ] `ListContent.Content` 可写，且写入后正常渲染、原内容可还原
+- [ ] 换内容的最佳时机 —— `Footer appeared` 触发时布局是否已完成（`ActualWidth` 是否可用）
+- [ ] 我们的页面在 `ScrollViewer` 内的尺寸策略（`Height` 自适应 vs 固定）
+- [ ] 系统页被换下后，其对象是否仍在后台活动（音频计量轮询等），是否需要显式停用
+- [ ] `ComboBox` / `ListView` / `Slider` 的 `CreateInstance` 是否都拿得到（目前只验过 `Button`）

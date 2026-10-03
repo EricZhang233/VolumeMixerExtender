@@ -15,9 +15,8 @@
 ```text
 docs/
 ├── README.md                                        ← 本文件（总索引）
-├── design.md                                        ← ★ 设计 + 落地说明（方案 A 证伪 / 方案 B 跑通 / 几何 / 坑）
-├── VolumeMixerExtender-功能模块方法与实现文档-CSharp版.md    ← 交付文档（C# 轨道）
-├── VolumeMixerExtender-功能模块方法与实现文档-Cpp版.md       ← 交付文档（C++ 轨道）
+├── design.md                                        ← ★ 设计 + 落地说明（方案 A 证伪 / 方案 B 跑通 / 几何 / 坑 / **§7 方向修订**）
+├── VolumeMixerExtender-功能模块方法与实现文档-Cpp版.md       ← ★ **维护中的唯一规格**
 ├── poc/                                             ← ★ 参考实现（构建 + 源码 + 全部脚本）
 │   ├── README.md                                       怎么构建、怎么跑、每个脚本干什么、跑时的坑
 │   ├── build.cmd                                       vcvars64 + cl（4 个 cl 都带 /utf-8）
@@ -29,10 +28,11 @@ docs/
 ├── baseline-before-injection/                       ← 注入前基线（实测证据）
 │   ├── README.md
 │   ├── 01-window-locating-and-band.md                  窗口定位 + band=4（为什么 EnumWindows 看不到面板）
-│   ├── 02-xaml-host-and-element-tree.md                XAML 宿主在子窗口 + 声音输出页 28 元素树
+│   ├── 02-xaml-host-and-element-tree.md                XAML 宿主在子窗口 + **L2 声音输出页** 28 元素树
 │   ├── 03-winevent-test.md                             band 窗口照发 WinEvent（0 CPU 检测的依据）
 │   ├── 04-footer-geometry-before-injection.md          ★ 注入前底栏几何（一切"位置对不对"的基准）
 │   ├── 05-xaml-exports-and-shellhost-modules.md        导出表 + ShellHost 模块清单（为什么走诊断 API）
+│   ├── 06-l1-main-panel-tree.md                        ★ **L1 主面板** 31 元素树 + 入口按钮 `VolumeL2Button`
 │   ├── element-persistence.txt                         ★ XAML 元素每次打开都重建（本方案的基石）
 │   └── injection-feasibility.txt                       IL / PPL / OpenProcess 权限实测
 ├── verified-after-injection/                        ← 最终版注入后的实测结果
@@ -55,26 +55,35 @@ docs/
 
 | 想看什么 | 去哪 |
 |---|---|
-| 产品怎么设计、怎么实现（两条技术轨道） | `VolumeMixerExtender-功能模块方法与实现文档-CSharp版.md` / `-Cpp版.md` |
-| 为什么选这条路、踩过哪些坑、最终怎么落地的 | `design.md`（尤其 §6） |
+| 产品怎么设计、怎么实现 | `VolumeMixerExtender-功能模块方法与实现文档-Cpp版.md`（★ **唯一维护中的规格**） |
+| 为什么选这条路、踩过哪些坑 | `design.md`（§6 = 已跑通的旧路线；**§7 = 当前方向**） |
+| 当前入口机制、自定义页怎么落地 | `design.md` §7 + C++ 版 **§5.7** |
 | 怎么把参考实现跑起来 | `poc/README.md` |
 | 哪些结论是**实测**的、哪些还没验 | 本文件 §6 + `verified-after-injection/` 的 06–09 |
+| 面板两层的元素树长什么样 | `baseline-before-injection/02`（L2，28 元素）+ `06`（L1，31 元素） |
 | 这些结论的原始数据长什么样 | `reference/raw-outputs.md` + `baseline-before-injection/` |
 
 ---
 
-## 2. 两条技术轨道怎么选
+## 2. 技术轨道：已定为 C++（2026-10-03）
 
-**直接看 C++ 版 §1.0** —— 那里有 16 个维度的逐项对照表（C++ 优 8 项 / C# 优 8 项）和权重分析。一句话摘要：
+**结论：走 C++ 轨道。** 原 C# 方案文档**已删除**，项目只维护这一条轨道。
 
-> 真正难的核心代码（in-proc 两段）**本来就是 C++**，控制面只是外围。C++ 轨道把外围也统一成 C++，代价是控制面代码量翻倍、内存要自己管；收益是**契约与配置这两处最容易出隐性 bug 的地方，从"跨语言约定"变成"编译期 + 单元测试可保证"**。
+C++ 代码骨架已落在仓库根目录（不在 `docs/` 下）：
 
-| 优先级 | 建议轨道 |
-|---|---|
-| 开发省心、快速迭代、控制面逻辑复杂 | C# |
-| 零依赖交付、契约零漂移、统一调试、代码复用 | C++ |
-| 想快点看到东西跑起来 | C#（`dotnet run` 就能起） |
-| 长期维护、怕将来 Windows 更新导致契约漂移 | C++ |
+```text
+Core/            业务静态库（基础设施 / 服务 / CLI 契约 / 组合根）
+Components/      仅放"要嵌入主程序"的注入载荷（inject.launcher / inject.tap）
+Program.cpp      命令行外壳（零业务逻辑）
+cmake/           载荷资源生成、版本资源模板、打包脚本
+```
+
+选型依据（16 维度对照表）保留在 C++ 版 **§1.0**，作为历史记录。一句话：
+
+> 真正难的核心代码（in-proc 两段）**本来就是 C++**，控制面只是外围。统一成 C++ 的代价是控制面代码量翻倍、内存要自己管；收益是**契约与配置这两处最容易出隐性 bug 的地方，从"跨语言约定"变成"编译期 + 单元测试可保证"**。
+>
+> 本项目的入口机制是 **XAML 树的运行时改写**（§7），它天然要写大量 WinRT 对象操作 ——
+> 这部分无可避免是 C++，把控制面也统一过来反而减少一次跨语言约定的机会。
 
 ---
 
@@ -107,6 +116,7 @@ docs/
 | `baseline‑before-injection/03-winevent-test.md` | 同上 §05 | 2026-10-03 | band 窗口**照发 WinEvent**，且空闲期 600ms **0 事件** ⇒ 事件驱动检测 = 0 CPU |
 | `baseline‑before-injection/04-footer-geometry-before-injection.md` | 同上 §06 | 2026-10-03 | ★ 注入前底栏 `(2189,1417) 358x48`、模型按钮 `(2193,1420) 94x40`、右侧约 `256x40` 空位 |
 | `baseline‑before-injection/05-xaml-exports-and-shellhost-modules.md` | 同上 §07–§08 | 2026-10-03 | 面板是 **System XAML**（非 WinUI3）；`Windows.UI.Xaml.dll` 导出 `InitializeXamlDiagnosticsEx`；`ControlCenter.dll` 只导出 3 个符号 |
+| `baseline‑before-injection/06-l1-main-panel-tree.md` | 同上 §09 / `poc/scripts/qs-panel-probe.ps1`（`Win+A` 开面板） | 2026-10-03 | ★★ **L1 主面板 31 元素树** + 入口按钮 `AutomationId` = **`VolumeL2Button`**（`Name` = 「选择声音输出」）；⚠️ `Microsoft.QuickAction.ProjectL2` 证明 **L2 入口是一组** ⇒ 弃用"拦导航"方案；`FooterGrid` 属 L1 且非空 |
 | `baseline‑before-injection/element-persistence.txt` | `poc/archive/recon/element-persistence.ps1` | 2026-10-03 | ★ **XAML 元素实例每次打开面板都重建**（runtime id 5/5 全变）—— 这是"事件驱动 + 每次重注入"方案的基石，也是"按钮随面板关闭自动消失"的原因 |
 | `baseline‑before-injection/injection-feasibility.txt` | `poc/archive/recon/injection-feasibility.ps1` | 2026-10-03 | ShellHost 与 App **同为 Medium IL、非 PPL**，`OpenProcess(ALL_ACCESS)` 成功 ⇒ 经典 DLL 注入可行 |
 | `verified‑after‑injection/01-footer-geometry-after.md` | `poc/scripts/footer-map.ps1`（三次独立复现） | 2026-10-03 | ★ 注入后 `Footer` 仍 `358x48`、模型按钮位置不动、我们的按钮 `(2472,1419) 71x40` |
@@ -120,8 +130,8 @@ docs/
 | `verified‑after‑injection/09-ini-encoding.md` | `poc/src/probes/initest.cpp` / `poc/scripts/check-button-text.ps1` / `reopen-panel.ps1` | 2026-10-03 | ★★ **T2：INI 编码只有 UTF-16LE + BOM 可用**。UTF-8 无 BOM ⇒ **静默乱码**；UTF-8 有 BOM ⇒ **键都找不到**（设置被静默忽略）；写侧 `WritePrivateProfileStringW` 对全新文件会写成 ANSI。★ 顺带挖出并修掉一个真 bug：**幂等判定用"记住 Footer 指针"，而分配器会复用地址 ⇒ 按钮被静默跳过** |
 | `reference/research-agent-report.md` | 外部调研（独立 agent 产出） | 2026-10-03 | 方案选型的外部依据（Windhawk / ExplorerPatcher / XAML 诊断 API，带源码引用） |
 
-> 01–05 号基线证据的内容都是**逐字摘录**（只在文件头加了"来源/时间/用途"说明块），
-> 原始合集在 `reference/raw-outputs.md`（392 行，八节）。
+> 01–06 号基线证据的内容都是**逐字摘录**（只在文件头加了"来源/时间/用途"说明块），
+> 原始合集在 `reference/raw-outputs.md`（九节）。
 > ⚠️ 那份合集里含一条**后来被证伪**的结论（"`xamldiagnostics.dll` NOT FOUND"），
 > 已在 `baseline-before-injection/README.md` 顶部显著标注。
 
@@ -214,7 +224,7 @@ $s    = '.\docs\poc\scripts'          # ★ 所有脚本现在只在这一处
 | 系统 ACP（本机 GBK） | ⚠️ 本机正确**只因 ACP=936**，换区域设置即坏 ⇒ 不可作为契约 |
 | 写侧 | ⚠️ `WritePrivateProfileStringW` 对**全新文件**会写成 ANSI（不带 BOM）；对已带 BOM 的文件才保持 UTF-16LE |
 | 端到端 | ✅ 把 ini 写成 UTF-16LE+BOM、文字设为「音量合成器」⇒ 按钮 `Name` 码点逐位一致，右边缘仍 2543 |
-| 文档修正 | ⛔ C# 文档原写"`WriteTapIni` **必须用 UTF-8 无 BOM**" —— **方向是反的**，已改 |
+| 文档修正 | ⛔ 原交付文档曾写「`WriteTapIni` **必须用 UTF-8 无 BOM** 写」—— **方向是反的**，已改 |
 
 ⇒ 详见 `verified-after-injection/09-ini-encoding.md`。
 
@@ -238,3 +248,8 @@ $s    = '.\docs\poc\scripts'          # ★ 所有脚本现在只在这一处
 | 3 | ~~"面板已经打开时注入"的确切行为~~ | ❌ **不做支持（产品决定）**：**音量浮层不是常驻窗口**（按快捷键才出现、失焦即消失），产品模型是"注入一次 → TAP 常驻 → 每次打开面板自动注入"，**不需要**往一个已经开着、正在被看的浮层里插东西。故不进验收。 |
 | 4 | 子进程工作目录（`lpCurrentDirectory`） | 📌 **不规定**：由接入程序自理，交付文档不做要求（见 §6.2） |
 | 5 | **字形/渲染层**（中文字体是否缺字、显示是否美观） | ⏳ 未验证。T2 只证明"读到的字符串码点正确"，外观不受编码影响 |
+| 6 | ⭐ **入口接管机制**：`ListContent.Content` 可写性与还原 | ⏳ **未验证**（T12）。**新机制的基石** —— 写入能否渲染、系统内容能否原样恢复。见 `design.md` §7.8 |
+| 7 | ⭐ **换内容的最佳时机**（`Footer` 触发时布局是否已完成） | ⏳ 未验证（T13）。§6.5 记录过"注入早于布局导致静默错位"的坑 |
+| 8 | ⭐ **`ComboBox` / `ListView` / `Slider` 的 `CreateInstance` 可用性** | ⏳ **未验证**（T14）。目前**只验证过 `Button`**；若这三种拿不到，自定义页形态要重设计 |
+| 9 | 系统页被换下后是否仍在后台活动（音频计量轮询等） | ⏳ 未验证（T15） |
+| 10 | 自定义页在 `ScrollViewer` 内的尺寸策略（自适应 vs 固定） | ⏳ 未验证（T16） |

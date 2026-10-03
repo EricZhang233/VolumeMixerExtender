@@ -2,7 +2,7 @@
 
 # 需求
 
-利用已经进过研究和实现的Xaml注入，创建一个新的声音输出子页面，通过已实现的Footer切换我们自己的页面和系统的默认页面。
+利用已经进过研究和实现的Xaml注入，**接管快速设置主面板(L1)的「选择声音输出」按钮**，点击后直接进入自定义页面（用自绘页面替换系统声音输出页的内容区）；两态切换由底栏按钮承担。
 
 
 复刻EarTrump的针对不同应用单独调整音量和输出端点的功能，同时修复部分情况下可能丢失所有应用列表导致每个音频端点下方为空白 -- 此功能置于自定义页面Body第二顺位
@@ -14,11 +14,11 @@
 支持一键把重定向的应用清除重定向(回到默认值) -- 此功能置于Footer的左侧
 
 
-进入自定义页面之后，把Footer的进入指令换成退出指令，可回到系统默认页面。
+底栏按钮在自定义页显示「SystemMixer」、在系统页显示「MixerExtender」，两态之间来回切换。
 
 ---
 
-# Agent 备忘
+# 备忘
 
 ## 已完成
 
@@ -34,6 +34,22 @@
 
 ## 待办
 
+### 下一步优先（新机制的前置验证，未过就不要动 UI）
+
+- [ ] **T12** `ListContent.Content` 可写 + 系统内容可原样还原
+- [ ] **T13** 换内容的最佳时机（`Footer` 触发时布局是否已完成）
+- [ ] **T14** `ComboBox` / `ListView` / `Slider` 的 `CreateInstance` 是否可用（**目前只验过 `Button`**）
+
+### 入口接管与自定义页
+
+- [ ] 入口机制：不做拦截，改为"检测声音页出现 → 保存并替换 `ListContent.Content`"
+- [ ] 底栏按钮新增 `action=page` 动作（系统页「进入」/ 自定义页「退出」）
+- [ ] 底栏左侧新增「清除重定向」按钮（两列网格扩为三列）
+- [ ] 自定义页 UI：默认输入/输出设备两个下拉框（Body 第一顺位）
+- [ ] 自定义页 UI：逐应用音量与输出端点（Body 第二顺位，复刻 EarTrumpet）
+
+### 音频与注入实现
+
 - [ ] `Core/AudioDeviceManager` 接 WASAPI（当前为桩，`devices` 等命令返回"尚未实现"）
 - [ ] `Core/EndpointPolicyService` 接 `IPolicyConfig` + `IAudioPolicyConfigFactory`，只留现代分支
 - [ ] `Core/InjectionService` 接目标定位 + 载荷释放 + launcher 装载
@@ -41,5 +57,8 @@
 - [ ] `Components/inject.tap`：实现 `DllGetClassObject` 的类工厂（现返回 `CLASS_E_CLASSNOTAVAILABLE`）
 - [ ] 载荷 DLL 自身的日志文本改走 text.yaml（当前为便于 ShellHost 内置诊断暂用字面量）
 - [ ] 把 PoC 已验通的逻辑搬进 Core：Footer 定位、样式抄写、2 列 Grid 换行、幂等判定（基于"结果存在性"而非指针）、`action=pipe` 动作链（`ERROR_NO_DATA`(232) 视为正常）
+
+### 收尾
+
 - [ ] `.releasenote.md` 已按 `.releasenoteguide.md` 建立，后续发版前更新
 - [ ] 等 `install` 类能力落地后，补 `.install.cmd`（隔壁的本地安装入口）

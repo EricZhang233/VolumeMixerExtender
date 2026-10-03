@@ -5,8 +5,7 @@
 | 文档版本 | 1.0 |
 | 日期 | 2026-10-03 |
 | 目标平台 | Windows 11 build 26300.9550（实测环境） |
-| 技术轨道 | **C++ 轨道**：控制面与 in-proc 两段全部原生 C++，零 .NET 依赖 |
-| 姊妹文档 | `VolumeMixerExtender-功能模块方法与实现文档-CSharp版.md`（C# 轨道） |
+| 技术轨道 | 控制面与 in-proc 两段全部原生 C++，零 .NET 依赖 |
 | 文档状态 | 架构与契约已定稿；PoC 已跑通；标 ⚠️ 的条目待 V 阶段验证 |
 | 标记约定 | ✅ 已实测 / ⚠️ 设计推断需验证 / ⛔ 硬限制不可消除 |
 
@@ -18,26 +17,21 @@
 
 面向要接手实现/维护本项目的开发者。回答：**有哪些模块、每个模块有哪些方法、方法之间怎么串、怎么验证和排障**。
 
-本轨道与 C# 轨道**共享同一套已验证的技术方案**（in-proc 两段 + XAML 诊断 TAP），差别只在**控制面用什么语言写**。
+本文是项目**维护中的唯一规格**。
 
-**语言无关、两轨完全相同**的部分，本文给出自包含的压缩副本，并在标题上标注 `[同源]`：
-
-| 章节 | 关系 |
-|---|---|
-| §4 in-proc 两段（Launcher / Tap） | `[同源]` 同一个 DLL 实现，C++ 轨道下还能与控制面**共享代码** |
-| §5 关键算法与不变量 | `[同源]` 逐条相同 |
-| §8 验证与验收 | `[同源]` |
-| §2 跨进程契约 | `[同源]` 语义相同，但 **C++ 轨道用共享头文件实现，机制不同**（见 §2.0） |
-| §10.1 / §10.2 硬限制与软依赖 | `[同源]` 都是 OS 层面的，换语言不改变任何一条 |
-
-**必须改写的部分**（本文的深度所在）：§2.0 共享契约、§3 控制面用 C++ 的实现、§6 C++ 的错误/资源策略、§7 原生构建、§9 C++ 特有的排障手段、§1.0 选型对照。
+各章节的难度分布：§2.0 共享契约、§3 控制面实现、§6 错误与资源策略、§7 原生构建、§9 原生排障手段
+是本文的深度所在。
 
 ### 0.2 术语表
 
 | 术语 | 含义 |
 |---|---|
 | **面板** / ControlCenter | Win11 快速设置窗口，类 `ControlCenterWindow` |
-| **声音输出页** | 面板内按「音量」进入的全屏页（`FullScreenPage`），注入点所在 |
+| **L1** / 主快速设置页 | 面板打开时的第一层（`Win+A` 进入）。`ControlCenterRegion` 下是快捷按钮组 + `FooterGrid`，31 个元素（`06-l1-main-panel-tree.md`） |
+| **入口按钮** | L1 的「选择声音输出」，`AutomationId` = **`VolumeL2Button`**，本项目要接管的入口 |
+| **声音输出页** | 面板内进入的二级页（`FullScreenPage` / `PageWindow`），即系统自带的声音页，28 个元素 |
+| **自定义页** | 本项目自绘的页面，占据声音输出页的 `ListContent` 区域 |
+| **`ListContent`** | 声音输出页的内容区（`ScrollViewer`），自定义页的**挂载点** |
 | **底栏** / Footer | 声音输出页底部 `ItemsControl`，`Name` = `Footer`，几何 `(2189,1417) 358x48` |
 | **模型按钮** | 底栏已有按钮「更多音量设置」，`(2193,1420) 94x40`，取样式与位置基准 |
 | **ShellHost** | `ShellHost.exe`，托管面板 XAML 的宿主进程，**注入目标**，父进程 `sihost.exe` ✅ |
@@ -78,56 +72,18 @@
 
 ## 1. 系统总览
 
-### 1.0 技术选型对照（C# 轨道 vs C++ 轨道）
-
-> 这一节是本文存在的主要原因：项目技术栈尚未定稿，需要可比较的依据。
-> 所有数字里，"代码量"与"体积"是**估算**（标记为估算），其余条目都有明确依据。
-
-| # | 维度 | C# 轨道 | C++ 轨道 | 优 | 依据/说明 |
-|---|---|---|---|---|---|
-| 1 | **运行时依赖** | 需 .NET 8 Desktop Runtime，或 self-contained 发布 | 无。静态 CRT | **C++** | ⛔ 目标机必须有运行时是 C# 轨道的固有成本 |
-| 2 | **分发体积**（估算） | self-contained ≈ 70–90 MB | ≈ 1–2 MB | **C++** | `PublishSingleFile=false` 的 self-contained 输出 |
-| 3 | ⭐ **契约一致性** | 跨语言约定：常量在 C# 与 C++ **各写一份字符串** | **共享头文件 `vmext_contract.h`**，App 与 TAP 同时 include | **C++** | 见 §2.0。C# 轨道改错常量只能靠 review 与运行时发现 |
-| 4 | ⭐ **initData 往返验证** | 只能端到端验证（需要真的注入 ShellHost，即 V2，难） | **纯单元测试**即可（同一个 `Build`/`Parse` 实现） | **C++** | 见 §2.0。这是把最难验证的一环降级为最易验证的一环 |
-| 5 | **INI 编码一致性** | C# 写 / C++ 读，两侧编码假设必须对齐（⚠️ 本项目唯一未验证的契约环节之一） | 同一个读写实现，**结构上不可能不一致** | **C++** | 直接消掉 §4.3 坑 13 |
-| 6 | **控制面代码量**（估算） | ≈ 1500–2200 行 | ≈ 3000–4500 行 | C# | 进程监视/配置/托盘/管道的原生写法都更长 |
-| 7 | **内存与句柄安全** | GC + `using` + `SafeHandle`，泄漏面小 | 全靠手工 RAII，一个漏写的 `CloseHandle` 就泄漏 | C# | 见 §5.6 的资源所有权不变量 |
-| 8 | **托盘 / 配置 UI 成本** | 高（WinForms 现成控件） | 高（手写 Win32 窗口 + `.rc` 资源 + 自绘菜单） | C# | 两者都是"要写"，C# 略省 |
-| 9 | **单元测试生态** | xUnit 开箱即用 | 需要 Catch2/GoogleTest（第三方，仅测试用） | C# | 不影响产品二进制 |
-| 10 | **迭代速度** | 秒级编译，无链接期 | 编译+链接更慢，无热重载 | C# | 主观但一致 |
-| 11 | ⭐ **与 in-proc 代码共享** | **不能**（跨语言）：日志器、INI、字符串工具要写两遍 | 日志器/INI/字符串/注入器**直接复用**（§3.0 共享静态库） | **C++** | 本项目 60% 的代码是"两边都要用"的工具代码 |
-| 12 | **调试体验** | 混合调试（托管 + 原生）较麻烦 | 单一原生栈 + 统一 PDB；在 VS 里直接附加 ShellHost 就能调 TAP | **C++** | 见 §7.6 / §9.4 |
-| 13 | **部署复杂度** | 中（发布模式选择、`runtimeconfig`、路径稳定） | 低（拷目录即可运行） | **C++** | |
-| 14 | **出错后的可诊断性** | 托管异常有栈有类型 | 原生崩溃可能需要 dump 分析（但工具链成熟） | C# | 见 §9.4 |
-| 15 | **维护门槛** | 低 | 中高 | C# | |
-| 16 | **构建工具链** | `dotnet build/publish` 一条命令 | 需要 vcxproj/CMake + VS 或 BuildTools | C# | 本机两者都可用（附录 C） |
-
-**逐项统计**：C++ 优 8 项（1,2,3,4,5,11,12,13），C# 优 8 项（6,7,8,9,10,14,15,16）。
-
-**但权重不等。** 下面三条是本项目特有的、**权重最高的**因素：
-
-| 权重 | 因素 | 为什么对本项目特别重要 |
-|---|---|---|
-| ★★★ | **第 3、4、5 项（契约一致性 / initData 验证 / 编码一致性）** | 本项目最脆弱的两处正是"跨语言契约"与"INI 编码"，而这两处**恰好是 C++ 轨道免费解决的**。它们不是普通的代码整洁问题，而是**能否在开发机上复现出 bug** 的问题 |
-| ★★★ | **第 11 项（代码共享）** | 本项目里"日志器 / INI 读写 / 字符串工具 / 注入器"是 App 与 TAP **都要用**的。C# 轨道下这些要写两遍（一遍 C#、一遍 C++）并且要保证行为一致 |
-| ★★ | **第 7 项（内存安全）** | in-proc 两段**本来就是 C++**（§1.2 的 C1/C2 约束），C++ 轨道并没有让"最危险的部分"变得更危险 —— 它只是让**控制面**也变成手工内存管理 |
-
-**文档给出的建议（最终由项目所有者决定）**：
-
-| 如果你的优先级是… | 建议轨道 |
-|---|---|
-| 开发省心、快速迭代、控制面逻辑复杂 | **C#**（控制面 90% 是进程/配置/UI 逻辑，正是 C# 擅长的） |
-| 零依赖交付、契约零漂移、统一调试、代码复用 | **C++** |
-| 只想快点看到东西跑起来 | **C#**（`dotnet run` 就能起） |
-| 长期维护、怕以后 Windows 更新导致契约漂移 | **C++**（第 3/4/5/11 项的优势会随时间放大） |
-
-**一句话**：真正难、真正核心的代码（in-proc 两段）**本来就是 C++**；控制面只是外围。C++ 轨道把外围也统一成 C++，代价是控制面代码量翻倍、内存要自己管，收益是**契约与配置这两处最容易出隐性 bug 的地方变成编译期/单元测试可保证的**。
-
 ### 1.1 目标功能（一句话）
 
-在 Win11 快速设置 →「声音输出」页的**底栏右侧空位**注入一个**原生 XAML 按钮**（真元素，不是悬浮层），点击后执行配置好的动作。
+点击快速设置主面板（L1）的 **「选择声音输出」按钮**后，**直接进入自定义页**（自绘 XAML，占据声音输出页的内容区）；
+声音输出页原有的**底栏按钮**改为**系统页 ↔ 自定义页的切换**。
 
-### 1.2 为什么 in-proc 两段必须是原生代码 `[同源]`
+自定义页承载：默认输入/输出设备切换、逐应用音量与输出端点、一键清除重定向。
+
+> ⚠️ **与旧版的区别**：早前设计是"在声音输出页底栏右侧注入一个入口按钮，点击执行外部指令"。
+> 底栏注入的技术路线仍然复用（§5.2），但**入口语义已转移**：入口现在是 L1 的 `VolumeL2Button`。
+> 详见 §5.7 与 `docs/design.md` §7。
+
+### 1.2 为什么 in-proc 两段必须是原生代码
 
 | # | 约束 | 后果 |
 |---|---|---|
@@ -242,7 +198,7 @@ VmExt.App.exe 启动
 （再开面板）→ 重新走回调；enabled=0 则什么都不做
 ```
 
-### 1.6 ShellHost 生命周期与重注入 `[同源]`
+### 1.6 ShellHost 生命周期与重注入
 
 ✅ 实测：`ShellHost.exe` 的父进程是 **`sihost.exe`**。它会随 shell 重启（explorer 重启 / sihost 重启 / 自身崩溃）换成**新进程**。
 
@@ -260,13 +216,13 @@ loop（在 Watcher 线程里）:
 
 ---
 
-## 2. 跨进程契约 `[同源语义 / ★ C++ 机制不同]`
+## 2. 跨进程契约
 
-### 2.0 ⭐ C++ 轨道的核心优势：契约从"约定"变成"代码"
+### 2.0 契约从"约定"变成"代码"
 
-**C# 轨道的问题**：CLSID、端点名前缀、initData 键名、管道名格式、互斥体名格式、INI 键名 —— 这些都必须在 C# 侧和 C++ 侧**各写一份**。改一处忘另一处，编译通过、运行出错，而且错得很隐蔽（例如 CLSID 差一个字节 → `DllGetClassObject` 返回 `CLASS_E_CLASSNOTAVAILABLE`，看起来像"TAP 加载失败"）。
+CLSID、端点名前缀、initData 键名、管道名格式、互斥体名格式、INI 键名 —— 这些若分处两侧**各写一份**，就会"改一处忘另一处、编译通过、运行出错"，而且错得很隐蔽（例如 CLSID 差一个字节 → `DllGetClassObject` 返回 `CLASS_E_CLASSNOTAVAILABLE`，看起来像"TAP 加载失败"）。
 
-**C++ 轨道的做法**：一个头文件，三个二进制同时 include。
+**做法**：一个头文件，三个二进制同时 include。
 
 ```cpp
 // ---------------------------------------------------------------------------
@@ -302,7 +258,7 @@ inline constexpr wchar_t kDiagnosticsDllName[] = L"xamldiagnostics.dll";
 inline constexpr int kInitDataVersion = 1;
 
 // TAP 的"配置直投"导出名。★ 这是配置的**主通道**（§2.2.1）。
-// 与 C# 轨道不同：这里两侧都从同一个宏来，不再各写一个裸字符串。
+// 两侧都从同一个宏来，不存在"各写一个裸字符串"的可能。
 #define VMEXT_TAP_PROVIDE_EXPORT_NAME  VmExtTapProvideInitData
 inline constexpr wchar_t kTapProvideInitDataExport[] = L"VmExtTapProvideInitData";
 using TapProvideInitDataFn = void (WINAPI*)(const wchar_t*);
@@ -312,7 +268,7 @@ using TapProvideInitDataFn = void (WINAPI*)(const wchar_t*);
 //    超限不是错误（配置走直投通道），但必须打警告，否则排查时会被误导。
 inline constexpr size_t kInitDataHardLimit = 259;
 
-// ============ 3. 名字生成（两轨共享的唯一实现）============
+// ============ 3. 名字生成（唯一实现）============
 inline std::wstring PipeName(unsigned long sessionId) {
     return L"\\\\.\\pipe\\VmExt.Tap.S" + std::to_wstring(sessionId);
 }
@@ -372,16 +328,16 @@ namespace ipc {
 
 **这一节直接解决的两件事**：
 
-| 问题 | C# 轨道 | C++ 轨道 |
-|---|---|---|
-| ⭐ **配置下发往返**（本文档 §4.2.3，原 V2 验证项） | 配置主干是"直投"（等于一次同进程函数调用），**导出名是个裸字符串**：写错了编译器不管，只有运行时 `GetProcAddress` 返回 `NULL` | 导出名进共享头文件 ⇒ 两侧同源；`BuildCommandLine`/`Parse`/`Ini` 的边界串（空值/超长/含分隔符/未知键/非法 ver/含空格的路径）是**纯单元测试**，不需要注入任何东西 |
-| ⭐ **INI 编码（原 §4.3 坑 13）** | C# 写（`Encoding.Unicode` 还是 UTF-8？）与 C++ 读（`GetPrivateProfileStringW` 的隐含假设）必须人工对齐，**本项目仍未验证的契约环节之一** | `Ini::Write` 与 `Ini::Read` 是**同一份代码**（§3.3），结构上不可能不一致。再配一个"写→读→比对含中文的值"的单元测试 |
-| ⭐ **命令行拼装**（新增，§2.3 / §4.3 坑 27） | "给 exe 路径加引号 + 显式传 `lpApplicationName`"是**两条要靠人记住的纪律**，漏一条就会在"前缀处存在同名文件"时**启动错的程序**（已实测复现） | 拼装逻辑集中在 `Contract::BuildCommandLine`，配单元测试（路径含空格、含 `"`、参数含空格、空参数）⇒ 从"纪律"变成"代码 + 测试" |
+| 问题 | 做法 |
+|---|---|
+| ⭐ **配置下发往返**（§4.2.3，原 V2 验证项） | 配置主干是"直投"（等于一次同进程函数调用）。导出名进共享头文件 ⇒ 两侧同源；`BuildCommandLine`/`Parse`/`Ini` 的边界串（空值/超长/含分隔符/未知键/非法 ver/含空格的路径）是**纯单元测试**，不需要注入任何东西 |
+| ⭐ **INI 编码**（原 §4.3 坑 13） | `Ini::Write` 与 `Ini::Read` 是**同一份代码**（§3.3），结构上不可能不一致。再配一个"写→读→比对含中文的值"的单元测试 |
+| ⭐ **命令行拼装**（§2.3 / §4.3 坑 27） | 拼装逻辑集中在 `Contract::BuildCommandLine`，配单元测试（路径含空格、含 `"`、参数含空格、空参数）⇒ 从"纪律"变成"代码 + 测试" |
 
-> **这是 C++ 轨道最大的实际价值所在**：不是性能、不是体积，而是**把项目里那几个最容易出隐性 bug（含"要记住三条纪律"这种）的环节变成编译期 + 单元测试可保证的东西**。
+> **这是本轨道最大的实际价值所在**：不是性能、不是体积，而是**把项目里那几个最容易出隐性 bug（含"要记住三条纪律"这种）的环节变成编译期 + 单元测试可保证的东西**。
 >
-> ✅ 顺带说明 T1 的最终结论对两轨是**共享**的：initData 通道**可用但上限 259 字符、超限静默失败**
-> （实测），因此两轨的配置主干都是"直投"。区别只在于"直投用的导出名怎么保证两侧一致"。
+> ✅ 顺带说明 T1 的结论：initData 通道**可用但上限 259 字符、超限静默失败**（实测），
+> 因此配置主干走"直投"，initData 只作面包屑。
 
 ### 2.1 常量全表
 
@@ -451,8 +407,8 @@ HRESULT hr = InitializeXamlDiagnosticsEx(endpoint, ::GetCurrentProcessId(),
 > **为什么"同一个字符串"很重要**：两条通道内容一致，才能拿日志里的哈希直接对比 ——
 > 这是"配置有没有被改坏"的最省事自检。PoC 就是这么验的（两侧打印 `fnv1a64`，要求逐位相同）。
 
-**⭐ C++ 轨道在这里的独有优势**：这个导出名在 C# 轨道里是一个**裸字符串** —— 拼错了编译器不管，
-只有运行时 `GetProcAddress` 返回 `NULL`。在 C++ 轨道里它可以进共享头文件：
+**导出名必须同源**：若它只是个**裸字符串**，拼错了编译器不管，
+只有运行时 `GetProcAddress` 返回 `NULL`。所以让它进共享头文件：
 
 ```cpp
 // vmext_contract.h（新增）
@@ -471,8 +427,8 @@ using TapProvideInitDataFn = void (WINAPI*)(const wchar_t*);
 
 链接器的 `/EXPORT:` **只接受字面量**，所以"宏"和"常量数组"这两处必须各写一遍 ——
 但两者的一致性可以**用一条单元测试钉死**（比较两个字符串），
-于是 C# 轨道里那个"写错也不报错"的洞就被堵上了。
-这正是 §2.0 所说"C++ 轨道把约定变成代码"的又一个具体落点。
+于是"写错也不报错"这个洞就被堵上了。
+这正是 §2.0 所说"把约定变成代码"的又一个具体落点。
 
 #### 2.2.2 载荷格式
 
@@ -519,14 +475,14 @@ ver=1;cfg=<vmext-tap.ini 绝对路径>;log=<tap 日志绝对路径>;pipe=\\.\pip
 
 ### 2.3 配置：`vmext.ini` 与 `vmext-tap.ini`
 
-**C++ 轨道的一个简化**：**两种配置都用 INI**，不用 JSON。
+**两种配置都用 INI**，不用 JSON。
 
-| 轨道 | 控制面配置 | TAP 配置 | 格式数量 |
-|---|---|---|---|
-| C# | `appsettings.json`（System.Text.Json） | INI（`GetPrivateProfileStringW`） | **2 种格式、2 套读写** |
-| C++ | `vmext.ini` | `vmext-tap.ini` | **1 种格式、1 套读写**（§3.3） |
+| 配置 | 文件 | 读写 |
+|---|---|---|
+| 控制面 | `vmext.ini` | `Ini::Read` / `Ini::Write`（§3.3） |
+| TAP | `vmext-tap.ini` | 同上，**同一份实现** |
 
-理由：C++ 里 JSON 需要第三方库，而本项目配置本身就是扁平的键值对，INI 完全够用；用一种格式意味着**一份读写实现 + 一组单元测试**。
+理由：C++ 里 JSON 需要第三方库，而本项目配置本身就是扁平的键值对，INI 完全够用；只用一种格式意味着**一份读写实现 + 一组单元测试**。
 
 **`vmext.ini`（控制面，App 读写）**：
 
@@ -628,7 +584,7 @@ entry1.height=0
 // 唯一的写入口（§3.3）。UTF-16LE + BOM 是刻意的选择：
 //  GetPrivateProfileStringW 是非 Unicode API 的 W 变体，其内部对文件编码的处理依赖系统
 //  区域设置。UTF-16LE+BOM 是最无歧义的写法，且能保证中文值（entry1.text）正确往返。
-//  这一点在 C# 轨道里是"两侧必须人工对齐的约定"，在这里是"一份实现"，见 §2.0。
+//  这一点由"一份实现"保证，见 §2.0。
 ```
 
 ### 2.4 IPC 协议（`action=pipe` 模式）
@@ -662,7 +618,7 @@ entry1.height=0
 2. **写日志必须持锁**（`CRITICAL_SECTION`）。TAP 的日志会被多个线程写。
 3. **只追加、不轮转**（TAP 内轮转会造成复杂性与丢失风险）。量级很小（每次开面板几十行）。App 启动时可按大小截断自己的日志。
 
-### 2.6 会话与完整性级别契约 `[同源]`
+### 2.6 会话与完整性级别契约
 
 | 检查项 | 要求 | 依据 |
 |---|---|---|
@@ -712,9 +668,9 @@ VolumeMixerExtender.sln                     （VS 2026 / MSBuild）
    └─ VmExt.Tests/            控制台 EXE    契约/INI/字符串/注入错误路径（§3.16）
 ```
 
-**项目级约定**（对应 C# 版 §3.0 的表格，逐项说明差异）：
+**项目级约定**：
 
-| 项 | C++ 轨道取值 | 理由 / 与 C# 轨道的差异 |
+| 项 | 取值 | 理由 |
 |---|---|---|
 | C++ 标准 | **`/std:c++20`** | 需要 `std::jthread` + `std::stop_token`（线程停止）、`std::span`、`if constexpr`。MSVC 19.5x 完整支持 |
 | 运行库 | **`/MT`（静态 CRT）** | 免 VC++ Redistributable。⛔ Launcher/Tap 必须 `/MT`，否则 `LoadLibraryW` 在目标进程里可能因缺 DLL 返回 NULL |
@@ -1378,7 +1334,7 @@ void ShellHostWatcher::Stop() noexcept
 | ⭐ 用 `WaitForMultipleObjects` 等**进程句柄**，不轮询 | ✅ 空闲 0 CPU。轮询进程列表空闲时也是每秒几十次系统调用 |
 | 分"有活着的"与"一个都没有"两条路径 | 有活着的 → 等句柄（高效）；没有 → 只能轮询（短暂状态） |
 | `timeout = 5000` 而非 `INFINITE` | 让循环有机会检查 `stop_requested`（另外还有 stop 事件，双保险） |
-| 首次全量扫描也触发 `onStarted` | App 晚启动时不需要第二套代码路径。⭐ **这条与 C# 轨道一致，因为它是产品行为而不是语言特性** |
+| 首次全量扫描也触发 `onStarted` | App 晚启动时不需要第二套代码路径。这是产品行为，与实现语言无关 |
 | 停止事件放在数组索引 0 | `WaitForMultipleObjects` 返回值的索引语义直观；`Stop()` 里 `SetEvent` 能立刻打断阻塞 |
 | ⛔ 事件必须是**手动重置**（`CreateEventW(..., TRUE, ...)`） | 自动重置事件在多个等待者下会被吃掉 |
 | ⚠️ **`WaitForMultipleObjects` 上限 64 个句柄** | 正常只有 1 个 ShellHost；但要在 `handles_.size() >= 60` 时清理已退出项并重建数组 |
@@ -2074,7 +2030,7 @@ enum : UINT {
 | `WM_VMEXT_CLICK` | 按 entryId 找条目 → 执行动作（或显示 UI） | 点击无反应 |
 | `WM_DESTROY` | `Shell_NotifyIconW(NIM_DELETE, ...)` → `PostQuitMessage(0)` | 托盘留一个幽灵图标，直到鼠标划过 |
 
-**启动自检（`wWinMain` 里，对应 C# 版 §7.6）**
+**启动自检（`wWinMain` 里）**
 
 ```cpp
 int wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
@@ -2140,7 +2096,7 @@ VolumeMixerExtender 诊断信息
   日志目录        : ...\logs
 ```
 
-> **⚠️ 待补的可用性缺口（与 C# 轨道一致）**：TAP 完成一次按钮注入后**没有回传任何信号**。
+> **⚠️ 待补的可用性缺口**：TAP 完成一次按钮注入后**没有回传任何信号**。
 > 要真正做到"状态可信"，需要让 TAP 在注入成功后也走管道写一行 `INJECTED <entryId>`。
 > v1 里状态只到"TAP 就绪"。**文档写清楚，不要假装状态是准的。**
 
@@ -2170,7 +2126,7 @@ VolumeMixerExtender 诊断信息
 | Catch2（单头，MIT） | 表达式分解、`TEST_CASE` 更舒服，但为了几个测试引入一个几百 KB 的头文件不值得。若测试数量增长到 100+ 再考虑 |
 | GoogleTest | 重量级，需要 CMake 集成，不符合"零依赖"的取向 |
 
-**可测单元清单（对应 C# 版 §3.14 的前三类）**：
+**可测单元清单**：
 
 | 文件 | 覆盖 |
 |---|---|
@@ -2193,10 +2149,10 @@ echo %ERRORLEVEL%     :: 0 = 全部通过
 
 ---
 
-## 4. in-proc 两段 `[同源，与 C# 轨道的 DLL 实现相同]`
+## 4. in-proc 两段
 
-> 这两段**本来就是 C++**，所以在 C++ 轨道下内容与 C# 轨道文档的 §4 实质相同。
-> **唯一的差别**：C# 轨道下"日志/INI/字符串工具"必须写两遍；本轨道下它们来自 `VmExt.Shared.lib` 静态链接（§3.0），
+> 这两段运行在 ShellHost 进程内，**必须是原生代码**（§1.2）。
+> 它们依赖的"日志 / INI / 字符串工具"来自 `VmExt.Shared.lib` 静态链接（§3.0），
 > 所以下面的代码里不会出现"为了在 DLL 里也能用而重新实现一遍"的东西。
 
 ### 4.1 `VmExt.Launcher.dll`（in-proc 第 1 段）
@@ -2606,7 +2562,7 @@ void Tap::PerformClickAction(const EntryConfig& e) noexcept
 
 ---
 
-## 5. 关键算法与不变量 `[同源语义]`
+## 5. 关键算法与不变量
 
 > 这一节是项目的核心知识，**与语言无关**。本文给自包含的完整说明（压缩版），逐条依据都来自实测。
 
@@ -2865,6 +2821,90 @@ C++ 轨道用静态 CRT，这带来一条**必须遵守的规则**：
 
 ---
 
+### 5.7 入口接管与页面内容替换（★ 新机制）
+
+> 本节是目标修订后的**主路径**。§5.1–§5.6 描述的底栏注入法**仍然复用**（自定义页需要底栏按钮），
+> 但"入口"的语义已从"底栏注入的按钮"转移到 L1 的 `VolumeL2Button`。
+> 设计背景与取舍见 `docs/design.md` §7。
+
+#### 5.7.1 目标入口
+
+| 项 | 值 |
+|---|---|
+| 元素 | L1 的「选择声音输出」 |
+| `AutomationId` | **`VolumeL2Button`** |
+| `Name` | `选择声音输出`（与 tooltip 一致，**按 `AutomationId` 匹配最稳**） |
+| 父级 | `ControlCenterRegion` 的直接子元素，与音量条 `Slider` 同级 |
+
+实测数据：`docs/baseline-before-injection/06-l1-main-panel-tree.md`。
+
+#### 5.7.2 ⛔ 不要拦导航
+
+L1 树里还有 `Microsoft.QuickAction.ProjectL2` —— **`L2` 后缀是"导航到二级页"的命名规律**，
+说明进入 L2 的入口是**一组**而非唯一一个。在 `L2Frame` 上挂 `Navigating` 并无条件 `Cancel`
+会**误伤「投影」等兄弟入口**；且 Cancel 之后帧停在 L1，我们的页面无处安放。
+
+⇒ **不碰导航，不碰按钮。** 让系统照常导航，我们改页面内容。
+
+#### 5.7.3 算法
+
+```text
+① 触发：OnVisualTreeChange 命中 name == "Footer"（沿用已验条件，见 §5.1）
+② 从 Footer 沿祖先链上溯到 PageWindow（§5.1 已有该链）
+③ 在 PageWindow 下按 Name 找 ListContent（ScrollViewer）
+④ 幂等判定：若 ListContent.Content 已是我们的根节点 → 直接返回（勿重复替换）
+⑤ 首次：g_systemContent = ListContent.Content()   ← 保存引用，勿释放
+         ListContent.Content(BuildCustomPage())
+         g_customMode = true
+⑥ 切换：Content 在 g_systemContent 与我们的根节点之间来回
+```
+
+**为什么触发点仍用 `Footer`**：它是**已实测稳定**的锚点（§5.1），且与 `ListContent` 同属
+`PageWindow` 的子元素、在页面构建时一同出现。用一个已验证的锚点去定位另一个元素，
+比直接赌 `ListContent` 的事件时序更稳。
+
+#### 5.7.4 ⚠️ 界面只能逐元素构建（最大成本项）
+
+**没有 XAML 标记编译** —— 那需要 UWP 工程体系（`xamlcompiler` + 应用包结构），
+在注入用的普通 DLL 里不成立。自定义页只能用 `IVisualTreeService::CreateInstance` 逐元素搭：
+
+| 元素 | 代价 |
+|---|---|
+| 两个下拉框 | 每个 `ComboBox` + N 个 `ComboBoxItem` 手工创建 |
+| 应用列表 | N 项 ×（图标 + 名称 + `Slider` + 静音键）全部手工 |
+| 事件 | 每个 `Slider` 单独挂 `ValueChanged` |
+
+参照 §5.2 中单个 `Button`（含样式抄写）约 60 行，一个带应用列表的页面保守估计
+**1500–2500 行 C++**。**排期时不可按"写个 XAML"估算。**
+
+> 目前 `CreateInstance` **只验证过 `Button`**（`Button` / `Grid` / `TextBlock`）。
+> `ComboBox` / `ListView` / `Slider` 的可用性是 T14，**未验证** —— 若不成立，页面形态要重设计。
+
+#### 5.7.5 新增不变量
+
+| # | 不变量 | 理由 |
+|---|---|---|
+| **I5** | 系统页的 `Content` 引用必须**保存且不得释放**，切换时原样写回 | 丢失引用 ⇒ 系统页再也回不来（AT-20） |
+| **I6** | 替换必须**幂等**：以"`Content` 是否已是我们"为判据，**不要用"我记不记得做过"** | §5.4 已记录过指针身份判定的教训（分配器会复用地址 ⇒ 静默跳过） |
+| **I7** | 自定义页的所有元素必须**由 TAP 在 ShellHost 内创建** | 跨进程传递 XAML 对象不可能；只能在目标进程内 `CreateInstance` |
+| **I8** | 替换动作只允许发生在 **UI 线程**（`OnVisualTreeChange` 本就在 UI 线程） | 改可视树非线程安全；且不得在此做阻塞 IO（§2.4 的 `action=pipe` 教训） |
+
+#### 5.7.6 底栏按钮的语义变化
+
+底栏仍按 §5.2 注入（同一行右侧），但动作语义不同：
+
+| 状态 | 按钮文案 | 动作 |
+|---|---|---|
+| 显示系统页 | 「进入」 | 切到自定义页 |
+| 显示自定义页 | 「退出」 | 切回系统页 |
+
+⇒ 需要一个**新的动作类型**（如 `action=page`）。现有的 `exec` / `pipe` 都面向"拉起外部进程"，
+页面切换是 in-proc 行为，复用它们会导致配置语义错位。
+
+底栏左侧另需一个「清除重定向」按钮（§5.2 的两列网格需扩为三列）。
+
+---
+
 ## 6. 状态机与错误处理（C++ 具体实现）
 
 ### 6.1 异常策略：分层，别搞混
@@ -2917,7 +2957,7 @@ LRESULT CALLBACK TrayApp::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 | `GetIInspectableFromHandle` / `AdviseVisualTreeChange` / QI | 记 `hr`（**十六进制**，便于比对文档里的值）后继续/降级，**不中断** |
 | Win32 API | 每次失败立刻 `GetLastError()`（⛔ 不要在失败与读值之间插入任何其它 API 调用，会覆盖错误码） |
 
-**`inject::Error` 与用户可见信息、动作的映射**（与 C# 轨道一致，因为这是产品行为）：
+**`inject::Error` 与用户可见信息、动作的映射**（产品行为，与实现语言无关）：
 
 | `Error` | 用户可见 | 动作 |
 |---|---|---|
@@ -3023,7 +3063,7 @@ LRESULT CALLBACK TrayApp::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 ⛔ **路径里不能有 `;` 或 `=`**（§2.2）。`%LOCALAPPDATA%` 通常安全，但用户名可能含特殊字符 —— 启动自检必须验证。
 
-**三个二进制都放根目录**（不像 C# 轨道需要 `native\` 子目录）：因为 `.ini` 与日志的相对路径都按"exe/dll 所在目录"解析，放平最省心。若要分目录，必须同步改 `str::ModuleDir` 的使用点。
+**三个二进制都放根目录**：因为 `.ini` 与日志的相对路径都按"exe/dll 所在目录"解析，放平最省心。若要分目录，必须同步改 `str::ModuleDir` 的使用点。
 
 ### 7.2 构建系统：vcxproj 还是 CMake？
 
@@ -3033,7 +3073,7 @@ LRESULT CALLBACK TrayApp::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 | CMake | 跨工具链；本机有 CMake 4.4.0 | 调试 in-proc DLL 需要手工配 `launch.vs.json`；多一层生成步骤；对单人 Windows-only 项目是净负担 | 备选 |
 | 裸 `cl` + `build.cmd` | 无依赖（PoC 就是这么干的） | 无 IDE 索引、无符号调试体验、无法集成到解决方案 | 仅在无 VS 的机器上应急（保留 `build-native.cmd`） |
 
-### 7.3 `VolumeMixerExtender.props`（共享属性，等价于 C# 的 `Directory.Build.props`）
+### 7.3 `VolumeMixerExtender.props`（共享构建属性）
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
@@ -3188,7 +3228,7 @@ dumpbin /dependents out\Release\VmExt.Tap.dll
 
 ---
 
-## 8. 验证与验收 `[同源]`
+## 8. 验证与验收
 
 ### 8.1 分级验证
 
@@ -3209,15 +3249,15 @@ dumpbin /dependents out\Release\VmExt.Tap.dll
 
 **⚠️ 当前状态**：V0/V1/V2/V2.1/V5 已由 PoC 等价验证 ✅（V2 的证据见 `verified-after-injection/06-initdata-channel-limit.md`，含三次独立复现；点击动作的能力与安全约束见 `07-click-execution-constraints.md`）；**V3/V4/V6/V7/V8 未验证**。
 
-**⭐ C++ 轨道额外前置**：`VmExt.Tests.exe` 必须先全绿。它覆盖契约往返、INI 中文往返、注入错误分类、字符串/路径工具 —— 这些在 C# 轨道里属于"只能端到端验证"的部分。
+**⭐ 额外前置**：`VmExt.Tests.exe` 必须先全绿。它覆盖契约往返、INI 中文往返、注入错误分类、字符串/路径工具 —— 这些若不靠单元测试，就只能端到端验证，成本高得多。
 
 ### 8.2 验收测试用例表
 
 | ID | 名称 | 步骤 | 期望 | 可自动化 |
 |---|---|---|---|---|
-| AT-01 | 按钮在同一行右侧 | 打开音量面板；UIA 读 `Footer` 与全部 `Button` 矩形 | 两按钮 **y 区间重叠**；我们的按钮右边缘距 `Footer` 右边缘 **≤8px**；`Footer` 高度 **48**（不是 78） | ✅ `recon/footer-map.ps1` |
+| AT-01 | 按钮在同一行右侧 | 打开音量面板；UIA 读 `Footer` 与全部 `Button` 矩形 | 两按钮 **y 区间重叠**；我们的按钮右边缘距 `Footer` 右边缘 **≤8px**；`Footer` 高度 **48**（不是 78） | ✅ `poc/scripts/footer-map.ps1` |
 | AT-02 | 按钮文字正确 | 同上，读 `Name` | 等于 `vmext-tap.ini` 的 `entry1.text` | ✅ |
-| AT-03 | 点击执行动作 | UIA `InvokePattern` 调用 | `exec` → 目标进程出现；`pipe` → App 日志出现 `收到点击` | ✅ `recon/click-testlink.ps1` |
+| AT-03 | 点击执行动作 | UIA `InvokePattern` 调用 | `exec` → 目标进程出现；`pipe` → App 日志出现 `收到点击` | ✅ `poc/scripts/click-testlink.ps1` |
 | AT-04 | 与模型按钮视觉一致 | 比两个按钮高度 | 相等（都是 40） | ✅ |
 | AT-05 | 关闭面板无残留 | 开关面板 5 次 | 每次只有一个按钮 | ✅ |
 | AT-06 | `enabled=0` 不注入 | 设 0，重开面板 | 无按钮；`tap.log` 有 "disabled" | ✅ |
@@ -3231,6 +3271,12 @@ dumpbin /dependents out\Release\VmExt.Tap.dll
 | AT-14 | ⭐ **契约往返** | 跑 `VmExt.Tests.exe` | 全绿（尤其 initData 往返与非法字符拒绝） | ✅ **不需要 ShellHost** |
 | AT-15 | ⭐ **句柄不泄漏** | 循环 10 轮注入/重启 shell | App 句柄数回到基线（±10） | ⚠️ 半自动 |
 | AT-16 | 托盘图标在 explorer 重启后恢复 | 重启 explorer | 图标自动重新出现（`TaskbarCreated` 处理生效） | ⚠️ 半自动 |
+| **AT-17** | ⭐ **入口接管生效** | 开面板（L1）→ UIA `InvokePattern` 点 `VolumeL2Button` | 进入后显示**自定义页**（我们的内容），**不是**系统声音页 | ✅ |
+| **AT-18** | ⭐ **不误伤兄弟 L2 入口** | 点 L1 的「投影」(`Microsoft.QuickAction.ProjectL2`) | 正常进入系统投影页；自定义页**不出现** | ⚠️ 半自动 |
+| **AT-19** | ⭐ **底栏切换往返** | 自定义页点切换 → 系统页再点切换 | 内容正确来回；底栏按钮两态都常驻、文案随态变化 | ✅ |
+| **AT-20** | ⭐ **系统内容还原完整** | 从自定义页切回系统页 | 设备列表 / 音量条数值与切换前**一致**（验证保存的 `Content` 可原样恢复） | ⚠️ 半自动 |
+| **AT-21** | ⭐ **入口无关性** | 用其它路径（键盘 / 后续新增入口）进声音页 | 同样落在自定义页 —— 机制基于"页面出现"而非"某个按钮" | ✅ |
+| **AT-22** | 自定义页可滚动 | 应用数超过一屏 | 内容区可滚动，底栏**不随滚动移动** | ❌ 人工 |
 
 ### 8.3 自动化脚本清单（复用 `docs/poc/scripts/` 的现成工具）
 
@@ -3354,7 +3400,7 @@ Get-Item "$env:LOCALAPPDATA\VolumeMixerExtender\VmExt.Tap.dll" -Stream Zone.Iden
 
 ## 10. 已知限制、风险与版本兼容
 
-### 10.1 硬限制 `[同源]`（⛔ 不可消除，全部由体系结构决定）
+### 10.1 硬限制（⛔ 不可消除，全部由体系结构决定）
 
 | # | 限制 | 后果 | 应对 |
 |---|---|---|---|
@@ -3366,7 +3412,7 @@ Get-Item "$env:LOCALAPPDATA\VolumeMixerExtender\VmExt.Tap.dll" -Stream Zone.Iden
 | 6 | ShellHost 是原生非 .NET 进程 | 托管代码进不去（§1.2 C3） | 本轨道本来就全 C++，此约束不构成选择 |
 | 7 | `WaitForMultipleObjects` 上限 64 句柄 | 极端情况下 Watcher 数组会满 | 达到 60 时清理已退出项并重建数组（§3.7） |
 
-### 10.2 软依赖与版本敏感点 `[同源]`（**必须监控**）
+### 10.2 软依赖与版本敏感点（**必须监控**）
 
 | # | 依赖 | 当前值（实测） | 失效后果 | 发现方式 |
 |---|---|---|---|---|
@@ -3384,22 +3430,22 @@ Get-Item "$env:LOCALAPPDATA\VolumeMixerExtender\VmExt.Tap.dll" -Stream Zone.Iden
 2. `tap.log` 的 `up[]` 祖先链输出**不要删** —— 它是结构变化时唯一的现场证据。
 3. S1/S2 失效时产品行为是"安全地没有按钮"而不是崩溃。**这是刻意设计的，要保留。**
 
-### 10.3 ⭐ C++ 轨道特有的风险（这是两轨道真正的差别所在）
+### 10.3 ⭐ 本轨道特有的风险
 
 | # | 风险 | 严重度 | 说明与对策 |
 |---|---|---|---|
 | R1 | ⛔ **Debug CRT 的断言会在 ShellHost 里弹对话框，卡死整个外壳** | **高** | `/MTd` 静态链接 Debug CRT 时，`_CRT_ASSERT` / `_ASSERTE` / STL 的迭代器检查失败会调 `_CrtDbgReport`，默认**弹消息框**。在注入的 DLL 里弹框 = 模态阻塞 ShellHost UI 线程 = 任务栏/开始菜单/快速设置全卡住。<br>**对策**：注入用的两个 DLL **一律用 Release 构建**（`/MT` + `/Zi` 保留 PDB 便于调试）。若必须 Debug 构建，在 `DllMain` 里 `_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE)` + `_CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR)` —— 但**首选是别用 Debug CRT** |
-| R2 | 手写 Win32 托盘/窗口代码的 bug 面 | 中 | `TaskbarCreated`、`SetForegroundWindow`+`TrackPopupMenu`、`PostMessage(WM_NULL)`、`WM_DESTROY` 里 `NIM_DELETE` —— 四个都必须处理（§3.14）。这些在 C# WinForms 里是免费的 |
+| R2 | 手写 Win32 托盘/窗口代码的 bug 面 | 中 | `TaskbarCreated`、`SetForegroundWindow`+`TrackPopupMenu`、`PostMessage(WM_NULL)`、`WM_DESTROY` 里 `NIM_DELETE` —— 四个都必须处理（§3.14）。手写就没有框架兜底，漏一个就是可见缺陷 |
 | R3 | ⭐ **DPI 感知必须在 manifest 里声明** | 中 | 不声明的话文本框/图标在高 DPI 下模糊或被系统缩放。<br>在 `VmExt.App` 的 manifest（或 `.rc` 的 `RT_MANIFEST`）里加：`<dpiAware>true/pm</dpiAware>` + `<dpiAwareness>PerMonitorV2</dpiAwareness>`。<br>⚠️ **注意**：这不影响 XAML 侧的按钮几何（那是 ShellHost 的事），但会影响**验收脚本读到的屏幕坐标** —— `footer-map.ps1` 读到的 `(2189,1417)` 是**当前缩放下的物理像素**。跨 DPI 比较几何时要换算（见 T10） |
 | R4 | ⛔ **跨模块 CRT 边界**（不变量 I4） | 高（架构级） | 静态 CRT 下每个二进制各有一份堆；绝不允许跨 DLL 边界传 CRT 分配的内存或含它的对象。<br>本轨道下三个二进制在**不同进程**，所以天然不会触发；**但如果将来把 `VmExt.Shared` 改成 DLL，I4 立刻变成必须严格处理的问题**。建议保持静态库（§5.6） |
 | R5 | ⛔ 线程入口/窗口过程漏 `try/catch(...)` → `std::terminate` | **高** | 在 ShellHost 里就是 shell 崩。所有线程入口（**含 `detach` 的**）与 `WndProc` 必须整体捕获（§6.1） |
 | R6 | 无 GC：App 是长期运行的托盘进程，句柄泄漏会累积 | 中 | 全部用 `win32::UniqueHandle`；AT-15 做里程碑式检查；必要时用 `!htrace` 定位分配点（§9.4） |
-| R7 | ⭐ **改共享库 → 三个二进制全重建，且 in-proc 两个要重启 ShellHost 才能替换** | 中 | 这是 C++ 轨道相比 C# 轨道的**真实额外成本**：C# 轨道改控制面不碰 in-proc DLL。对策：把共享库的接口设计得极其稳定（`vmext_contract.h` 与 Log/Ini/Str 的签名尽量不动），把易变的业务逻辑放在 `VmExt.Control` 与 `VmExt.App`（这两个重建不影响 ShellHost 里的 DLL） |
+| R7 | ⭐ **改共享库 → 三个二进制全重建，且 in-proc 两个要重启 ShellHost 才能替换** | 中 | 共享静态库让"一份代码、三处使用"成为可能，代价是它的任何改动都会牵动全部二进制，而 in-proc 两个**必须让 ShellHost 重启才能替换**（DLL 被加载即锁定）。对策：把共享库的接口设计得极其稳定（`vmext_contract.h` 与 Log/Ini/Str 的签名尽量不动），把易变的业务逻辑放在 `VmExt.Control` 与 `VmExt.App`（这两个重建不影响 ShellHost 里的 DLL） |
 | R8 | `/W4 /WX` 与 cppwinrt 头共存会报一堆警告 | 低 | 把 cppwinrt 目录标记为**外部头**：MSBuild 里设 `<ExternalIncludePath>`，或命令行 `/external:I"<cppwinrt>" /external:W0`。这样外部头的警告被静音，而我们自己的代码仍然 `/WX` |
 | R9 | `std::filesystem` 会引入较多 CRT 代码进 in-proc DLL | 低 | 统一用 Win32 API 做文件操作（`str::FileExists` 等），in-proc DLL 更小、启动更快、依赖更少 |
 | R10 | `/GL`（LTCG）+ `/MT` 的构建时间更长 | 低 | 只对 Release 开；开发期用 Debug 配置迭代（但**注入用的产物必须 Release**，见 R1） |
 
-### 10.4 安全与合规说明 `[同源]`
+### 10.4 安全与合规说明
 
 | 项 | 说明 |
 |---|---|
@@ -3427,6 +3473,11 @@ Get-Item "$env:LOCALAPPDATA\VolumeMixerExtender\VmExt.Tap.dll" -Stream Zone.Iden
 | T9 | ⭐ **R7 的额外重建成本是否可接受** | 中 | 若不可接受，评估"把 `VmExt.Shared` 改成 DLL 并严格处理 I4"——**但这是一次架构级改动，不要轻易做** |
 | T10 | ⭐ **验收脚本在非 100% 缩放下的坐标处理** | 中 | UIA 返回物理像素；要在 100% 缩放下跑，或做 DPI 换算。写进脚本的说明里 |
 | T11 | 配置对话框的完整度 | 低 | v1 只做"总开关 + 诊断运行时路径 + 按钮文字"，其余让用户编辑 INI（§3.15） |
+| **T12** | ⭐ **`ListContent.Content` 可写性与还原** | **高** | **新机制的基石**：写入我们的页面能否正常渲染、切回时系统内容能否原样恢复（AT-20）。**未验证** |
+| **T13** | ⭐ **换内容的最佳时机** | **高** | `Footer appeared` 触发时布局是否已完成（`ActualWidth` 是否可用）。§5.5 记录过"注入发生在布局之前导致静默错位"的坑，这里同理 |
+| **T14** | ⭐ **`ComboBox` / `ListView` / `Slider` 的 `CreateInstance` 可用性** | **高** | 目前**只验证过 `Button`**。这三个若拿不到，自定义页的形态要重新设计（§5.7.4） |
+| **T15** | 系统页被换下后是否仍在后台活动 | 中 | 音频计量、设备枚举轮询等；若要显式停用需评估副作用 |
+| **T16** | 自定义页在 `ScrollViewer` 内的尺寸策略 | 中 | `Height` 自适应 vs 固定值；影响滚动行为（AT-22） |
 
 ---
 
@@ -3483,7 +3534,7 @@ typedef struct ParentChildRelation {
 
 ### 附录 B：PoC → C++ 产品代码映射表
 
-PoC 在 `docs/poc/`，**已跑通**。⭐ C++ 轨道下这个映射比 C# 轨道**简单得多 —— 不需要任何"重写为另一种语言"**。
+PoC 在 `docs/poc/`，**已跑通**。⭐ 这个映射不需要任何"重写为另一种语言"，PoC 与产品同语言同工具链。
 
 | PoC 文件 | 行数 | 产品对应 | 需要做的改动 |
 |---|---|---|---|
@@ -3537,7 +3588,6 @@ PoC 在 `docs/poc/`，**已跑通**。⭐ C++ 轨道下这个映射比 C# 轨道
 |---|---|
 | `Win11-QuickSettings-XAML-Injection-Notes.md` §9–§11 | 全部探测过程与结论、注入落地的完整记录 |
 | `docs/design.md` §2 §6 | 方案选型（含方案 A 完整证伪证据链）、最终实现说明 |
-| `VolumeMixerExtender-功能模块方法与实现文档-CSharp版.md` | 姊妹文档（C# 轨道）——§5/§8 与本文章节同源 |
 | `docs/reference/research-agent-report.md` | 外部调研：Windhawk / ExplorerPatcher / XAML 诊断 API（带源码引用） |
 | `xamlOM.h` | 诊断接口的权威定义（附录 A 即摘自此文件） |
 | `microsoft/microsoft-ui-xaml` Samples/WinUISnoop、`asklar/lvt`、`TranslucentTB/ExplorerTAP`、`m417z/UWPSpy` | 现成 TAP 实现的可参考样本 |
@@ -3547,7 +3597,8 @@ PoC 在 `docs/poc/`，**已跑通**。⭐ C++ 轨道下这个映射比 C# 轨道
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
-| 1.0 | 2026-10-03 | 首版（C++ 轨道）。基于已跑通的 PoC（Route B：XAML 诊断 TAP）。含 §1.0 双轨道选型对照、§2.0 共享契约头、§3 C++ 控制面逐模块、§4 in-proc 两段（自包含压缩副本）、§5 算法与不变量（含 C++ 特有的 I4）、§6 C++ 异常/资源策略、§7 原生构建与调试、§9.4 原生崩溃与句柄泄漏排障、§10.3 C++ 特有风险 |
+| 1.0 | 2026-10-03 | 首版。基于已跑通的 PoC（Route B：XAML 诊断 TAP）。含 §2.0 共享契约头、§3 控制面逐模块、§4 in-proc 两段、§5 算法与不变量（含 I4）、§6 异常/资源策略、§7 原生构建与调试、§9.4 原生崩溃与句柄泄漏排障、§10.3 本轨道特有风险 |
+| 1.1 | 2026-10-03 | 目标修订为「入口接管 + 页面内容替换」，新增 §5.7、AT-17…AT-22、T12…T16；删除两轨选型对照（§1.0），全文改为单轨表述；C# 版交付文档已删除 |
 
 
 

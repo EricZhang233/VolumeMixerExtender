@@ -15,7 +15,7 @@
 | `01-window-locating-and-band.md` | 环境与会话、首次抓到目标窗口、band 分布统计、`GetWindowBand` 实测值 | 面板是 **band=4** 窗口；`EnumWindows`/`FindWindow`/UIA `RootElement` **都看不到它**；拿 HWND 只能靠 `GetForegroundWindow()`/`GetGUIThreadInfo()` |
 | `02-xaml-host-and-element-tree.md` | `probe-uia.ps1`（UIA 看不到面板）、`probe-d.ps1`（真身在子窗口）、`qs-panel-probe.ps1`（28 元素树） | `ControlCenterWindow` 在 UIA 里是**空壳**；真 XAML 树在子窗口 `Windows.UI.Input.InputSite.WindowClass`（`FrameworkId=XAML`）里；声音输出页有 28 个元素，关键 `AutomationId` 已枚举 |
 | `03-winevent-test.md` | `SetWinEventHook` 两组对照实验 | **band 窗口照发 WinEvent**（`OBJECT_SHOW`/`OBJECT_HIDE`/`SYSTEM_FOREGROUND`），且空闲 600ms **0 事件** ⇒ 事件驱动检测 = **0 CPU** |
-| `04-footer-geometry-before-injection.md` | ★ `recon/footer-geom.ps1` 的输出 | **注入前的底栏几何** —— 见下方"关键基准值" |
+| `04-footer-geometry-before-injection.md` | ★ `poc/archive/recon/footer-geom.ps1` 的输出 | **注入前的底栏几何** —— 见下方"关键基准值" |
 | `05-xaml-exports-and-shellhost-modules.md` | `pexports.ps1` 对 `Windows.UI.Xaml.dll` 的导出表 + ShellHost 已加载模块清单 | 面板是 **System XAML** 而不是 WinUI3；`Windows.UI.Xaml.dll` 导出 `InitializeXamlDiagnosticsEx`/`GetDependencyObjectAddress`/`OverrideXamlMetadataProvider`；`ControlCenter.dll` 只导出 3 个符号 |
 | `element-persistence.txt` | ★ 元素 runtime id 实测对比（5/5 全变） | **XAML 元素实例每次打开面板都重建**（只有 HWND 常驻）。这是"事件驱动 + 每次重新注入"方案的基石，也解释了"为什么关闭面板后按钮自动消失、不需要清理逻辑" |
 | `injection-feasibility.txt` | 完整性级别 / PPL 检查 / `OpenProcess` 权限测试 | ShellHost 与我们的进程**同为 Medium IL、非 PPL**，`OpenProcess(ALL_ACCESS)` **成功** ⇒ 经典 DLL 注入可行 |
@@ -28,7 +28,7 @@
 > （arm64/x86 也有；PoC 后来用的就是这个路径，实测可用。）
 >
 > 这个误报一度让"方案 B（XAML 诊断 TAP）不可行"看起来成立。**保留原件不改**是有意的 —— 它记录了当时的真实认知状态，
-> 而纠正记录在交付文档里（C# 版 §1.4 F8、C++ 版 §10.2 S7）。
+> 而纠正记录在交付文档里（C++ 版 §10.2 S7）。
 > **教训**：`Get-ChildItem -Recurse` 在 `Program Files` 这类目录上会因为权限/重定向静默漏项，探测 SDK 路径时不要只靠一次递归搜索。
 
 ---

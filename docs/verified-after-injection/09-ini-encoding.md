@@ -166,12 +166,12 @@ if (FindOurEntry(footer, 0)) { LogF("…已有我们的按钮 -> 跳过（内容
 
 | 位置 | 修改 |
 |---|---|
-| C# §3.3 `ConfigStore.WriteTapIni` | ⛔ 原写"**必须用 `Encoding.UTF8` 无 BOM 写**" —— **方向是反的**，已改为 UTF-16LE + BOM，并保留原"否则读不到第一行"的教训说明（BOM 确实会破坏节名，但结论应是"不要用 UTF-8"） |
-| C# §3.3 `WriteLauncherIni` | 补"同样必须 UTF-16LE + BOM"（原生 Launcher 也走 `GetPrivateProfileStringW`，`initdata` 里可能有中文路径） |
-| C# §4.3 坑 13 / C++ §4.3 坑 13 | 从"需要 vxv 验证"改为实测结论 + 三种失效方式 |
-| C++ §3.3 | 补写侧坑（`WritePrivateProfileStringW` 对全新文件写成 ANSI） |
-| **两份文档 §5.x 幂等 + §5.4 L3** | ⛔ 删掉"句柄会变所以不会误判"这句**已被证伪**的断言，改成"按内容判定"并记录踩坑 |
-| 两份文档 §10.4/§10.5 | T2 划掉；V3 注明"编码层已钉死，若仍乱码就是字体/显示层" |
+| §3.3 `Ini::Write` | ⛔ 原写"**必须用 UTF-8 无 BOM 写**" —— **方向是反的**，已改为 UTF-16LE + BOM，并保留原"否则读不到第一行"的教训说明（BOM 确实会破坏节名，但结论应是"不要用 UTF-8"） |
+| §3.3（Launcher 配置） | 补"同样必须 UTF-16LE + BOM"（Launcher 也走 `GetPrivateProfileStringW`，`initdata` 里可能有中文路径） |
+| §4.3 坑 13 | 从"需要 vxv 验证"改为实测结论 + 三种失效方式 |
+| §3.3 | 补写侧坑（`WritePrivateProfileStringW` 对全新文件写成 ANSI） |
+| **§5.x 幂等 + §5.4 L3** | ⛔ 删掉"句柄会变所以不会误判"这句**已被证伪**的断言，改成"按内容判定"并记录踩坑 |
+| §10.4/§10.5 | T2 划掉；V3 注明"编码层已钉死，若仍乱码就是字体/显示层" |
 
 ---
 

@@ -1437,7 +1437,7 @@ initData 降级为"人类可读的面包屑"，超限时只丢面包屑并打警
 
 **端到端**：ini 写成 UTF-16LE+BOM、`entry1_text=音量合成器` ⇒ 按钮 `Name` 码点 `\u97F3\u91CF\u5408\u6210\u5668` 逐位一致，右边缘仍 2543 ✅。
 
-**⛔ 文档修正**：C# 文档里 `WriteTapIni` 原写"**必须用 `Encoding.UTF8` 无 BOM 写**否则读不到第一行" —— **方向是反的**。
+**⛔ 文档修正**：原交付文档里 `WriteTapIni` 曾写"**必须用 `Encoding.UTF8` 无 BOM 写**否则读不到第一行" —— **方向是反的**。
 理由（BOM 破坏节名）没错，但结论应是"不要用 UTF-8"，而不是"用无 BOM 的 UTF-8"。
 
 **🔴 顺带挖出并修掉的真 bug：幂等判定用"记住指针"**
@@ -1479,4 +1479,67 @@ initData 降级为"人类可读的面包屑"，超限时只丢面包屑并打警
   
 ---
   
+### 12.8 方向修订：入口接管 + 页面内容替换（2026-10-03 晚）
+
+**目标变更**：不再"在系统页里加按钮"，而是让 L1 的「选择声音输出」**直接进入自定义页**；
+原底栏按钮改为**系统页 ↔ 自定义页的切换**。
+
+#### 补采了 L1 主面板的元素树（此前完全缺失）
+
+```text
+| Group | 快速设置 | id=ControlCenterRegion
+| | Button | 静音音量     | id=Microsoft.QuickAction.VolumeNoTimer | ToggleButton
+| | Slider | 声音输出     | id=                                     | Slider
+| | Button | 选择声音输出 | id=VolumeL2Button                       | Button   ← ★ 入口
+| | Group |  | id=FooterGrid | LandmarkTarget
+| | | Button | 电池       | id=Microsoft.QuickAction.Battery
+| | | Button | 所有设置   | id=Microsoft.QuickAction.AllSettings
+| | Button | 投影         | id=Microsoft.QuickAction.ProjectL2      | offscreen
+```
+
+L1 = **31 元素**，L2 = 28 元素，两态**互斥**（`ControlCenterRegion` 里非此即彼）。
+完整树见 `docs/baseline-before-injection/06-l1-main-panel-tree.md`。
+
+#### 三条结论
+
+1. **入口按钮确认**：`AutomationId = VolumeL2Button`，`Name` = 「选择声音输出」（与 tooltip 一致）。
+   同一层还有「静音音量」(`ToggleButton`) 和「声音输出」(`Slider`)，名称相近 ⇒ **按 `AutomationId` 匹配**。
+
+2. ⚠️ **"拦导航"路线被否掉**：`Microsoft.QuickAction.ProjectL2` 证明 **`L2` 后缀 = 导航到二级页**，
+   即进入 L2 的入口是**一组**。在 `L2Frame` 上挂 `Navigating` 并无条件 `Cancel` 会**误伤「投影」**。
+   加上"Cancel 后帧停在 L1、我们的页面无处安放"，这条路代价高且风险外溢。
+
+3. **`FooterGrid` 属 L1 且非空**（装着「电池」「所有设置」）——
+   §11 里"一直是空的"这句**要按此修正**。它与声音页的页面级 `Footer` 同名不同物。
+
+#### 采用的机制
+
+```text
+点 VolumeL2Button → 系统照常导航 → 我们检测到声音页出现
+→ 保存 ListContent 的原 Content → 换成自定义页
+→ 底栏按钮在两态间切换（还原 / 再替换）
+```
+
+**误伤面为零**：只在声音页真正出现时动作，其他 L2 入口不受影响。
+挂载点选 `ListContent` 而非整页替换 —— 底栏天然跨两态存续，后退键与标题免费保留。
+
+⚠️ **最大成本**：没有 XAML 标记编译，界面只能用 `CreateInstance` 逐元素搭。
+参照单个 `Button`（含样式抄写）约 60 行，一个带应用列表的页面保守估计 **1500–2500 行 C++**。
+且目前**只验证过 `Button`**，`ComboBox`/`ListView`/`Slider` 的可用性未验（T14）。
+
+#### 本轮新增/修改的文件
+
+- 新增证据：`docs/baseline-before-injection/06-l1-main-panel-tree.md`
+- `docs/reference/raw-outputs.md` 追加 §09（L1 原始 dump）
+- `docs/design.md`：标题与目标改写，新增 **§7**（方向修订），并修正 5 处陈旧的 `logs/`、`recon/` 路径
+- C++ 规格：§0.2 术语表、§1.1 目标、新增 **§5.7**（入口接管与内容替换）、§8.2 新增 AT-17…AT-22、
+  §10.5 新增 T12…T16
+- C# 规格：**已删除**（技术轨道定为 C++，不做双轨维护）
+
+> 📌 顺带发现一个复现技巧：`qs-panel-probe.ps1` 用 `GetForegroundWindow()` 定位面板，
+> 所以**开面板用 `Win+A` 采到 L1、用 `Win+Ctrl+V` 采到 L2**，同一脚本无需改动。
+> 此前未记录，补上。
+
+---
+
 *（完）*

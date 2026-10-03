@@ -118,7 +118,7 @@ CreateProcessW(nullptr, L"C:\\Program Files\\App\\app.exe", ...);          // �
    实测里两种失败模式（不加引号、填 `.lnk`）都是这么来的。
 
 > ✅ 这两份交付文档的配置 schema 已经按第 3 条改掉：`entry1.command` 已拆为 `entry1.exe` + `entry1.args`
-> （C# 版 §2.3、C++ 版 §2.3，模型类与 `PerformClickAction` 也同步改了）。
+> （C++ 版 §2.3；模型类与 `PerformClickAction` 也同步改了）。
 
 ### 5.3 复现方法
 
