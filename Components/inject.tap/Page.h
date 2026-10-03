@@ -243,6 +243,25 @@ namespace vmex::tap::page
         return PGXM::SolidColorBrush(PGUI::ColorHelper::FromArgb(alpha, 0xE5, 0x48, 0x4D));
     }
 
+    [[nodiscard]] inline PGXM::Brush AccentBrush()
+    {
+        if (const auto application = PGX::Application::Current())
+        {
+            if (const auto resources = application.Resources())
+            {
+                if (resources.HasKey(winrt::box_value(L"SystemControlHighlightAccentBrush")))
+                {
+                    if (auto brush = resources.Lookup(winrt::box_value(L"SystemControlHighlightAccentBrush")).try_as<PGXM::Brush>())
+                    {
+                        return brush;
+                    }
+                }
+            }
+        }
+
+        return PGXM::SolidColorBrush(PGUI::ColorHelper::FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
+    }
+
     inline void ApplyDangerVisual(PGXC::Button const& button, bool armed)
     {
         const auto background = DangerBrush(armed ? 0x38 : 0x10);
@@ -520,7 +539,83 @@ namespace vmex::tap::page
             .first->second;
     }
 
-    [[nodiscard]] inline PGXC::ComboBox MakeRedirectCombo(ContextPtr const& context, const audio::SessionInfo& session)
+    [[nodiscard]] inline std::wstring RedirectTargetName(ContextPtr const& context, const std::wstring& appKey)
+    {
+        const std::wstring& selected = RedirectSelection(context, appKey);
+        if (selected.empty())
+        {
+            return std::wstring();
+        }
+
+        for (const auto& device : context->data->render)
+        {
+            if (device.id == selected)
+            {
+                return audio::DisplayDeviceName(device, Settings().showDriverName);
+            }
+        }
+
+        return selected;
+    }
+
+    struct RouteLine final
+    {
+        PGXC::Grid row{nullptr};
+        PGXC::TextBlock name{nullptr};
+
+        void Update(std::wstring const& target) const
+        {
+            name.Text(winrt::hstring(target));
+
+            if (target.empty())
+            {
+                PGXC::ToolTipService::SetToolTip(name, nullptr);
+                row.Visibility(PGX::Visibility::Collapsed);
+                return;
+            }
+
+            PGXC::ToolTipService::SetToolTip(name, winrt::box_value(winrt::hstring(target)));
+            row.Visibility(PGX::Visibility::Visible);
+        }
+    };
+
+    [[nodiscard]] inline RouteLine MakeRouteLine(ContextPtr const& context, const std::wstring& appKey)
+    {
+        PGXC::ColumnDefinition arrowColumn;
+        PGXC::ColumnDefinition targetColumn;
+        arrowColumn.Width(PGX::GridLengthHelper::Auto());
+        targetColumn.Width(PGX::GridLengthHelper::FromValueAndType(1, PGX::GridUnitType::Star));
+
+        RouteLine line;
+        line.row = PGXC::Grid();
+        line.row.ColumnDefinitions().Append(arrowColumn);
+        line.row.ColumnDefinitions().Append(targetColumn);
+        line.row.VerticalAlignment(PGX::VerticalAlignment::Center);
+        line.row.Margin(PGX::ThicknessHelper::FromLengths(0, 1, 0, 0));
+
+        const auto accent = AccentBrush();
+
+        PGXC::TextBlock arrow = Text(L"\x2192", 11);
+        arrow.Opacity(0.75);
+        arrow.Foreground(accent);
+        arrow.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 5, 0));
+        PGXC::Grid::SetColumn(arrow, 0);
+        line.row.Children().Append(arrow);
+
+        PGXC::TextBlock name = Text(winrt::hstring(), 11);
+        name.Foreground(accent);
+        name.TextWrapping(PGX::TextWrapping::NoWrap);
+        PGXC::Grid::SetColumn(name, 1);
+        line.row.Children().Append(name);
+        line.name = name;
+
+        line.Update(RedirectTargetName(context, appKey));
+        LogKey(L"log.page.appRoute", { appKey, std::wstring(line.name.Text()) });
+        return line;
+    }
+
+    [[nodiscard]] inline PGXC::ComboBox MakeRedirectCombo(ContextPtr const& context, const audio::SessionInfo& session,
+                                                        std::function<void(std::wstring const&)> onPicked)
     {
         PGXC::ComboBox combo;
         combo.HorizontalAlignment(PGX::HorizontalAlignment::Stretch);
@@ -562,8 +657,8 @@ namespace vmex::tap::page
         {
             LogKey(L"log.page.appRedirectClosed", { appKey });
         });
-        combo.SelectionChanged([snapshot, processId, appKey, context](PGF::IInspectable const& sender,
-                                                                     PGXC::SelectionChangedEventArgs const&)
+        combo.SelectionChanged([snapshot, processId, appKey, context, onPicked](PGF::IInspectable const& sender,
+                                                                             PGXC::SelectionChangedEventArgs const&)
         {
             if (auto self = sender.try_as<PGXC::ComboBox>())
             {
@@ -573,6 +668,7 @@ namespace vmex::tap::page
                     context->redirects[appKey] = std::wstring();
                     LogKey(L"log.page.appRedirectPick", { std::to_wstring(processId), L"(默认)" });
                     SendSetRedirect(processId, std::wstring());
+                    onPicked(std::wstring());
                     return;
                 }
 
@@ -582,6 +678,7 @@ namespace vmex::tap::page
                     context->redirects[appKey] = snapshot[position].id;
                     LogKey(L"log.page.appRedirectPick", { std::to_wstring(processId), snapshot[position].friendlyName });
                     SendSetRedirect(processId, snapshot[position].id);
+                    onPicked(audio::DisplayDeviceName(snapshot[position], Settings().showDriverName));
                 }
             }
         });
@@ -612,7 +709,22 @@ namespace vmex::tap::page
         PGXC::Grid::SetColumn(icon, 0);
         titleBand.Children().Append(icon);
 
-        PGXC::StackPanel block = NameBlock(session.displayName, std::wstring());
+        PGXC::StackPanel block;
+        block.VerticalAlignment(PGX::VerticalAlignment::Center);
+
+        PGXC::TextBlock name = Text(winrt::hstring(session.displayName), 13);
+        name.TextWrapping(PGX::TextWrapping::WrapWholeWords);
+        name.MaxLines(2);
+        PGXC::ToolTipService::SetToolTip(name, winrt::box_value(winrt::hstring(session.displayName)));
+        block.Children().Append(name);
+
+        RouteLine route{};
+        if (movable)
+        {
+            route = MakeRouteLine(context, appKey);
+            block.Children().Append(route.row);
+        }
+
         PGXC::Grid::SetColumn(block, 1);
         titleBand.Children().Append(block);
 
@@ -698,7 +810,7 @@ namespace vmex::tap::page
             expand.Children().Append(caption);
 
             auto comboRef = std::make_shared<PGXC::ComboBox>(nullptr);
-            head.Click([expand, chevron, comboRef, context, session](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
+            head.Click([expand, chevron, comboRef, context, session, route](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
             {
                 const bool open = expand.Visibility() != PGX::Visibility::Visible;
 
@@ -707,7 +819,8 @@ namespace vmex::tap::page
                     expand.Visibility(PGX::Visibility::Visible);
                     if (!*comboRef)
                     {
-                        *comboRef = MakeRedirectCombo(context, session);
+                        *comboRef = MakeRedirectCombo(context, session,
+                            [route](std::wstring const& target) { route.Update(target); });
                         expand.Children().Append(*comboRef);
                     }
                 }

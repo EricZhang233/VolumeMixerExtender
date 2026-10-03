@@ -242,6 +242,7 @@ log.page.appVolume: 应用音量 app={0} 值={1}
 log.page.appRedirectOpened: 重定向下拉已展开 app={0}
 log.page.appRedirectClosed: 重定向下拉已收起 app={0}
 log.page.appRedirectPick: 选择重定向 pid={0} 目标={1}
+log.page.appRoute: 重定向端点显示 app={0} 端点={1}
 log.page.commandDropped: 命令未送达宿主(后台进程未运行?), 已丢弃: {0}
 log.page.clearRedirects: 已清除全部重定向并重置列表
 log.page.snapshot: snapshot: render={0} capture={1} apps={2} (apps from {3})

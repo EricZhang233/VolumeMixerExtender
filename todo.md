@@ -133,6 +133,10 @@
   —— ✅ **重定向 UI 已落地（2026-10-04，Eric 定稿：不用列表，用下拉框）**：
   点**整条标题带**（图标 + 名称 + 右侧 chevron，透明底保证空白处也可命中）向下展开 → 一个 `ComboBox`
   （第一项「默认设备」= 清除；其余为渲染端点，走 `显示驱动名` 设置）→ 选中即发 `SETREDIRECT`
+  —— ✅ **重定向端点显示已落地（2026-10-04，对齐蓝图 `layout-preview.html`）**：应用行**名称下方常显一行**
+  「→ 端点名」（该应用有重定向时才有），11px、**主题强调色**、单行省略、全名进悬停 `title`；
+  数据与下拉框**同源**（页面本地 map）⇒ 选/清/重建三处都会跟着变；「显示驱动名」开关同样作用于这行（蓝图要求的"作用面三处"补齐）；
+  系统声音行不画（它本来就不可重定向）
   —— ⛔ **下拉框改为"首次展开时才创建"**：原先在父面板还 `Collapsed` 时就建 `ComboBox`，
   实测会让弹出层残留、**整页输入被吃掉**；现在顺序是 先 `Visible` → 再创建 → 再挂树，
   且收起前先 `IsDropDownOpen(false)`
@@ -283,9 +287,13 @@
 - [X]  载荷 DLL 自身的日志文本已走 text.yaml（`text::Embedded()` + `LogKey`）
   —— ✅ 已落地：`Tap.cpp` / `Page.h` 的日志全部改成文本键（`log.tap.*` / `log.page.*`）
 - [X]  **注入已落地（2026-10-04）** —— `Core/InjectionService` 从桩换成真实实现，`vmex host` 常驻时自动监视并注入
-  —— `Core/PayloadDeployment`：按 **载荷尺寸** 生成版本目录 `<缓存根>\payload-<launcherSize>-<tapSize>`，
+  —— `Core/PayloadDeployment`：按 **载荷内容哈希 + 尺寸** 生成版本目录 `<缓存根>\payload-<hash16>-<launcherSize>-<tapSize>`，
   释放 `vmex_launcher.dll` / `vmex_tap.dll` 并写 `vmex_tap.ini`（UTF-16LE+BOM，复用 `ConfigService`）
   ⇒ 重建后自动换新目录，不会与 ShellHost 里已加载的旧 DLL 抢文件
+  —— ⛔ **2026-10-04 修掉一个真 bug**：原来目录名只用**尺寸**，而"尺寸一致就跳过释放"的省写盘逻辑会让
+  **同尺寸重建复用旧 DLL**（本轮 tap 恰好两次都是 `2611712` 字节）⇒ 注入的是上一版、日志却一路正常
+  ⇒ 目录名加入 `payload::PayloadContentHash()`（FNV-1a，数据本就在内存里，零额外 IO）；实测部署产物与 `bin\Debug` 哈希一致
+  —— ⚠️ 副作用：同尺寸每次重建都会生成新目录，`%TEMP%` 会积累旧载荷（**自动清理未做**）
   —— `Core/InjectionService`：`ShellHost.exe` 定位（本会话 + `ProcessIdToSessionId` 校验）、
   远程 `LoadLibraryW`（**远程 kernel32 基址 + 本地 RVA**，⛔ 不用本进程地址）、等 TAP 模块出现（100 ms 轮询）
   —— `Core/InjectionMonitor`：1000 ms 轮询，`tapLoaded` 就不再动手；ShellHost 换进程会自动重新注入
@@ -341,6 +349,7 @@
 - [X]  注入后开面板验证，确认自定义页 + 底栏三格行为与 `layout-preview.html` 一致
   —— ✅ 已由 Eric 实机交互确认（两轮）：页面接管、底栏、逐应用音量/静音、**整条标题带可点开重定向**、
   下拉选「默认设备」= 清除且有可见反馈、`#system` 行不给重定向（pid=0 非法）
+  —— ✅ **2026-10-04 补上蓝图里缺的"重定向端点显示"**：应用行名称下方常显一行「→ 端点名」（有重定向时才有）
   —— ⛔ 唯一未通：**改具体音频端点**（本机 RDP 端点下 `SetPersistedDefaultAudioEndpoint` → `E_INVALIDARG`，环境限制）
   —— ℹ️ 逐像素对齐未单独出报告；几何验收见 `docs/verified-after-injection/13-footer-mount.md`
   —— 载荷目录（含日志/配置）建议用 `%TEMP%\<某个目录>`；⛔ 别放 ShellHost 自己目录（不可写）
