@@ -1,15 +1,15 @@
 app.name: VolumeMixerExtender
 app.short: VMExt
 app.description: 为 Windows 11 快速设置音量面板注入扩展入口与自定义声音页面
-cli.banner: VolumeMixerExtender {0}
-cli.usage: 用法: vmex <命令> [参数] [选项]
+cli.banner: VolumeMixerExtender CLI {0}
+cli.usage: 用法: vmex_cli <命令> [参数] [选项]
 cli.section.commands: 命令
 cli.section.groups: 命令分组
 cli.section.arguments: 参数
 cli.section.options: 选项
 cli.section.examples: 示例
 cli.section.exitcodes: 退出码
-cli.hint.skill: 运行 "vmex skill" 获取完整接入文档
+cli.hint.skill: 运行 "vmex_cli skill" 获取完整接入文档
 cli.group.core: 基础
 cli.group.inject: 注入
 cli.group.audio: 音频
@@ -25,6 +25,7 @@ cli.error.missing_required: 缺少必需参数: {0}
 cli.error.service_unavailable: 服务不可用: {0}
 cli.error.invalid_value: 无效取值: {0}
 cli.error.operation_failed: 操作失败: {0}
+cli.error.tap_not_ready: TAP 未就绪，请查看 launcher/tap 日志
 cli.error.host_running: 后台进程已在运行
 cli.error.host_failed: 后台进程启动失败
 cli.value.enabled: 已启用
@@ -73,7 +74,6 @@ cmd.inject.summary: 注入 TAP 到 ShellHost
 cmd.inject.opt.tap: TAP 模块路径
 cmd.inject.opt.wait: 等待目标就绪的超时毫秒数
 cmd.inject.example.run: 立即注入一次并报告结果
-cmd.eject.summary: 卸载当前注入
 cmd.status.summary: 查询注入状态
 cmd.host.summary: 以后台进程常驻, 接收页面操作命令
 cmd.host.example.run: 以后台进程方式运行 (开机自启使用此形式)
@@ -88,18 +88,11 @@ cmd.redirect.arg.process: 目标进程号
 cmd.redirect.arg.device: 目标端点标识, 省略或留空表示清除该应用的重定向
 cmd.redirect.opt.flow: 数据流 render 或 capture
 cmd.redirect.opt.role: 只设置指定角色, 省略则设置全部角色
-cmd.sessions.summary: 列出音频会话
-cmd.sessions.arg.device: 端点标识
-cmd.volume.summary: 设置端点或会话音量
-cmd.volume.arg.value: 音量 0.0 到 1.0
-cmd.mute.summary: 设置端点或会话静音
 cmd.default.summary: 设置系统默认端点
 cmd.redirect.summary: 设置逐应用端点重定向
 cmd.clear-redirect.summary: 清除全部逐应用重定向
 cmd.autostart.summary: 查询或设置开机自启
 cmd.autostart.arg.state: on 注册自启, off 取消自启, 省略则只查询
-cmd.config.summary: 读写配置项
-cmd.log.summary: 控制日志级别与输出
 log.app.init: 应用初始化, 配置={0}
 log.app.ready: 应用就绪, 文本项={0}
 log.app.shutdown: 应用关闭
@@ -118,8 +111,14 @@ log.pipe.set_default_no_virtual: 未找到虚拟端点 V, 未切换默认设备 
 log.pipe.set_redirect: 逐应用重定向 pid={0} role={1} 结果={2}
 log.pipe.redirect_not_applied: 逐应用重定向未生效(本机 RDP 限制?), 未记录状态 pid={0}
 log.pipe.clear_redirect: 清空逐应用重定向 结果={0}
+log.pipe.autostart_invalid: 自启指令参数不合法, 已忽略: {0}
+log.pipe.autostart_done: 开机自启已更新 state={0} 结果=成功
+log.pipe.autostart_failed: 开机自启更新失败 state={0} 原因={1}
 log.pipe.click_unhandled: 收到点击, 当前没有可点击条目: {0}
-log.pipe.uninstall_pending: 收到卸载请求, 卸载流程尚未实现
+log.pipe.uninstall_done: 已删除开机自启项并结束 ShellHost
+log.pipe.uninstall_failed: 卸载失败: {0}
+log.pipe.exit_done: 已结束 ShellHost, 程序即将退出
+log.pipe.exit_failed: 退出程序失败: {0}
 log.text.loaded: 文本资源载入完成, 共 {0} 项
 log.text.missing: 文本键缺失: {0}
 log.logger.sink: 已挂载日志接收器: {0}
@@ -142,13 +141,15 @@ log.inject.already_loaded: pid={0} 已装载 TAP, 跳过重复注入
 log.inject.stale_tap: ShellHost 里是旧载荷, 需重启 ShellHost 才能换新: 已加载={0} 当前={1}
 log.inject.payload: 注入载荷 launcher={0} tap={1}
 log.inject.failed: 注入失败 pid={0} 原因={1}
+log.inject.core_failed: 预装载 Core 失败 pid={0} 原因={1}
+log.inject.core_loaded: Core 已预装载 pid={0}
 log.inject.launcher_loaded: 注入载荷已装载 pid={0}
 log.inject.tap_ready: TAP 已就绪 pid={0}
 log.inject.tap_pending: TAP 未在超时内就绪 pid={0} (看 launcher/tap 日志)
-log.inject.eject_unsupported: TAP 卸载尚未实现 (需要注销 XAML 诊断会话)
 log.monitor.started: 注入监视启动, 轮询间隔={0} ms
 log.monitor.stopped: 注入监视停止
 log.payload.deployed: 注入载荷已部署: {0}
+log.payload.cleanup_skipped: 旧载荷目录仍被占用，跳过清理: {0}
 log.payload.directory_failed: 载荷目录创建失败: {0}
 log.icons.extracted: 应用图标已提取 {0} -> {1}
 log.icons.missing: 应用没有可用图标: {0}
@@ -223,6 +224,8 @@ page.toggle.showDriverName: 显示驱动名
 page.button.uninstall: 从系统卸载
 page.button.uninstalling: 正在卸载…
 page.button.uninstallCount: 再单击{0}次从系统卸载
+page.button.exit: 退出程序
+page.button.exiting: 正在退出…
 page.none.capture: （没有可用的输入设备）
 page.none.apps: （当前没有正在发声的应用）
 page.app.redirect: 重定向到

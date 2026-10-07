@@ -739,7 +739,7 @@ V 重现时 Windows 会不会**抢默认**、未插入端点是否真的从 Win1
 开关必须立刻显示"关"，所以每一页都**现查**（`AutostartEntry::IsEnabled()`）。
 
 **实现落点（2026-10-03）**：`Core/AutostartEntry.*`（`IsEnabled` / `Enable` / `Disable`）。
-宿主和 payload 都链接 `vmex_core` ⇒ 只有一份实现，**CLI（`vmex autostart [on|off]`）与设置页开关共用它**。
+宿主和 payload 都链接 `vmex_core` ⇒ 只有一份实现，**CLI（`vmex_cli autostart [on|off]`）与设置页开关共用它**。
 **读侧必须就地**：`pipe` 单向，payload 问不了宿主"现在开着吗"，而"开着/关着"恰好就是开关要画的东西。
 
 ⚠️ 值里的路径指向 `<InstallRoot>\vmex.exe`（`platform::GetInstallDirectory()`，与宿主自己算配置/日志

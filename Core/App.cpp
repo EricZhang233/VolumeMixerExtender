@@ -7,10 +7,10 @@
 #include "PayloadDeployment.h"
 #include "PayloadResources.h"
 #include "Platform.h"
-#include "RedirectStore.h"
 #include "Strings.h"
 #include "TapCommand.h"
 #include "TapPipeServer.h"
+#include "UninstallService.h"
 #include "Version.h"
 
 #include <windows.h>
@@ -99,12 +99,6 @@ namespace vmex
             }
         }
 
-        cli::Result Unsupported(std::wstring_view operation)
-        {
-            (void)operation;
-            return cli::Result{ cli::Outcome::NotSupported, {} };
-        }
-
         cli::Command MakeCommand(std::wstring name, std::wstring groupKey, std::wstring summaryKey)
         {
             cli::Command command;
@@ -141,7 +135,6 @@ namespace vmex
         void HandleSetDefault(const inject::TapCommand& command);
         void HandleSetRedirect(const inject::TapCommand& command);
         void HandleClearRedirect();
-        void RecordAppRedirect(std::uint32_t processId, const std::wstring& deviceId);
     };
 
     App::App()
@@ -396,8 +389,17 @@ namespace vmex
             return prepared;
         }
 
-        return m_impl->injection->Inject(
+        const auto injected = m_impl->injection->Inject(
             inject::BuildInjectionOptions(m_impl->deployment, kInjectionTimeoutMs), state);
+        if (!injected.IsOk())
+        {
+            return injected;
+        }
+        if (!state.tapLoaded)
+        {
+            return Status::Failed(L"tap-not-ready");
+        }
+        return Status::Ok();
     }
 
     Status App::StartMonitoring()
@@ -478,9 +480,68 @@ namespace vmex
         case inject::TapVerb::ClearRedirect:
             HandleClearRedirect();
             break;
-        case inject::TapVerb::Uninstall:
-            log::Logger::Instance().WriteKey(log::Level::Warn, kPipeChannel, L"log.pipe.uninstall_pending");
+        case inject::TapVerb::Autostart:
+        {
+            std::wstring error;
+            const bool enable = !command.arguments.empty() &&
+                strings::EqualsIgnoreCase(command.arguments[0], L"on");
+            const bool disable = !command.arguments.empty() &&
+                strings::EqualsIgnoreCase(command.arguments[0], L"off");
+            if (!enable && !disable)
+            {
+                log::Logger::Instance().WriteKeyFormat(
+                    log::Level::Warn, kPipeChannel, L"log.pipe.autostart_invalid", { command.raw });
+                break;
+            }
+
+            const bool applied = enable
+                ? autostart::AutostartEntry::Enable(error)
+                : autostart::AutostartEntry::Disable(error);
+            log::Logger::Instance().WriteKeyFormat(
+                applied ? log::Level::Info : log::Level::Error,
+                kPipeChannel,
+                applied ? L"log.pipe.autostart_done" : L"log.pipe.autostart_failed",
+                { enable ? L"on" : L"off", error });
             break;
+        }
+        case inject::TapVerb::Uninstall:
+        {
+            inject::State state;
+            if (monitor != nullptr) state = monitor->Snapshot();
+            else injection->QueryState(state);
+            monitor.reset();
+            const auto result = uninstall::DisableAutostartAndTerminateShellHost(state.target.processId);
+            if (result.ok)
+            {
+                log::Logger::Instance().WriteKey(log::Level::Info, kPipeChannel, L"log.pipe.uninstall_done");
+                ::SetEvent(ShutdownEvent());
+            }
+            else
+            {
+                log::Logger::Instance().WriteKeyFormat(
+                    log::Level::Error, kPipeChannel, L"log.pipe.uninstall_failed", { result.detail });
+            }
+            break;
+        }
+        case inject::TapVerb::Exit:
+        {
+            inject::State state;
+            if (monitor != nullptr) state = monitor->Snapshot();
+            else injection->QueryState(state);
+            monitor.reset();
+            const auto result = uninstall::TerminateShellHost(state.target.processId);
+            if (result.ok)
+            {
+                log::Logger::Instance().WriteKey(log::Level::Info, kPipeChannel, L"log.pipe.exit_done");
+                ::SetEvent(ShutdownEvent());
+            }
+            else
+            {
+                log::Logger::Instance().WriteKeyFormat(
+                    log::Level::Error, kPipeChannel, L"log.pipe.exit_failed", { result.detail });
+            }
+            break;
+        }
         default:
             log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kPipeChannel, L"log.pipe.click_unhandled", { command.raw });
             break;
@@ -573,46 +634,10 @@ namespace vmex
                 { std::to_wstring(processId), std::wstring(audio::ToString(role)), std::to_wstring(status.code) });
         }
 
-        if (applied)
-        {
-            RecordAppRedirect(static_cast<std::uint32_t>(processId), deviceId);
-        }
-        else
+        if (!applied)
         {
             log::Logger::Instance().WriteKeyFormat(
                 log::Level::Warn, kPipeChannel, L"log.pipe.redirect_not_applied", { std::to_wstring(processId) });
-        }
-    }
-
-    void App::Impl::RecordAppRedirect(std::uint32_t processId, const std::wstring& deviceId)
-    {
-        std::vector<audio::DeviceInfo> endpoints;
-        if (!audioDevices->EnumerateDevices(audio::DataFlow::Render, audio::DeviceState::Active, endpoints).IsOk())
-        {
-            return;
-        }
-
-        for (const auto& endpoint : endpoints)
-        {
-            std::vector<audio::SessionInfo> sessions;
-            if (!audioDevices->EnumerateSessions(endpoint.id, sessions).IsOk())
-            {
-                continue;
-            }
-
-            for (const auto& session : sessions)
-            {
-                if (session.processId == processId && !session.appKey.empty())
-                {
-                    const auto status = audio::SetAppRedirect(platform::GetCacheDirectory(), session.appKey, deviceId);
-                    if (!status.IsOk())
-                    {
-                        log::Logger::Instance().WriteKeyFormat(
-                            log::Level::Warn, kPipeChannel, L"log.redirect.store_failed", { session.appKey, status.detail });
-                    }
-                    return;
-                }
-            }
         }
     }
 
@@ -625,19 +650,12 @@ namespace vmex
             L"log.pipe.clear_redirect",
             { std::to_wstring(status.code) });
 
-        const auto file = audio::RedirectStorePath(platform::GetCacheDirectory());
-        std::error_code error;
-        std::filesystem::remove(file, error);
-        if (error)
-        {
-            log::Logger::Instance().WriteKeyFormat(
-                log::Level::Warn, kPipeChannel, L"log.redirect.clear_failed", { file.wstring() });
-        }
     }
 
     void App::RegisterCommands()
     {
         auto help = MakeCommand(L"help", L"cli.group.core", L"cmd.help.summary");
+        help.aliases = { L"-help", L"--help", L"-h" };
         help.arguments.push_back(cli::ArgumentSpec{ L"command", L"cmd.help.arg.command", false });
         help.handler = [](const cli::Invocation& invocation, cli::ICliOutput& output) -> cli::Result {
             auto& app = App::Instance();
@@ -715,7 +733,7 @@ namespace vmex
         m_impl->commands.Add(std::move(status));
 
         auto hostCommand = MakeCommand(L"host", L"cli.group.core", L"cmd.host.summary");
-        hostCommand.examples.push_back(cli::ExampleSpec{ L"vmex host", L"cmd.host.example.run" });
+        hostCommand.examples.push_back(cli::ExampleSpec{ L"vmex_cli host", L"cmd.host.example.run" });
         hostCommand.handler = [](const cli::Invocation&, cli::ICliOutput& output) -> cli::Result {
             auto& app = App::Instance();
 
@@ -738,7 +756,7 @@ namespace vmex
         auto inject = MakeCommand(L"inject", L"cli.group.inject", L"cmd.inject.summary");
         inject.options.push_back(cli::OptionSpec{ L"tap", L"path", L"cmd.inject.opt.tap", true, false });
         inject.options.push_back(cli::OptionSpec{ L"wait", L"ms", L"cmd.inject.opt.wait", true, false });
-        inject.examples.push_back(cli::ExampleSpec{ L"vmex inject", L"cmd.inject.example.run" });
+        inject.examples.push_back(cli::ExampleSpec{ L"vmex_cli inject", L"cmd.inject.example.run" });
         inject.handler = [](const cli::Invocation&, cli::ICliOutput& output) -> cli::Result {
             auto& app = App::Instance();
 
@@ -746,7 +764,14 @@ namespace vmex
             const auto status = app.InjectNow(state);
             if (!status.IsOk())
             {
-                output.Error(app.Text().ResolveFormat(L"cli.error.operation_failed", { status.detail }));
+                if (status.detail == L"tap-not-ready")
+                {
+                    output.Error(app.Text().Resolve(L"cli.error.tap_not_ready"));
+                }
+                else
+                {
+                    output.Error(app.Text().ResolveFormat(L"cli.error.operation_failed", { status.detail }));
+                }
                 return cli::Result{ cli::Outcome::Failed, {} };
             }
 
@@ -757,12 +782,6 @@ namespace vmex
             return cli::Result{ cli::Outcome::Success, {} };
         };
         m_impl->commands.Add(std::move(inject));
-
-        auto eject = MakeCommand(L"eject", L"cli.group.inject", L"cmd.eject.summary");
-        eject.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {
-            return Unsupported(L"eject");
-        };
-        m_impl->commands.Add(std::move(eject));
 
         auto payload = MakeCommand(L"payload", L"cli.group.inject", L"cmd.payload.summary");
         payload.options.push_back(cli::OptionSpec{ L"extract", L"dir", L"cmd.payload.opt.extract", true, false });
@@ -785,7 +804,9 @@ namespace vmex
                 return cli::Result{ cli::Outcome::Success, {} };
             }
 
-            for (const auto item : { payload::Item::Launcher, payload::Item::Tap })
+            for (const auto item : { payload::Item::Launcher, payload::Item::Tap,
+                                     payload::Item::Diagnostics, payload::Item::NotificationToolkit,
+                                     payload::Item::Core })
             {
                 const auto name = std::wstring(payload::ToString(item));
                 output.Field(name, payload::Exists(item) ? std::to_wstring(payload::Size(item)) : app.Text().Resolve(L"cli.field.missing"));
@@ -839,26 +860,6 @@ namespace vmex
             return cli::Result{ cli::Outcome::Success, {} };
         };
         m_impl->commands.Add(std::move(devices));
-
-        auto sessions = MakeCommand(L"sessions", L"cli.group.audio", L"cmd.sessions.summary");
-        sessions.arguments.push_back(cli::ArgumentSpec{ L"device", L"cmd.sessions.arg.device", false });
-        sessions.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {
-            return Unsupported(L"sessions");
-        };
-        m_impl->commands.Add(std::move(sessions));
-
-        auto volume = MakeCommand(L"volume", L"cli.group.audio", L"cmd.volume.summary");
-        volume.arguments.push_back(cli::ArgumentSpec{ L"value", L"cmd.volume.arg.value", true });
-        volume.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {
-            return Unsupported(L"volume");
-        };
-        m_impl->commands.Add(std::move(volume));
-
-        auto mute = MakeCommand(L"mute", L"cli.group.audio", L"cmd.mute.summary");
-        mute.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {
-            return Unsupported(L"mute");
-        };
-        m_impl->commands.Add(std::move(mute));
 
         auto defaultDevice = MakeCommand(L"default", L"cli.group.audio", L"cmd.default.summary");
         defaultDevice.arguments.push_back(cli::ArgumentSpec{ L"device", L"cmd.default.arg.device", true });
@@ -999,17 +1000,5 @@ namespace vmex
             return cli::Result{ cli::Outcome::Success, {} };
         };
         m_impl->commands.Add(std::move(autostart));
-
-        auto config = MakeCommand(L"config", L"cli.group.config", L"cmd.config.summary");
-        config.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {
-            return Unsupported(L"config");
-        };
-        m_impl->commands.Add(std::move(config));
-
-        auto logCommand = MakeCommand(L"log", L"cli.group.config", L"cmd.log.summary");
-        logCommand.handler = [](const cli::Invocation&, cli::ICliOutput&) -> cli::Result {
-            return Unsupported(L"log");
-        };
-        m_impl->commands.Add(std::move(logCommand));
     }
 }

@@ -10,6 +10,8 @@ namespace vmex::inject
         std::filesystem::path directory;
         std::filesystem::path launcher;
         std::filesystem::path tap;
+        std::filesystem::path diagnostics;
+        std::filesystem::path core;
         std::filesystem::path config;
     };
 

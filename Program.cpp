@@ -1,82 +1,31 @@
 #include "App.h"
-#include "CliService.h"
-#include "Platform.h"
-#include "TextService.h"
+#include "Runtime.h"
 
 #include <windows.h>
 
-#include <string>
-#include <vector>
-
-namespace
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
-    std::vector<std::wstring> CollectArguments(int argc, wchar_t** argv)
-    {
-        std::vector<std::wstring> arguments;
-        arguments.reserve(static_cast<std::size_t>(argc > 0 ? argc - 1 : 0));
-        for (int index = 1; index < argc; ++index)
-        {
-            arguments.emplace_back(argv[index]);
-        }
-        return arguments;
-    }
-
-    vmex::AppOptions BuildOptions(const std::vector<std::wstring>& arguments)
-    {
-        vmex::AppOptions options;
-
-        const auto base = vmex::platform::GetInstallDirectory();
-        options.configFile = base / L"vmex.ini";
-        options.logFile = vmex::log::SessionLogFile(L"app");
-
-        for (const auto& token : arguments)
-        {
-            if (token == L"--verbose")
-            {
-                options.logLevel = vmex::log::Level::Debug;
-                options.consoleLog = true;
-            }
-            else if (token == L"--trace")
-            {
-                options.logLevel = vmex::log::Level::Trace;
-                options.consoleLog = true;
-            }
-        }
-
-        return options;
-    }
-}
-
-int wmain(int argc, wchar_t** argv)
-{
-    const auto arguments = CollectArguments(argc, argv);
+    const bool autorun = vmex::runtime::HasAutorunArgument();
     auto& app = vmex::App::Instance();
-
-    const auto status = app.Initialize(BuildOptions(arguments));
-    if (!status.IsOk())
+    const auto initialized = app.Initialize(vmex::runtime::BuildOptions({}, autorun));
+    if (!initialized.IsOk())
     {
-        std::wstring message(vmex::text::Embedded().Resolve(L"cli.init_failed"));
-        message.append(status.detail);
-        message.append(L"\r\n");
-        vmex::cli::WriteToConsole(message, true);
         return vmex::kCodeFailed;
     }
 
-    const vmex::cli::CliService service(app.Commands(), app.Text());
-
-    std::vector<std::wstring> commandArguments;
-    commandArguments.reserve(arguments.size());
-    for (const auto& token : arguments)
+    const auto served = app.Serve();
+    if (!served.IsOk())
     {
-        if (token == L"--verbose" || token == L"--trace")
-        {
-            continue;
-        }
-        commandArguments.push_back(token);
+        app.Shutdown();
+        return vmex::kCodeFailed;
     }
 
-    const auto exitCode = service.Run(commandArguments);
+    vmex::runtime::HostNotifications notifications;
+    notifications.Start(app, autorun);
 
+    app.WaitForShutdown();
+    notifications.Stop();
+    app.StopServing();
     app.Shutdown();
-    return exitCode;
+    return vmex::kCodeOk;
 }

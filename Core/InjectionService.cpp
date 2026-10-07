@@ -281,6 +281,28 @@ namespace vmex::inject
                     L"log.inject.payload",
                     { options.launcherModule.wstring(), options.tapModule.wstring() });
 
+                const std::wstring coreName(kCoreDllName);
+                if (!IsModuleLoaded(target.processId, coreName))
+                {
+                    void* coreBase = nullptr;
+                    const auto coreStatus = InjectInto(target.processId, options.coreModule, options.timeoutMs, coreBase);
+                    if (!coreStatus.IsOk())
+                    {
+                        log::Logger::Instance().WriteKeyFormat(
+                            log::Level::Error,
+                            kChannel,
+                            L"log.inject.core_failed",
+                            { std::to_wstring(target.processId), coreStatus.detail });
+                        state = {};
+                        return coreStatus;
+                    }
+                    log::Logger::Instance().WriteKeyFormat(
+                        log::Level::Info,
+                        kChannel,
+                        L"log.inject.core_loaded",
+                        { std::to_wstring(target.processId) });
+                }
+
                 void* remoteModule = nullptr;
                 const auto status = InjectInto(target.processId, options.launcherModule, options.timeoutMs, remoteModule);
                 if (!status.IsOk())
@@ -306,13 +328,6 @@ namespace vmex::inject
                 state.tapLoaded = tapLoaded;
                 ++state.injectionCount;
                 return Status::Ok();
-            }
-
-            Status Eject(const TargetProcess& target) override
-            {
-                (void)target;
-                log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.inject.eject_unsupported");
-                return Status::NotSupported(L"Eject");
             }
 
             Status QueryState(State& state) override

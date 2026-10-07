@@ -4,7 +4,7 @@
 |---|---|
 | 目的 | TAP 侧已在发 `SETDEFAULT` / `SETREDIRECT` / `CLEARREDIRECT` / `UNINSTALL`，但宿主没有任何接收端，`Core/EndpointPolicyService` 还是桩 ⇒ 下拉框、清空重定向、从系统卸载全部落空 |
 | 结论 | ★ **管道全链路已通**（报文 → 逐行解析 → 派发 → 日志）；`CLEARREDIRECT` 端到端成功；`SETDEFAULT` / `SETREDIRECT` 的调用路径已确认正确，但**本机 RDP 会话下被系统拒绝**（见 §4） |
-| 新增 | `Core/TapCommand.*`（协议解析）、`Core/TapPipeServer.*`（named pipe 服务端）、`Core/HostPresence.*`（后台进程存在性）、`vmex host` 命令、`vmex status` 真实查询 |
+| 新增 | `Core/TapCommand.*`（协议解析）、`Core/TapPipeServer.*`（named pipe 服务端）、`Core/HostPresence.*`（后台进程存在性）、`vmex_cli host` 命令、`vmex_cli status` 真实查询 |
 | 顺带修掉 | ① 进程从未 `CoInitializeEx` ⇒ 所有音频命令必然失败（此前是桩，未暴露）；② `--verbose` / `--trace` 被 CLI 当成未知选项拒绝 |
 
 ---
@@ -13,13 +13,13 @@
 
 | 项 | 决定 |
 |---|---|
-| 形态 | `vmex host`：后台进程，起 named pipe 服务端后常驻，`Ctrl+C` / 关控制台即优雅退出 |
-| 单实例 | `Local\VmExt.Host.S<sessionId>` 命名互斥体；第二个 `vmex host` 直接失败，不抢占 |
-| 状态查询 | `vmex status`：另一个进程通过 `OpenMutexW` 判断"在不在跑"，并回显管道名 |
+| 形态 | `vmex.exe`：无控制台后台进程，起 named pipe 服务端后常驻；`vmex_cli host` 用于命令行启动 |
+| 单实例 | `Local\VmExt.Host.S<sessionId>` 命名互斥体；第二个 `vmex_cli host` 直接失败，不抢占 |
+| 状态查询 | `vmex_cli status`：另一个进程通过 `OpenMutexW` 判断"在不在跑"，并回显管道名 |
 | 自启 | `HKCU\...\Run` 的 `VolumeMixerExtender` 值改为 `"<InstallRoot>\vmex.exe" host`（原 `--tray` 已废） |
 | 管道名 | `\\.\pipe\VmExt.Tap.S<sessionId>`（`Core/InjectionContract.h`，TAP 与宿主同源） |
 
-`vmex status`（宿主在跑 / 不在跑两种情形，实测）：
+`vmex_cli status`（宿主在跑 / 不在跑两种情形，实测）：
 
 ```text
   命令: status

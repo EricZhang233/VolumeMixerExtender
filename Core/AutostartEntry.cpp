@@ -6,6 +6,10 @@
 
 #include <windows.h>
 
+#include <objbase.h>
+#include <shlobj.h>
+#include <shobjidl.h>
+
 #include <string>
 #include <string_view>
 #include <vector>
@@ -16,12 +20,12 @@ namespace vmex::autostart
     {
         constexpr std::wstring_view kChannel = L"autostart";
 
-        constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-        constexpr wchar_t kApprovedKey[] =
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
+        constexpr wchar_t kStartupApprovedKey[] =
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder";
 
         constexpr wchar_t kHostExecutable[] = L"vmex.exe";
-        constexpr wchar_t kHostArguments[] = L"host";
+        constexpr wchar_t kHostArguments[] = L"-autorun";
+        constexpr wchar_t kShortcutName[] = L"VolumeMixerExtender.lnk";
 
         constexpr std::size_t kApprovedHeaderBytes = 2;
 
@@ -35,120 +39,108 @@ namespace vmex::autostart
             log::Logger::Instance().WriteKeyFormat(log::Level::Info, kChannel, key, args);
         }
 
-        LSTATUS DeleteValue(const wchar_t* subKey, const wchar_t* name)
+        std::filesystem::path StartupFolderPath()
         {
-            HKEY key = nullptr;
-            const LSTATUS opened =
-                ::RegOpenKeyExW(HKEY_CURRENT_USER, subKey, 0, KEY_SET_VALUE, &key);
-            if (opened != ERROR_SUCCESS)
+            PWSTR raw = nullptr;
+            const HRESULT hr =
+                ::SHGetKnownFolderPath(FOLDERID_Startup, KF_FLAG_CREATE, nullptr, &raw);
+            if (FAILED(hr) || raw == nullptr)
             {
-                return opened == ERROR_FILE_NOT_FOUND || opened == ERROR_PATH_NOT_FOUND
-                    ? ERROR_SUCCESS
-                    : opened;
+                return {};
             }
-
-            const LSTATUS deleted = ::RegDeleteValueW(key, name);
-            ::RegCloseKey(key);
-            return deleted == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : deleted;
+            std::filesystem::path path(raw);
+            ::CoTaskMemFree(raw);
+            return path;
         }
 
-        LSTATUS WriteString(const wchar_t* subKey, const wchar_t* name, const std::wstring& value)
+        std::filesystem::path ShortcutPath()
         {
-            HKEY key = nullptr;
-            LSTATUS status = ::RegCreateKeyExW(
-                HKEY_CURRENT_USER,
-                subKey,
-                0,
-                nullptr,
-                REG_OPTION_NON_VOLATILE,
-                KEY_SET_VALUE,
-                nullptr,
-                &key,
-                nullptr);
-            if (status != ERROR_SUCCESS)
+            const auto startup = StartupFolderPath();
+            if (startup.empty())
             {
-                return status;
+                return {};
             }
-
-            const DWORD bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
-            status = ::RegSetValueExW(
-                key,
-                name,
-                0,
-                REG_SZ,
-                reinterpret_cast<const BYTE*>(value.c_str()),
-                bytes);
-            ::RegCloseKey(key);
-            return status;
+            return startup / std::wstring(kShortcutName);
         }
 
-        bool ReadString(const wchar_t* subKey, const wchar_t* name, std::wstring& value,
-                        LSTATUS& status)
+        HRESULT CreateShortcut(const std::filesystem::path& link, const std::wstring& target,
+                               const std::wstring& arguments)
         {
-            DWORD bytes = 0;
-            status = ::RegGetValueW(
-                HKEY_CURRENT_USER, subKey, name, RRF_RT_REG_SZ, nullptr, nullptr, &bytes);
-            if (status != ERROR_SUCCESS)
+            IShellLinkW* shellLink = nullptr;
+            HRESULT hr = ::CoCreateInstance(
+                CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, __uuidof(IShellLinkW),
+                reinterpret_cast<void**>(&shellLink));
+            if (FAILED(hr))
             {
-                return false;
+                return hr;
             }
 
-            std::vector<wchar_t> buffer(bytes / sizeof(wchar_t) + 1, L'\0');
-            status = ::RegGetValueW(
-                HKEY_CURRENT_USER, subKey, name, RRF_RT_REG_SZ, nullptr, buffer.data(), &bytes);
-            if (status != ERROR_SUCCESS)
-            {
-                return false;
-            }
+            shellLink->SetPath(target.c_str());
+            shellLink->SetArguments(arguments.c_str());
+            shellLink->SetShowCmd(SW_SHOWNORMAL);
 
-            value.assign(buffer.data());
-            return true;
+            IPersistFile* persist = nullptr;
+            hr = shellLink->QueryInterface(
+                __uuidof(IPersistFile), reinterpret_cast<void**>(&persist));
+            if (SUCCEEDED(hr))
+            {
+                hr = persist->Save(link.c_str(), TRUE);
+                persist->Release();
+            }
+            shellLink->Release();
+            return hr;
         }
 
         bool IsSuppressedBySystem()
         {
-            BYTE buffer[16] = {};
-            DWORD bytes = sizeof(buffer);
-            const LSTATUS status = ::RegGetValueW(
-                HKEY_CURRENT_USER, kApprovedKey, AutostartEntry::kValueName, RRF_RT_REG_BINARY,
-                nullptr, buffer, &bytes);
-            if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND)
+            for (const wchar_t* name : { kShortcutName, AutostartEntry::kValueName })
             {
-                return false;
+                BYTE buffer[16] = {};
+                DWORD bytes = sizeof(buffer);
+                const LSTATUS status = ::RegGetValueW(
+                    HKEY_CURRENT_USER, kStartupApprovedKey, name, RRF_RT_REG_BINARY,
+                    nullptr, buffer, &bytes);
+                if (status == ERROR_SUCCESS && bytes >= kApprovedHeaderBytes &&
+                    (buffer[0] & 0x01) != 0)
+                {
+                    return true;
+                }
             }
-            if (status != ERROR_SUCCESS || bytes < kApprovedHeaderBytes)
-            {
-                return false;
-            }
+            return false;
+        }
 
-            return (buffer[0] & 0x01) != 0;
+        void ClearSuppression()
+        {
+            HKEY key = nullptr;
+            if (::RegOpenKeyExW(
+                    HKEY_CURRENT_USER, kStartupApprovedKey, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS)
+            {
+                return;
+            }
+            for (const wchar_t* name : { kShortcutName, AutostartEntry::kValueName })
+            {
+                ::RegDeleteValueW(key, name);
+            }
+            ::RegCloseKey(key);
         }
     }
 
     bool AutostartEntry::IsEnabled()
     {
-        std::wstring value;
-        LSTATUS status = ERROR_SUCCESS;
-        if (!ReadString(kRunKey, kValueName, value, status))
+        const auto link = ShortcutPath();
+        if (link.empty() || !platform::FileExists(link))
         {
-            if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND)
-            {
-                Info(L"log.autostart.missing");
-            }
-            else
-            {
-                Warn(L"log.autostart.read_failed", { std::to_wstring(status) });
-            }
+            Info(L"log.autostart.missing");
             return false;
         }
 
         if (IsSuppressedBySystem())
         {
-            Info(L"log.autostart.suppressed", { value });
+            Info(L"log.autostart.suppressed", { link.wstring() });
             return false;
         }
 
-        Info(L"log.autostart.present", { value });
+        Info(L"log.autostart.present", { link.wstring() });
         return true;
     }
 
@@ -156,7 +148,7 @@ namespace vmex::autostart
     {
         error.clear();
 
-        const std::wstring exe = (platform::GetInstallDirectory() / kHostExecutable).wstring();
+        const std::wstring exe = (platform::GetExecutableDirectory() / kHostExecutable).wstring();
         if (!platform::FileExists(exe))
         {
             error = text::Embedded().ResolveFormat(L"autostart.error.exe_missing", { exe });
@@ -164,23 +156,26 @@ namespace vmex::autostart
             return false;
         }
 
-        const std::wstring command = L"\"" + exe + L"\" " + kHostArguments;
-
-        const LSTATUS written = WriteString(kRunKey, kValueName, command);
-        if (written != ERROR_SUCCESS)
+        const auto link = ShortcutPath();
+        if (link.empty())
         {
-            error = text::Embedded().ResolveFormat(L"autostart.error.write_failed",
-                                                   { std::to_wstring(written) });
-            Warn(L"log.autostart.write_failed", { command, std::to_wstring(written) });
+            const std::wstring detail = std::to_wstring(static_cast<unsigned long>(E_FAIL));
+            error = text::Embedded().ResolveFormat(L"autostart.error.write_failed", { detail });
+            Warn(L"log.autostart.write_failed", { exe, detail });
             return false;
         }
 
-        const LSTATUS cleared = DeleteValue(kApprovedKey, kValueName);
-        if (cleared != ERROR_SUCCESS)
+        const std::wstring command = L"\"" + exe + L"\" " + kHostArguments;
+        const HRESULT hr = CreateShortcut(link, exe, std::wstring(kHostArguments));
+        if (FAILED(hr))
         {
-            Warn(L"log.autostart.approved_clear_failed", { std::to_wstring(cleared) });
+            const std::wstring detail = std::to_wstring(static_cast<unsigned long>(hr));
+            error = text::Embedded().ResolveFormat(L"autostart.error.write_failed", { detail });
+            Warn(L"log.autostart.write_failed", { command, detail });
+            return false;
         }
 
+        ClearSuppression();
         Info(L"log.autostart.registered", { command });
         return true;
     }
@@ -189,21 +184,16 @@ namespace vmex::autostart
     {
         error.clear();
 
-        const LSTATUS deleted = DeleteValue(kRunKey, kValueName);
-        if (deleted != ERROR_SUCCESS)
+        const auto link = ShortcutPath();
+        if (!link.empty() && platform::FileExists(link) && ::DeleteFileW(link.c_str()) == FALSE)
         {
-            error = text::Embedded().ResolveFormat(L"autostart.error.delete_failed",
-                                                   { std::to_wstring(deleted) });
-            Warn(L"log.autostart.delete_failed", { std::to_wstring(deleted) });
+            const std::wstring detail = std::to_wstring(::GetLastError());
+            error = text::Embedded().ResolveFormat(L"autostart.error.delete_failed", { detail });
+            Warn(L"log.autostart.delete_failed", { detail });
             return false;
         }
 
-        const LSTATUS cleared = DeleteValue(kApprovedKey, kValueName);
-        if (cleared != ERROR_SUCCESS)
-        {
-            Warn(L"log.autostart.approved_clear_failed", { std::to_wstring(cleared) });
-        }
-
+        ClearSuppression();
         Info(L"log.autostart.deleted");
         return true;
     }

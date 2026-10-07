@@ -23,7 +23,13 @@ namespace vmex::cli
     const Command* CommandRegistry::Find(std::wstring_view name) const
     {
         const auto position = std::find_if(m_commands.begin(), m_commands.end(), [name](const Command& command) {
-            return strings::EqualsIgnoreCase(command.name, name);
+            if (strings::EqualsIgnoreCase(command.name, name))
+            {
+                return true;
+            }
+            return std::any_of(command.aliases.begin(), command.aliases.end(), [name](const std::wstring& alias) {
+                return strings::EqualsIgnoreCase(alias, name);
+            });
         });
         return position == m_commands.end() ? nullptr : &(*position);
     }

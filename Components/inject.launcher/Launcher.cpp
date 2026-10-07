@@ -134,14 +134,36 @@ namespace vmex::launcher
                     continue;
                 }
 
-                const auto candidate = std::filesystem::path(root.data()) / L"bin" /
-                                       std::wstring(kArchDirectory) / std::wstring(kDiagSubDirectory) /
-                                       std::wstring(kDiagModuleName);
-                if (platform::FileExists(candidate))
+                    const auto kitsRoot = std::filesystem::path(root.data());
+                    const auto direct = kitsRoot / L"bin" / std::wstring(kArchDirectory) /
+                                        std::wstring(kDiagSubDirectory) / std::wstring(kDiagModuleName);
+                    if (platform::FileExists(direct))
                 {
-                    return candidate;
+                        return direct;
+                    }
+
+                    std::error_code error;
+                    const auto binRoot = kitsRoot / L"bin";
+                    for (const auto& version : std::filesystem::directory_iterator(binRoot, error))
+                    {
+                        if (error)
+                        {
+                            break;
+                        }
+                        if (!version.is_directory(error) || error)
+                        {
+                            error.clear();
+                            continue;
+                        }
+
+                        const auto candidate = version.path() / std::wstring(kArchDirectory) /
+                                               std::wstring(kDiagSubDirectory) / std::wstring(kDiagModuleName);
+                        if (platform::FileExists(candidate))
+                        {
+                            return candidate;
+                        }
+                    }
                 }
-            }
             return {};
         }
 

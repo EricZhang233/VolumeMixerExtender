@@ -12,7 +12,9 @@ namespace vmex::inject
             if (name == "SETDEFAULT") return TapVerb::SetDefault;
             if (name == "SETREDIRECT") return TapVerb::SetRedirect;
             if (name == "CLEARREDIRECT") return TapVerb::ClearRedirect;
+            if (name == "AUTOSTART") return TapVerb::Autostart;
             if (name == "UNINSTALL") return TapVerb::Uninstall;
+            if (name == "EXIT") return TapVerb::Exit;
             return std::nullopt;
         }
 
@@ -28,7 +30,9 @@ namespace vmex::inject
             case TapVerb::SetDefault: return count == 2;
             case TapVerb::SetRedirect: return count == 2 || count == 3;
             case TapVerb::ClearRedirect: return count == 0;
+            case TapVerb::Autostart: return count == 1;
             case TapVerb::Uninstall: return count == 0;
+            case TapVerb::Exit: return count == 0;
             default: return true;
             }
         }
@@ -42,6 +46,8 @@ namespace vmex::inject
         case TapVerb::SetDefault: return L"SETDEFAULT";
         case TapVerb::SetRedirect: return L"SETREDIRECT";
         case TapVerb::ClearRedirect: return L"CLEARREDIRECT";
+        case TapVerb::Autostart: return L"AUTOSTART";
+        case TapVerb::Exit: return L"EXIT";
         default: return L"UNINSTALL";
         }
     }

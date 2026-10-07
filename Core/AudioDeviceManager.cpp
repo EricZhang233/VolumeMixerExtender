@@ -3,6 +3,8 @@
 #include "AudioInterop.h"
 #include "Logger.h"
 
+#include <algorithm>
+
 namespace vmex::audio
 {
     namespace
@@ -52,11 +54,13 @@ namespace vmex::audio
         {
         public:
             AudioSessionHandle(std::wstring deviceId, std::wstring instanceId, std::uint32_t processId,
-                               detail::Ptr<ISimpleAudioVolume> volume)
+                               detail::Ptr<ISimpleAudioVolume> volume,
+                               detail::Ptr<IAudioMeterInformation> meter)
                 : m_deviceId(std::move(deviceId))
                 , m_instanceId(std::move(instanceId))
                 , m_processId(processId)
                 , m_volume(std::move(volume))
+                , m_meter(std::move(meter))
             {
             }
 
@@ -92,6 +96,29 @@ namespace vmex::audio
                 return Status::Failed(L"ISimpleAudioVolume::SetMasterVolume failed after re-resolve");
             }
 
+            Status GetPeak(float& left, float& right) override
+            {
+                left = 0.0f;
+                right = 0.0f;
+                if (!m_meter)
+                {
+                    m_meter = detail::ResolveSessionMeter(m_deviceId, m_instanceId);
+                }
+                if (!m_meter)
+                {
+                    return Status::Failed(L"session peak meter unavailable");
+                }
+                UINT channels = 0;
+                if (FAILED(m_meter->GetMeteringChannelCount(&channels)) || channels == 0)
+                    return Status::Failed(L"session peak channels unavailable");
+                std::vector<float> values(channels);
+                if (FAILED(m_meter->GetChannelsPeakValues(channels, values.data())))
+                    return Status::Failed(L"session peak meter unavailable");
+                left = values[0];
+                right = channels > 1 ? values[1] : values[0];
+                return Status::Ok();
+            }
+
             Status SetMuted(bool muted) override
             {
                 const BOOL want = muted ? TRUE : FALSE;
@@ -103,7 +130,8 @@ namespace vmex::audio
         private:
             [[nodiscard]] bool Reacquire()
             {
-                m_volume = detail::ResolveSessionVolume(m_deviceId, m_instanceId);
+                m_volume = detail::ResolveSessionVolumeForProcess(m_deviceId, m_instanceId, m_processId);
+                m_meter = detail::ResolveSessionMeter(m_deviceId, m_instanceId);
                 return static_cast<bool>(m_volume);
             }
 
@@ -111,6 +139,7 @@ namespace vmex::audio
             std::wstring m_instanceId;
             std::uint32_t m_processId = 0;
             detail::Ptr<ISimpleAudioVolume> m_volume;
+            detail::Ptr<IAudioMeterInformation> m_meter;
         };
 
         class WasapiAudioDeviceManager final : public IAudioDeviceManager
@@ -138,6 +167,11 @@ namespace vmex::audio
 
                 devices.reserve(endpoints.size());
                 for (const auto& endpoint : endpoints) devices.push_back(ToDeviceInfo(endpoint));
+                std::stable_sort(devices.begin(), devices.end(),
+                    [](const DeviceInfo& left, const DeviceInfo& right)
+                    {
+                        return left.isDefault && !right.isDefault;
+                    });
 
                 log::Logger::Instance().WriteKeyFormat(log::Level::Debug, kChannel, L"log.audio.enumerated",
                     { std::wstring(ToString(flow)), std::to_wstring(devices.size()) });
@@ -225,6 +259,13 @@ namespace vmex::audio
                     : Status::Failed(L"IAudioEndpointVolume::SetMute failed");
             }
 
+            Status GetPeak(std::wstring_view deviceId, float& left, float& right) override
+            {
+                return detail::GetEndpointPeak(std::wstring(deviceId), left, right)
+                    ? Status::Ok()
+                    : Status::Failed(L"IAudioMeterInformation::GetPeakValue failed");
+            }
+
             Status EnumerateSessions(std::wstring_view deviceId, std::vector<SessionInfo>& sessions) override
             {
                 sessions.clear();
@@ -271,8 +312,9 @@ namespace vmex::audio
                     }
                 }
 
-                handle = std::make_unique<AudioSessionHandle>(std::wstring(deviceId), std::wstring(instanceId),
-                                                              processId, std::move(volume));
+                handle = std::make_unique<AudioSessionHandle>(
+                    std::wstring(deviceId), std::wstring(instanceId), processId, std::move(volume),
+                    detail::ResolveSessionMeter(std::wstring(deviceId), std::wstring(instanceId)));
                 return Status::Ok();
             }
         };

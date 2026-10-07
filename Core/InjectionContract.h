@@ -9,6 +9,7 @@ namespace vmex::inject
 
     inline constexpr std::wstring_view kLauncherDllName = L"vmex_launcher.dll";
     inline constexpr std::wstring_view kTapDllName = L"vmex_tap.dll";
+    inline constexpr std::wstring_view kCoreDllName = L"vmex_core.dll";
 
     inline constexpr std::string_view kTapInitDataExport = "VmExtTapProvideInitData";
 

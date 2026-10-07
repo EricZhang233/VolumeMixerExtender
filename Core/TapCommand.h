@@ -10,7 +10,9 @@ namespace vmex::inject
         SetDefault,
         SetRedirect,
         ClearRedirect,
-        Uninstall
+        Autostart,
+        Uninstall,
+        Exit
     };
 
     struct TapCommand final

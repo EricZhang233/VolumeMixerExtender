@@ -18,6 +18,7 @@ namespace vmex
         std::filesystem::path logFile;
         log::Level logLevel = log::Level::Info;
         bool consoleLog = false;
+        bool autorun = false;
     };
 
     class App final

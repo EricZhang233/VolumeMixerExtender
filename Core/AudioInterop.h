@@ -12,6 +12,10 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <functional>
+#include <atomic>
+#include <functional>
+#include <memory>
 
 #include "Logger.h"
 #include "TextService.h"
@@ -293,6 +297,32 @@ inline bool GetEndpointState(const std::wstring& devId, float& volume, bool& mut
     return true;
 }
 
+inline bool GetEndpointPeak(const std::wstring& devId, float& left, float& right)
+{
+    left = 0.0f;
+    right = 0.0f;
+    Ptr<IAudioMeterInformation> meter;
+    auto e = MakeEnumerator();
+    auto d = FindDevice(e.get(), devId);
+    if (!d || FAILED(d->Activate(__uuidof(IAudioMeterInformation), CLSCTX_ALL, nullptr, meter.putv())))
+        return false;
+    UINT channels = 0;
+    if (FAILED(meter->GetMeteringChannelCount(&channels)) || channels == 0) return false;
+    float values[2] = {};
+    if (channels <= 2)
+    {
+        if (FAILED(meter->GetChannelsPeakValues(channels, values))) return false;
+        left = values[0];
+        right = channels > 1 ? values[1] : values[0];
+        return true;
+    }
+    std::vector<float> all(channels);
+    if (FAILED(meter->GetChannelsPeakValues(channels, all.data()))) return false;
+    left = all[0];
+    right = all[1];
+    return true;
+}
+
 inline bool SetEndpointVolume(const std::wstring& devId, float volume)
 {
     Ptr<IAudioEndpointVolume> v;
@@ -306,6 +336,83 @@ inline bool SetEndpointMute(const std::wstring& devId, bool mute)
     if (!EndpointVolume(devId, v)) return false;
     return SUCCEEDED(v->SetMute(mute ? TRUE : FALSE, nullptr));
 }
+
+class EndpointVolumeMonitor final
+{
+    class Callback final : public IAudioEndpointVolumeCallback
+    {
+    public:
+        explicit Callback(std::function<void(float, bool)> handler)
+            : handler_(std::move(handler)) {}
+
+        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override
+        {
+            if (!object) return E_POINTER;
+            *object = nullptr;
+            if (riid == __uuidof(IUnknown) || riid == __uuidof(IAudioEndpointVolumeCallback))
+            {
+                *object = static_cast<IAudioEndpointVolumeCallback*>(this);
+                AddRef();
+                return S_OK;
+            }
+            return E_NOINTERFACE;
+        }
+
+        ULONG STDMETHODCALLTYPE AddRef() override
+        {
+            return static_cast<ULONG>(::InterlockedIncrement(&references_));
+        }
+
+        ULONG STDMETHODCALLTYPE Release() override
+        {
+            const ULONG references = static_cast<ULONG>(::InterlockedDecrement(&references_));
+            if (references == 0) delete this;
+            return references;
+        }
+
+        HRESULT STDMETHODCALLTYPE OnNotify(PAUDIO_VOLUME_NOTIFICATION_DATA data) override
+        {
+            if (data && handler_) handler_(data->fMasterVolume, data->bMuted != FALSE);
+            return S_OK;
+        }
+
+    private:
+        LONG references_ = 1;
+        std::function<void(float, bool)> handler_;
+    };
+
+public:
+    ~EndpointVolumeMonitor()
+    {
+        if (volume_ && callback_)
+            volume_->UnregisterControlChangeNotify(callback_);
+        if (callback_) callback_->Release();
+    }
+
+    EndpointVolumeMonitor(const EndpointVolumeMonitor&) = delete;
+    EndpointVolumeMonitor& operator=(const EndpointVolumeMonitor&) = delete;
+
+    static std::shared_ptr<EndpointVolumeMonitor> Create(
+        const std::wstring& deviceId, std::function<void(float, bool)> handler)
+    {
+        Ptr<IAudioEndpointVolume> volume;
+        if (!EndpointVolume(deviceId, volume) || !volume) return {};
+
+        auto monitor = std::shared_ptr<EndpointVolumeMonitor>(
+            new EndpointVolumeMonitor(std::move(volume), std::move(handler)));
+        if (FAILED(monitor->volume_->RegisterControlChangeNotify(monitor->callback_)))
+            return {};
+        return monitor;
+    }
+
+private:
+    EndpointVolumeMonitor(Ptr<IAudioEndpointVolume>&& volume,
+                          std::function<void(float, bool)> handler)
+        : volume_(std::move(volume)), callback_(new Callback(std::move(handler))) {}
+
+    Ptr<IAudioEndpointVolume> volume_;
+    Callback* callback_ = nullptr;
+};
 
 inline std::wstring ProcessImagePath(DWORD pid)
 {
@@ -401,6 +508,37 @@ inline Ptr<ISimpleAudioVolume> ResolveSessionVolume(const std::wstring& devId, c
     return {};
 }
 
+inline Ptr<IAudioMeterInformation> ResolveSessionMeter(const std::wstring& devId, const std::wstring& sessionId)
+{
+    auto e = MakeEnumerator();
+    auto dev = FindDevice(e.get(), devId);
+    auto mgr = SessionManager(dev.get());
+    if (!mgr) return {};
+
+    Ptr<IAudioSessionEnumerator> list;
+    if (FAILED(mgr->GetSessionEnumerator(list.put())) || !list) return {};
+    int n = 0;
+    if (FAILED(list->GetCount(&n))) return {};
+
+    for (int i = 0; i < n; ++i)
+    {
+        Ptr<IAudioSessionControl> sc;
+        if (FAILED(list->GetSession(i, sc.put())) || !sc) continue;
+        Ptr<IAudioSessionControl2> c2;
+        if (FAILED(sc->QueryInterface(__uuidof(IAudioSessionControl2), c2.putv())) || !c2) continue;
+        LPWSTR got = nullptr;
+        if (FAILED(c2->GetSessionInstanceIdentifier(&got))) continue;
+        if (TakeDeviceId(got) != sessionId) continue;
+
+        Ptr<IAudioMeterInformation> meter;
+        if (SUCCEEDED(sc->QueryInterface(__uuidof(IAudioMeterInformation), meter.putv())))
+        {
+            return meter;
+        }
+    }
+    return {};
+}
+
 inline bool EnumSessionsOnce(const std::wstring& devId, std::vector<Session>& out)
 {
     out.clear();
@@ -451,6 +589,36 @@ inline bool EnumSessions(const std::wstring& devId, std::vector<Session>& out)
     if (EnumSessionsOnce(devId, out) && !out.empty()) return true;
     ::Sleep(30);
     return EnumSessionsOnce(devId, out);
+}
+
+inline Ptr<ISimpleAudioVolume> ResolveSessionVolumeForProcess(
+    const std::wstring& preferredDeviceId, const std::wstring& sessionId, std::uint32_t processId)
+{
+    if (auto volume = ResolveSessionVolume(preferredDeviceId, sessionId))
+    {
+        return volume;
+    }
+
+    std::vector<Endpoint> endpoints;
+    if (!EnumEndpoints(eRender, endpoints)) return {};
+
+    for (const auto& endpoint : endpoints)
+    {
+        std::vector<Session> sessions;
+        if (!EnumSessions(endpoint.id, sessions)) continue;
+        for (const auto& session : sessions)
+        {
+            if ((!sessionId.empty() && session.id == sessionId) ||
+                (processId != 0 && session.pid == processId))
+            {
+                if (auto volume = ResolveSessionVolume(endpoint.id, session.id))
+                {
+                    return volume;
+                }
+            }
+        }
+    }
+    return {};
 }
 
 inline bool SetSessionVolume(Session& s, const std::wstring& devId, float v)

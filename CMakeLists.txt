@@ -30,7 +30,7 @@ function(vmex_add_version_resource target description internal_name original_nam
     set(VMEX_RC_ORIGINAL_NAME "${original_name}")
     set(VMEX_RC_FILE_TYPE "${file_type}")
 
-    set(output "${CMAKE_CURRENT_BINARY_DIR}/generated/VersionResources.rc")
+    set(output "${CMAKE_CURRENT_BINARY_DIR}/generated/${target}-VersionResources.rc")
     configure_file("${CMAKE_SOURCE_DIR}/cmake/VersionResources.rc.in" "${output}" @ONLY)
     target_sources(${target} PRIVATE "${output}")
 endfunction()
@@ -66,6 +66,26 @@ add_subdirectory(Components/inject.launcher)
 add_subdirectory(Components/inject.tap)
 
 set(VMEX_PAYLOAD_RC "${CMAKE_BINARY_DIR}/generated/PayloadResources.rc")
+set(VMEX_NOTIFICATION_SCRIPT
+    "${CMAKE_SOURCE_DIR}/Core/Resources/EricNotificationToolkit.ps1")
+if(NOT EXISTS "${VMEX_NOTIFICATION_SCRIPT}")
+    message(FATAL_ERROR "EricNotificationToolkit.ps1 is missing: ${VMEX_NOTIFICATION_SCRIPT}")
+endif()
+set(VMEX_DIAGNOSTICS_DLL "" CACHE FILEPATH "Path to xamldiagnostics.dll to embed")
+if(NOT VMEX_DIAGNOSTICS_DLL)
+    file(GLOB VMEX_DIAGNOSTICS_CANDIDATES
+        "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/XamlDiagnostics/xamldiagnostics.dll"
+        "C:/Program Files (x86)/Windows Kits/10/bin/x64/XamlDiagnostics/xamldiagnostics.dll"
+        "C:/Program Files/Windows Kits/10/bin/*/x64/XamlDiagnostics/xamldiagnostics.dll"
+        "C:/Program Files/Windows Kits/10/bin/x64/XamlDiagnostics/xamldiagnostics.dll")
+    list(SORT VMEX_DIAGNOSTICS_CANDIDATES ORDER DESCENDING)
+    if(VMEX_DIAGNOSTICS_CANDIDATES)
+        list(GET VMEX_DIAGNOSTICS_CANDIDATES 0 VMEX_DIAGNOSTICS_DLL)
+    endif()
+endif()
+if(NOT EXISTS "${VMEX_DIAGNOSTICS_DLL}")
+    message(FATAL_ERROR "xamldiagnostics.dll was not found; set VMEX_DIAGNOSTICS_DLL to its path")
+endif()
 
 add_custom_command(
     OUTPUT "${VMEX_PAYLOAD_RC}"
@@ -73,24 +93,38 @@ add_custom_command(
         "-DVMEX_RC_OUTPUT=${VMEX_PAYLOAD_RC}"
         "-DVMEX_PAYLOAD_LAUNCHER=$<TARGET_FILE:vmex_launcher>"
         "-DVMEX_PAYLOAD_TAP=$<TARGET_FILE:vmex_tap>"
+        "-DVMEX_PAYLOAD_DIAGNOSTICS=${VMEX_DIAGNOSTICS_DLL}"
+        "-DVMEX_NOTIFICATION_SCRIPT=${VMEX_NOTIFICATION_SCRIPT}"
+        "-DVMEX_PAYLOAD_CORE=$<TARGET_FILE:vmex_core>"
         -P "${CMAKE_SOURCE_DIR}/cmake/GeneratePayloadRc.cmake"
-    DEPENDS "$<TARGET_FILE:vmex_launcher>" "$<TARGET_FILE:vmex_tap>"
+    DEPENDS "$<TARGET_FILE:vmex_launcher>" "$<TARGET_FILE:vmex_tap>" "$<TARGET_FILE:vmex_core>" "${VMEX_DIAGNOSTICS_DLL}"
+            "${VMEX_NOTIFICATION_SCRIPT}"
     VERBATIM)
 
-add_executable(vmex
-    CliService.cpp
+add_executable(vmex WIN32
     Program.cpp
     "${CMAKE_SOURCE_DIR}/app.manifest"
     "${VMEX_PAYLOAD_RC}"
 )
 
+add_executable(vmex_cli
+    CliService.cpp
+    CliProgram.cpp
+    "${CMAKE_SOURCE_DIR}/app.manifest"
+    "${VMEX_PAYLOAD_RC}"
+)
+
 set_target_properties(vmex PROPERTIES VS_DPI_AWARE "PerMonitor")
+set_target_properties(vmex_cli PROPERTIES OUTPUT_NAME "vmex_cli")
 
 add_dependencies(vmex vmex_launcher vmex_tap)
+add_dependencies(vmex_cli vmex_launcher vmex_tap)
 
 target_link_libraries(vmex PRIVATE vmex_core WindowsApp.lib)
+target_link_libraries(vmex_cli PRIVATE vmex_core WindowsApp.lib)
 
-vmex_add_version_resource(vmex "VolumeMixerExtender command line interface" "vmex" "vmex.exe" VFT_APP)
+vmex_add_version_resource(vmex "VolumeMixerExtender background host" "vmex" "vmex.exe" VFT_APP)
+vmex_add_version_resource(vmex_cli "VolumeMixerExtender command line interface" "vmex_cli" "vmex_cli.exe" VFT_APP)
 
 set(VMEX_PACKAGE_NAME "${VMEX_PRODUCT_NAME}_${VMEX_VERSION}")
 set(VMEX_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/output")
@@ -100,6 +134,8 @@ add_custom_command(TARGET vmex POST_BUILD
         "-DVMEX_PACKAGE_DIR=${VMEX_PACKAGE_DIR}"
         "-DVMEX_PACKAGE_NAME=${VMEX_PACKAGE_NAME}"
         "-DVMEX_EXECUTABLE=$<TARGET_FILE:vmex>"
+        "-DVMEX_CLI_EXECUTABLE=$<TARGET_FILE:vmex_cli>"
+        "-DVMEX_CORE_DLL=$<TARGET_FILE:vmex_core>"
         "-DVMEX_CONFIG=$<CONFIG>"
         -P "${CMAKE_SOURCE_DIR}/cmake/Package.cmake"
     VERBATIM)
@@ -109,6 +145,8 @@ add_custom_target(package
         "-DVMEX_PACKAGE_DIR=${VMEX_PACKAGE_DIR}"
         "-DVMEX_PACKAGE_NAME=${VMEX_PACKAGE_NAME}"
         "-DVMEX_EXECUTABLE=$<TARGET_FILE:vmex>"
+        "-DVMEX_CLI_EXECUTABLE=$<TARGET_FILE:vmex_cli>"
+        "-DVMEX_CORE_DLL=$<TARGET_FILE:vmex_core>"
         -P "${CMAKE_SOURCE_DIR}/cmake/Package.cmake"
-    DEPENDS vmex
+    DEPENDS vmex vmex_cli
     VERBATIM)

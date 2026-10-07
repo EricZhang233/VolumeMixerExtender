@@ -16,6 +16,7 @@ namespace vmex::inject
     {
         std::filesystem::path launcherModule;
         std::filesystem::path tapModule;
+        std::filesystem::path coreModule;
         std::filesystem::path configModule;
         std::wstring initData;
         std::uint32_t timeoutMs = 5000;
@@ -36,7 +37,6 @@ namespace vmex::inject
 
         virtual Status FindTarget(TargetProcess& target) = 0;
         virtual Status Inject(const Options& options, State& state) = 0;
-        virtual Status Eject(const TargetProcess& target) = 0;
         virtual Status QueryState(State& state) = 0;
     };
 

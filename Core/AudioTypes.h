@@ -136,6 +136,7 @@ namespace vmex::audio
         [[nodiscard]] virtual std::wstring_view InstanceId() const noexcept = 0;
         [[nodiscard]] virtual std::uint32_t ProcessId() const noexcept = 0;
         virtual Status GetState(float& volume, bool& muted) = 0;
+        virtual Status GetPeak(float& left, float& right) = 0;
         virtual Status SetVolume(float level) = 0;
         virtual Status SetMuted(bool muted) = 0;
     };

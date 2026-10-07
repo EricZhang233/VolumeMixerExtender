@@ -77,6 +77,7 @@ namespace vmex::cli
     struct Command final
     {
         std::wstring name;
+        std::vector<std::wstring> aliases;
         std::wstring groupKey;
         std::wstring summaryKey;
         std::vector<ArgumentSpec> arguments;

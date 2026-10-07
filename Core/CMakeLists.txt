@@ -10,7 +10,7 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/generated/TextResources.g.h"
     @ONLY)
 
-add_library(vmex_core STATIC
+add_library(vmex_core SHARED
     App.cpp
     AppIcons.cpp
     AudioDeviceManager.cpp
@@ -25,16 +25,23 @@ add_library(vmex_core STATIC
     InjectionService.cpp
     Log.cpp
     Logger.cpp
+    NotificationService.cpp
     PayloadDeployment.cpp
     PayloadResources.cpp
     Platform.cpp
-    RedirectStore.cpp
+    Runtime.cpp
     Strings.cpp
     TapCommand.cpp
     TapPipeServer.cpp
     TextEncoding.cpp
     TextService.cpp
+    UninstallService.cpp
     UserSettings.cpp
+)
+
+set_target_properties(vmex_core PROPERTIES
+    WINDOWS_EXPORT_ALL_SYMBOLS ON
+    PREFIX ""
 )
 
 target_include_directories(vmex_core
@@ -51,4 +58,5 @@ target_link_libraries(vmex_core PUBLIC
     uuid
     version
     windowscodecs
+    WindowsApp.lib
 )

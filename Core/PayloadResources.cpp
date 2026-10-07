@@ -19,17 +19,29 @@ namespace vmex::payload
 
     std::wstring_view ToString(Item item)
     {
-        return item == Item::Launcher ? L"launcher" : L"tap";
+        if (item == Item::Launcher) return L"launcher";
+        if (item == Item::Tap) return L"tap";
+        if (item == Item::Diagnostics) return L"diagnostics";
+        if (item == Item::NotificationToolkit) return L"notification-toolkit";
+        return L"core";
     }
 
     unsigned ResourceId(Item item)
     {
-        return item == Item::Launcher ? VMEX_PAYLOAD_ID_LAUNCHER : VMEX_PAYLOAD_ID_TAP;
+        if (item == Item::Launcher) return VMEX_PAYLOAD_ID_LAUNCHER;
+        if (item == Item::Tap) return VMEX_PAYLOAD_ID_TAP;
+        if (item == Item::Diagnostics) return VMEX_PAYLOAD_ID_DIAGNOSTICS;
+        if (item == Item::NotificationToolkit) return VMEX_PAYLOAD_ID_NOTIFICATION_TOOLKIT;
+        return VMEX_PAYLOAD_ID_CORE;
     }
 
     std::filesystem::path DefaultFileName(Item item)
     {
-        return item == Item::Launcher ? std::filesystem::path(L"vmex_launcher.dll") : std::filesystem::path(L"vmex_tap.dll");
+        if (item == Item::Launcher) return L"vmex_launcher.dll";
+        if (item == Item::Tap) return L"vmex_tap.dll";
+        if (item == Item::Diagnostics) return L"xamldiagnostics.dll";
+        if (item == Item::NotificationToolkit) return L"EricNotificationToolkit.ps1";
+        return L"vmex_core.dll";
     }
 
     bool Exists(Item item)
@@ -82,8 +94,11 @@ namespace vmex::payload
 
     std::uint64_t PayloadContentHash()
     {
-        const std::uint64_t seed = HashLocked(0xCBF29CE484222325ull, Item::Launcher);
-        return HashLocked(seed, Item::Tap);
+        auto seed = HashLocked(0xCBF29CE484222325ull, Item::Launcher);
+        seed = HashLocked(seed, Item::Tap);
+        seed = HashLocked(seed, Item::Diagnostics);
+        seed = HashLocked(seed, Item::NotificationToolkit);
+        return HashLocked(seed, Item::Core);
     }
 
     Status Extract(Item item, const std::filesystem::path& destination)
@@ -127,6 +142,7 @@ namespace vmex::payload
     {
         pair.launcher = directory / DefaultFileName(Item::Launcher);
         pair.tap = directory / DefaultFileName(Item::Tap);
+        pair.diagnostics = directory / DefaultFileName(Item::Diagnostics);
 
         const auto launcherStatus = Extract(Item::Launcher, pair.launcher);
         if (!launcherStatus.IsOk())
@@ -134,6 +150,13 @@ namespace vmex::payload
             return launcherStatus;
         }
 
-        return Extract(Item::Tap, pair.tap);
+        const auto tapStatus = Extract(Item::Tap, pair.tap);
+        if (!tapStatus.IsOk()) return tapStatus;
+        return Extract(Item::Diagnostics, pair.diagnostics);
+    }
+
+    Status ExtractNotificationToolkit(const std::filesystem::path& destination)
+    {
+        return Extract(Item::NotificationToolkit, destination);
     }
 }

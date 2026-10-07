@@ -4,7 +4,7 @@
 |---|---|
 | 目的 | 面板里**应用行的图标是空白**；**逐应用重定向的 UI 从未落地**；Eric 定稿交互：点应用行向下展开，用下拉框选重定向端点 |
 | 结论 | ★ 图标、重定向、清除反馈**全部落地并经 Eric 实机交互确认**（两轮）；本轮**挖出并修掉三个真 bug**（两个在 XAML 命中测试/懒创建上，一个在报文协议上，见 §3/§6） |
-| 新增 | `Core/AppIcons.*`（进程 exe → HICON → WIC PNG 缓存）、`Core/RedirectStore.*`（`redirects.ini`，appKey → deviceId） |
+| 新增 | `Core/AppIcons.*`（进程 exe → HICON → WIC PNG 缓存） |
 | 修改 | `Components/inject.tap/Page.h`（`MakeAppIcon` / `MakeRedirectCombo` / `MakeAppRow` 全部重做）、`Components/inject.tap/Tap.cpp`（`TapPageSendPipe` 改为返回 `int`）、`Core/AudioInterop.h`（增 `FindVirtualEndpoint`）、`Core/AudioDeviceManager.*`（增 `FindVirtualDevice`）、`Core/TapCommand.*`（增参数个数校验）、`Core/TapPipeServer.cpp`、`Core/App.cpp`、`text.yaml` |
 | 证据 | TAP 日志 `tap-20261004-023535.log` / `tap-20261004-025324.log`、宿主日志 `app-20261004-025324.log` / `app-20261004-030240.log`（`%TEMP%\eric\VolumeMixerExtender\log`） |
 | 未覆盖 | "重定向真的把声音搬过去了"**要在实体机上验**（本机只有 RDP 虚拟端点，见 §7） |
@@ -43,15 +43,15 @@
 
 | 项 | 做法 |
 |---|---|
-| 数据来源 | **与下拉框同一个** 页面本地 map（`context->redirects`，首次从 `redirects.ini` 播种）⇒ 端点行不会和下拉框说的不一致 |
+| 数据来源 | **与下拉框同一个** 页面本地 map（每次建页按进程从系统持久默认端点表播种）⇒ 端点行不会和下拉框说的不一致 |
 | 取值 | 先按 `device.id` 在**当前枚举的 render 端点**里找显示名（走 `DisplayDeviceName`，因此「显示驱动名」开关对它同样生效 = 蓝图要求的"作用面三处"补齐）；找不到（端点已拔掉）时**回落显示原始 id** |
 | 颜色 | 优先取系统 `SystemControlHighlightAccentBrush`（与面板滑块/复选框同源），拿不到时退蓝图里的 `#4CC2FF` |
 | 刷新时机 | ① 选中某端点 → 立即出现/改写该行；② 选「默认设备」→ 立即收起该行；③ 底栏「清除重定向」→ `MountPage` 重建 ⇒ 全部消失；④ 切「显示驱动名」→ 重建 ⇒ 文案跟着变 |
 | 不给的行 | 系统声音行（`#system`，`pid=0`）**不画端点行**（它本来就不能被重定向） |
 
 ⚠️ 两条与"画事实"有关的说明：端点行读的是**页面本地**状态，所以在本机（RDP，策略必然被拒）它会显示"用户选了哪台"，
-而 `redirects.ini` 里其实**没有**记录 —— 与下拉框的选中值同源同口径；下次开面板重建时按 `redirects.ini` 播种，
-**没生效的重定向就会自己消失**。日志：`重定向端点显示 app=… 端点=…`（`log.page.appRoute`）。
+页面不再维护 `redirects.ini` 镜像；下次开面板重建时重新读取系统表，外部清除或失效的重定向会自己消失。
+日志：`重定向端点显示 app=… 端点=…`（`log.page.appRoute`）。
 
 页面侧交互探针（`tap-20261004-025324.log`，节选，Eric 的两轮点击）：
 
@@ -97,14 +97,14 @@ Eric 报"清除重定向没有用"，但日志显示命令**执行成功**（`CL
 | 项 | 做法 |
 |---|---|
 | 可见反馈 | 底栏「清除重定向」→ 清页面本地选择 → **`MountPage` 重建正文** ⇒ 所有下拉框回到「默认设备」（日志 `已清除全部重定向并重置列表`） |
-| 消竞态 | 下拉的**当前值改由页面本地 map 维护**（首次从 `redirects.ini` 播种，选择即更新、清除即清空）；⛔ 不再每次去读文件 —— 既省 IO，也消除"宿主删文件 / 页面重建"之间的竞态 |
+| 真值来源 | 下拉的当前值由页面本地 map 维护，但每次建页都从系统持久默认端点表播种；不再读写文件镜像 |
 
 ## 5. 两条边界（都按"画事实"的原则定）
 
 | 边界 | 决定 | 理由 |
 |---|---|---|
 | 系统声音行（`appKey = #system`，`pid = 0`）不给重定向 | UI 上**不出现 chevron / 下拉** | `pid=0` 的报文会被宿主判为非法；对齐 EarTrumpet 的 `IsMovable = !IsSystemSoundsSession` |
-| 只有策略**真的生效**才写 `redirects.ini` | 三个 role 全失败 ⇒ 记 `逐应用重定向未生效(本机 RDP 限制?), 未记录状态` 且不落盘 | 否则会出现"UI 显示已重定向、实际没生效"的假象（本机 RDP 下**必然**全失败，所以这条天天在生效） |
+| 策略成功 | 状态由系统持久默认端点表提供；策略失败不会改变页面真值 |
 
 ## 6. 第三个真 bug：录制模式发的是**硬编码设备名**（本轮顺带挖出）
 

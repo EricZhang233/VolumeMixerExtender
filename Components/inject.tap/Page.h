@@ -3,10 +3,11 @@
 #include "AutostartEntry.h"
 #include "AppIcons.h"
 #include "AudioDeviceManager.h"
+#include "AudioInterop.h"
 #include "InjectionContract.h"
 #include "Logger.h"
 #include "Platform.h"
-#include "RedirectStore.h"
+#include "EndpointPolicyService.h"
 #include "Strings.h"
 #include "TextService.h"
 #include "UserSettings.h"
@@ -32,6 +33,8 @@
 #include <winrt/Windows.UI.Xaml.Shapes.h>
 
 #include <cstdint>
+#include <atomic>
+#include <algorithm>
 #include <functional>
 #include <map>
 #include <memory>
@@ -128,6 +131,7 @@ namespace vmex::tap::page
     struct Context final
     {
         std::unique_ptr<audio::IAudioDeviceManager> manager;
+        std::unique_ptr<audio::IEndpointPolicyService> endpointPolicy;
         PGX::FrameworkElement footer{nullptr};
         PGXC::ScrollViewer list{nullptr};
         PGX::FrameworkElement pageWindow{nullptr};
@@ -137,6 +141,8 @@ namespace vmex::tap::page
         PGXC::Button slotRight{nullptr};
         PGX::UIElement systemItem{nullptr};
         std::map<std::wstring, std::wstring> redirects;
+        std::vector<std::shared_ptr<audio::detail::EndpointVolumeMonitor>> endpointMonitors;
+        std::vector<PGX::DispatcherTimer> meterTimers;
         std::shared_ptr<PageData> data;
 
         bool mounting = false;
@@ -163,6 +169,7 @@ namespace vmex::tap::page
     }
 
     inline constexpr double kBodyInset = 8.0;
+    inline constexpr bool kRecordingModeEnabled = false;
 
     inline PGXC::TextBlock SectionLabel(winrt::hstring const& value)
     {
@@ -243,7 +250,7 @@ namespace vmex::tap::page
         return PGXM::SolidColorBrush(PGUI::ColorHelper::FromArgb(alpha, 0xE5, 0x48, 0x4D));
     }
 
-    [[nodiscard]] inline PGXM::Brush AccentBrush()
+    [[nodiscard]] inline PGUI::Color AccentColor()
     {
         if (const auto application = PGX::Application::Current())
         {
@@ -253,13 +260,30 @@ namespace vmex::tap::page
                 {
                     if (auto brush = resources.Lookup(winrt::box_value(L"SystemControlHighlightAccentBrush")).try_as<PGXM::Brush>())
                     {
-                        return brush;
+                        if (auto solid = brush.try_as<PGXM::SolidColorBrush>())
+                        {
+                            return solid.Color();
+                        }
                     }
                 }
             }
         }
 
-        return PGXM::SolidColorBrush(PGUI::ColorHelper::FromArgb(0xFF, 0x4C, 0xC2, 0xFF));
+        return PGUI::ColorHelper::FromArgb(0xFF, 0x4C, 0xC2, 0xFF);
+    }
+
+    [[nodiscard]] inline PGXM::SolidColorBrush AccentBrush()
+    {
+        return PGXM::SolidColorBrush(AccentColor());
+    }
+
+    [[nodiscard]] inline PGXM::SolidColorBrush DimAccentBrush()
+    {
+        const auto color = AccentColor();
+        return PGXM::SolidColorBrush(PGUI::ColorHelper::FromArgb(
+            color.A, static_cast<std::uint8_t>(color.R * 0.58f),
+            static_cast<std::uint8_t>(color.G * 0.58f),
+            static_cast<std::uint8_t>(color.B * 0.58f)));
     }
 
     inline void ApplyDangerVisual(PGXC::Button const& button, bool armed)
@@ -331,8 +355,53 @@ namespace vmex::tap::page
         slider.Width(150);
         slider.MinHeight(0);
         slider.VerticalAlignment(PGX::VerticalAlignment::Center);
+        slider.Foreground(DimAccentBrush());
         return slider;
     }
+
+    struct StereoMeter final
+    {
+        PGXC::Grid layer{nullptr};
+        PGXSH::Rectangle left{nullptr};
+        PGXSH::Rectangle right{nullptr};
+    };
+
+    inline StereoMeter MakeStereoMeter()
+    {
+        StereoMeter meter;
+        meter.layer = PGXC::Grid();
+        meter.layer.Width(150);
+        meter.layer.Height(32);
+
+        meter.left = PGXSH::Rectangle();
+        meter.right = PGXSH::Rectangle();
+        for (const auto& bar : { meter.left, meter.right })
+        {
+            bar.Width(0);
+            bar.Height(2);
+            bar.IsHitTestVisible(false);
+            bar.HorizontalAlignment(PGX::HorizontalAlignment::Left);
+            bar.VerticalAlignment(PGX::VerticalAlignment::Center);
+        }
+        const auto accent = AccentBrush();
+        meter.left.Fill(accent);
+        meter.right.Fill(accent);
+        meter.left.Margin(PGX::ThicknessHelper::FromLengths(0, -2, 0, 0));
+        meter.right.Margin(PGX::ThicknessHelper::FromLengths(0, 1, 0, 0));
+        return meter;
+    }
+
+    inline void UpdateStereoMeter(StereoMeter const& meter, PGXC::Slider const& slider,
+                                  float leftPeak, float rightPeak)
+    {
+        const double trackWidth = std::max(0.0, slider.ActualWidth() - 12.0);
+        const double volume = std::clamp(slider.Value() / 100.0, 0.0, 1.0);
+        meter.left.Width(trackWidth * std::clamp(static_cast<double>(leftPeak), 0.0, 1.0) * volume);
+        meter.right.Width(trackWidth * std::clamp(static_cast<double>(rightPeak), 0.0, 1.0) * volume);
+    }
+
+    inline void SendSetDefault(bool render, const std::wstring& deviceId);
+    inline void MountPage(ContextPtr const& context, int page);
 
     inline PGXC::Grid MakeEndpointRow(ContextPtr const& context, const audio::DeviceInfo& device)
     {
@@ -351,17 +420,16 @@ namespace vmex::tap::page
         grid.Children().Append(icon);
 
         std::wstring name = audio::DisplayDeviceName(device, Settings().showDriverName);
-        if (device.isDefault) name.append(text::Embedded().Resolve(L"page.device.defaultSuffix"));
         PGXC::StackPanel block = NameBlock(name, std::wstring());
         PGXC::Grid::SetColumn(block, 1);
         grid.Children().Append(block);
 
+        const std::wstring deviceId = device.id;
         PGXC::StackPanel trailing;
         trailing.Orientation(PGXC::Orientation::Horizontal);
         trailing.VerticalAlignment(PGX::VerticalAlignment::Center);
 
         PGXC::Button mute = MakeMuteButton(muted);
-        const std::wstring deviceId = device.id;
         ContextPtr weakContext = context;
         mute.Click([weakContext, deviceId, mute](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
         {
@@ -375,20 +443,139 @@ namespace vmex::tap::page
         trailing.Children().Append(mute);
 
         PGXC::Slider slider = MakeVolumeSlider(level);
-        slider.ValueChanged([weakContext, deviceId](PGF::IInspectable const& sender,
-                                                    PGXCP::RangeBaseValueChangedEventArgs const&)
+        auto dragging = std::make_shared<std::atomic_bool>(false);
+        auto synchronizing = std::make_shared<std::atomic_bool>(false);
+        slider.ValueChanged([weakContext, deviceId, synchronizing](PGF::IInspectable const& sender,
+                                                                    PGXCP::RangeBaseValueChangedEventArgs const&)
         {
+            if (synchronizing->load(std::memory_order_acquire)) return;
             if (!weakContext->manager) return;
             if (auto s = sender.try_as<PGXC::Slider>())
             {
                 weakContext->manager->SetVolume(deviceId, static_cast<float>(s.Value() / 100.0));
             }
         });
-        trailing.Children().Append(slider);
+        slider.PointerPressed([dragging](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
+        {
+            dragging->store(true, std::memory_order_release);
+        });
+        auto refreshAfterDrag = [weakContext, deviceId, slider, dragging, synchronizing]()
+        {
+            dragging->store(false, std::memory_order_release);
+            audio::EndpointVolume current;
+            if (!weakContext->manager || !weakContext->manager->GetVolume(deviceId, current).IsOk()) return;
+            synchronizing->store(true, std::memory_order_release);
+            slider.Value(current.level * 100.0);
+            synchronizing->store(false, std::memory_order_release);
+        };
+        slider.PointerReleased([refreshAfterDrag](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
+        {
+            refreshAfterDrag();
+        });
+        slider.PointerCaptureLost([refreshAfterDrag](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
+        {
+            refreshAfterDrag();
+        });
+        StereoMeter meter = MakeStereoMeter();
+        meter.layer.Children().Append(slider);
+        meter.layer.Children().Append(meter.left);
+        meter.layer.Children().Append(meter.right);
+        trailing.Children().Append(meter.layer);
+
+        PGX::DispatcherTimer meterTimer;
+        meterTimer.Interval(std::chrono::milliseconds(50));
+        meterTimer.Tick([weakContext, deviceId, meter, slider](PGF::IInspectable const&, PGF::IInspectable const&)
+        {
+            float left = 0.0f;
+            float right = 0.0f;
+            if (weakContext->manager && weakContext->manager->GetPeak(deviceId, left, right).IsOk())
+            {
+                UpdateStereoMeter(meter, slider, left, right);
+            }
+        });
+        meterTimer.Start();
+        context->meterTimers.push_back(meterTimer);
+
+        auto dispatcher = slider.Dispatcher();
+        if (dispatcher)
+        {
+            auto monitor = audio::detail::EndpointVolumeMonitor::Create(
+                deviceId, [slider, mute, dispatcher, dragging, synchronizing](float externalLevel, bool externalMuted)
+                {
+                    try
+                    {
+                        dispatcher.RunAsync(
+                            winrt::Windows::UI::Core::CoreDispatcherPriority::Low,
+                            [slider, mute, dragging, synchronizing, externalLevel, externalMuted]()
+                            {
+                                if (dragging->load(std::memory_order_acquire)) return;
+                                synchronizing->store(true, std::memory_order_release);
+                                slider.Value(externalLevel * 100.0);
+                                synchronizing->store(false, std::memory_order_release);
+                                SetMuteGlyph(mute, externalMuted);
+                            });
+                    }
+                    catch (const winrt::hresult_error&)
+                    {
+                        LogKey(L"log.page.dispatchFailed");
+                    }
+                });
+            if (monitor) context->endpointMonitors.push_back(std::move(monitor));
+        }
 
         PGXC::Grid::SetColumn(trailing, 2);
         grid.Children().Append(trailing);
         return grid;
+    }
+
+    inline void SendSetDefault(bool render, const std::wstring& deviceId);
+
+    inline PGXC::ListView MakeEndpointList(ContextPtr const& context,
+                                            const std::vector<audio::DeviceInfo>& devices,
+                                            bool render)
+    {
+        PGXC::ListView list;
+        list.SelectionMode(PGXC::ListViewSelectionMode::Single);
+        list.IsItemClickEnabled(false);
+        list.Padding(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
+        list.BorderThickness(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
+        list.Background(nullptr);
+
+        for (const auto& device : devices)
+        {
+            list.Items().Append(MakeEndpointRow(context, device));
+        }
+
+        auto initializing = std::make_shared<bool>(true);
+        const auto snapshot = devices;
+        list.SelectionChanged([context, snapshot, render, initializing](PGF::IInspectable const& sender,
+                                                                          PGXC::SelectionChangedEventArgs const&)
+        {
+            if (*initializing) return;
+            auto self = sender.try_as<PGXC::ListView>();
+            if (!self) return;
+            const int index = self.SelectedIndex();
+            if (index < 0 || static_cast<std::size_t>(index) >= snapshot.size()) return;
+
+            const std::wstring deviceId = snapshot[static_cast<std::size_t>(index)].id;
+            SendSetDefault(render, deviceId);
+            auto& current = render ? context->data->render : context->data->capture;
+            for (auto& item : current) item.isDefault = item.id == deviceId;
+            if (render) context->data->defaultRender = deviceId;
+            else context->data->defaultCapture = deviceId;
+            MountPage(context, Settings().page);
+        });
+
+        for (std::size_t i = 0; i < devices.size(); ++i)
+        {
+            if (devices[i].isDefault)
+            {
+                list.SelectedIndex(static_cast<int>(i));
+                break;
+            }
+        }
+        *initializing = false;
+        return list;
     }
 
     inline PGXC::StackPanel BuildVolumeLayer(ContextPtr const& context)
@@ -396,19 +583,9 @@ namespace vmex::tap::page
         PGXC::StackPanel layer;
         layer.Children().Append(SectionLabel(winrt::hstring(text::Embedded().Resolve(L"page.section.volume"))));
 
-        for (const auto& device : context->data->render)
-        {
-            layer.Children().Append(MakeEndpointRow(context, device));
-        }
+        layer.Children().Append(MakeEndpointList(context, context->data->render, true));
 
-        if (context->data->capture.empty())
-        {
-            PGXC::TextBlock none = Text(winrt::hstring(text::Embedded().Resolve(L"page.none.capture")), 12);
-            none.Opacity(0.5);
-            none.Margin(PGX::ThicknessHelper::FromLengths(8, 2, 4, 8));
-            layer.Children().Append(none);
-            return layer;
-        }
+        if (context->data->capture.empty()) return layer;
 
         PGXC::Grid head = Row(44);
         PGXC::TextBlock icon = Glyph(L"\xE720", 14);
@@ -427,12 +604,10 @@ namespace vmex::tap::page
         head.Children().Append(arrow);
 
         PGXC::StackPanel body;
-        body.Margin(PGX::ThicknessHelper::FromLengths(28, 0, 0, 0));
+        body.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
         body.Visibility(Settings().inputExpanded ? PGX::Visibility::Visible : PGX::Visibility::Collapsed);
-        for (const auto& device : context->data->capture)
-        {
-            body.Children().Append(MakeEndpointRow(context, device));
-        }
+
+        body.Children().Append(MakeEndpointList(context, context->data->capture, false));
 
         head.Tapped([arrow, body](PGF::IInspectable const&, PGX::Input::TappedRoutedEventArgs const&)
         {
@@ -497,10 +672,47 @@ namespace vmex::tap::page
         return holder;
     }
 
+    [[nodiscard]] inline PGX::FrameworkElement MakeSystemSoundIcon()
+    {
+        PGXC::Grid holder;
+        holder.Width(20);
+        holder.Height(20);
+        holder.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 10, 0));
+        holder.VerticalAlignment(PGX::VerticalAlignment::Center);
+
+        PGXSH::Path icon;
+        icon.Width(16);
+        icon.Height(16);
+        icon.Stretch(PGXM::Stretch::Uniform);
+        icon.Fill(AccentBrush());
+        PGXM::PathGeometry geometry;
+        PGXM::PathFigure figure;
+        figure.StartPoint(PGF::Point{ 3, 9 });
+        for (const PGF::Point point : { PGF::Point{ 7, 9 }, PGF::Point{ 12, 5 },
+                                        PGF::Point{ 12, 19 }, PGF::Point{ 7, 15 }, PGF::Point{ 3, 15 } })
+        {
+            PGXM::LineSegment segment;
+            segment.Point(point);
+            figure.Segments().Append(segment);
+        }
+        figure.IsClosed(true);
+        geometry.Figures().Append(figure);
+        icon.Data(geometry);
+        icon.HorizontalAlignment(PGX::HorizontalAlignment::Center);
+        icon.VerticalAlignment(PGX::VerticalAlignment::Center);
+        holder.Children().Append(icon);
+        return holder;
+    }
+
     [[nodiscard]] inline PGX::FrameworkElement MakeAppIcon(const audio::SessionInfo& session)
     {
+        if (session.appKey == L"#system")
+        {
+            return MakeSystemSoundIcon();
+        }
+
         std::wstring iconFile;
-        if (session.processId != 0 && session.appKey != L"#system" &&
+        if (session.processId != 0 &&
             icons::FileForProcess(session.processId, platform::GetCacheDirectory(), iconFile).IsOk())
         {
             std::wstring uri(L"file:///");
@@ -534,9 +746,7 @@ namespace vmex::tap::page
             return found->second;
         }
 
-        return context->redirects
-            .emplace(appKey, audio::GetAppRedirect(platform::GetCacheDirectory(), appKey))
-            .first->second;
+        return context->redirects.emplace(appKey, std::wstring()).first->second;
     }
 
     [[nodiscard]] inline std::wstring RedirectTargetName(ContextPtr const& context, const std::wstring& appKey)
@@ -690,20 +900,15 @@ namespace vmex::tap::page
         const std::wstring appKey = session.appKey;
         const bool movable = session.processId != 0 && !appKey.empty() && appKey != L"#system";
         PGXC::Grid grid = Row(44);
-
-        PGXC::TextBlock chevron = Glyph(L"\xE70D", 12);
-        chevron.Margin(PGX::ThicknessHelper::FromLengths(8, 0, 0, 0));
+        grid.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 12, 0));
 
         PGXC::Grid titleBand;
         PGXC::ColumnDefinition leading;
         PGXC::ColumnDefinition flexible;
-        PGXC::ColumnDefinition arrow;
         leading.Width(PGX::GridLengthHelper::Auto());
         flexible.Width(PGX::GridLengthHelper::FromValueAndType(1, PGX::GridUnitType::Star));
-        arrow.Width(PGX::GridLengthHelper::Auto());
         titleBand.ColumnDefinitions().Append(leading);
         titleBand.ColumnDefinitions().Append(flexible);
-        titleBand.ColumnDefinitions().Append(arrow);
 
         PGX::FrameworkElement icon = MakeAppIcon(session);
         PGXC::Grid::SetColumn(icon, 0);
@@ -728,29 +933,9 @@ namespace vmex::tap::page
         PGXC::Grid::SetColumn(block, 1);
         titleBand.Children().Append(block);
 
-        PGXC::Button head{nullptr};
-        if (movable)
-        {
-            PGXC::Grid::SetColumn(chevron, 2);
-            titleBand.Children().Append(chevron);
-
-            head = BareButton(winrt::hstring());
-            head.Content(titleBand);
-            head.Background(PGXM::SolidColorBrush(PGUI::Colors::Transparent()));
-            head.MinHeight(0);
-            head.Padding(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
-            head.HorizontalAlignment(PGX::HorizontalAlignment::Stretch);
-            head.HorizontalContentAlignment(PGX::HorizontalAlignment::Stretch);
-            PGXC::Grid::SetColumn(head, 0);
-            PGXC::Grid::SetColumnSpan(head, 2);
-            grid.Children().Append(head);
-        }
-        else
-        {
-            PGXC::Grid::SetColumn(titleBand, 0);
-            PGXC::Grid::SetColumnSpan(titleBand, 2);
-            grid.Children().Append(titleBand);
-        }
+        PGXC::Grid::SetColumn(titleBand, 0);
+        PGXC::Grid::SetColumnSpan(titleBand, 2);
+        grid.Children().Append(titleBand);
 
         PGXC::StackPanel trailing;
         trailing.Orientation(PGXC::Orientation::Horizontal);
@@ -772,7 +957,6 @@ namespace vmex::tap::page
         {
             mute.IsEnabled(false);
         }
-        trailing.Children().Append(mute);
 
         PGXC::Slider slider = MakeVolumeSlider(session.volume);
         if (handle)
@@ -790,56 +974,94 @@ namespace vmex::tap::page
         {
             slider.IsEnabled(false);
         }
-        trailing.Children().Append(slider);
+        StereoMeter meter = MakeStereoMeter();
+        meter.layer.Children().Append(slider);
+        meter.layer.Children().Append(meter.left);
+        meter.layer.Children().Append(meter.right);
+
+        PGX::DispatcherTimer meterTimer;
+        meterTimer.Interval(std::chrono::milliseconds(50));
+        meterTimer.Tick([handle, meter, slider](PGF::IInspectable const&, PGF::IInspectable const&)
+        {
+            float left = 0.0f;
+            float right = 0.0f;
+            if (handle->GetPeak(left, right).IsOk())
+            {
+                UpdateStereoMeter(meter, slider, left, right);
+            }
+        });
+        meterTimer.Start();
+        context->meterTimers.push_back(meterTimer);
+
+        PGXC::StackPanel volumeHost;
+        volumeHost.Orientation(PGXC::Orientation::Horizontal);
+        volumeHost.VerticalAlignment(PGX::VerticalAlignment::Center);
+        volumeHost.Children().Append(mute);
+        volumeHost.Children().Append(meter.layer);
+
+        PGXC::Grid volumeHostGrid;
+        volumeHostGrid.Children().Append(volumeHost);
+
+        PGXCP::ToggleButton routeButton{nullptr};
+        PGXC::Grid redirectPanel{nullptr};
+        auto comboRef = std::make_shared<PGXC::ComboBox>(nullptr);
+
+        if (movable)
+        {
+            routeButton = PGXCP::ToggleButton();
+            PGXC::TextBlock glyph = Text(winrt::hstring(L"\xE724"), 14);
+            glyph.FontFamily(PGXM::FontFamily(L"Segoe MDL2 Assets"));
+            routeButton.Content(glyph);
+            routeButton.MinHeight(0);
+            routeButton.Padding(PGX::ThicknessHelper::FromLengths(8, 4, 8, 4));
+            routeButton.Background(nullptr);
+            routeButton.BorderThickness(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
+
+            redirectPanel = PGXC::Grid();
+            redirectPanel.HorizontalAlignment(PGX::HorizontalAlignment::Stretch);
+            redirectPanel.VerticalAlignment(PGX::VerticalAlignment::Center);
+            redirectPanel.Visibility(PGX::Visibility::Collapsed);
+            volumeHostGrid.Children().Append(redirectPanel);
+
+            trailing.Children().Append(routeButton);
+            trailing.Children().Append(volumeHostGrid);
+
+            routeButton.Checked([volumeHost, redirectPanel, comboRef, context, session, route](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
+            {
+                if (!*comboRef)
+                {
+                    *comboRef = MakeRedirectCombo(context, session,
+                        [route](std::wstring const& target) { route.Update(target); });
+                    redirectPanel.Children().Append(*comboRef);
+                }
+                volumeHost.Opacity(0);
+                volumeHost.IsHitTestVisible(false);
+                redirectPanel.Visibility(PGX::Visibility::Visible);
+                LogKey(L"log.page.appRowToggle", { L"展开" });
+            });
+
+            routeButton.Unchecked([volumeHost, redirectPanel, comboRef](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
+            {
+                if (*comboRef)
+                {
+                    (*comboRef).IsDropDownOpen(false);
+                }
+                redirectPanel.Visibility(PGX::Visibility::Collapsed);
+                volumeHost.Opacity(1);
+                volumeHost.IsHitTestVisible(true);
+                LogKey(L"log.page.appRowToggle", { L"收起" });
+            });
+        }
+        else
+        {
+            trailing.Children().Append(volumeHostGrid);
+        }
 
         PGXC::Grid::SetColumn(trailing, 2);
         grid.Children().Append(trailing);
 
         PGXC::StackPanel container;
         container.Children().Append(grid);
-
-        if (movable)
-        {
-            PGXC::StackPanel expand;
-            expand.Visibility(PGX::Visibility::Collapsed);
-            expand.Margin(PGX::ThicknessHelper::FromLengths(30, 0, 0, 6));
-
-            PGXC::TextBlock caption = Text(winrt::hstring(text::Embedded().Resolve(L"page.app.redirect")), 11);
-            caption.Opacity(0.65);
-            caption.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 0, 4));
-            expand.Children().Append(caption);
-
-            auto comboRef = std::make_shared<PGXC::ComboBox>(nullptr);
-            head.Click([expand, chevron, comboRef, context, session, route](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
-            {
-                const bool open = expand.Visibility() != PGX::Visibility::Visible;
-
-                if (open)
-                {
-                    expand.Visibility(PGX::Visibility::Visible);
-                    if (!*comboRef)
-                    {
-                        *comboRef = MakeRedirectCombo(context, session,
-                            [route](std::wstring const& target) { route.Update(target); });
-                        expand.Children().Append(*comboRef);
-                    }
-                }
-                else
-                {
-                    if (*comboRef)
-                    {
-                        (*comboRef).IsDropDownOpen(false);
-                    }
-                    expand.Visibility(PGX::Visibility::Collapsed);
-                }
-
-                chevron.Text(open ? winrt::hstring(L"\xE70E") : winrt::hstring(L"\xE70D"));
-                LogKey(L"log.page.appRowToggle", { open ? L"展开" : L"收起" });
-            });
-
-            container.Children().Append(expand);
-        }
-
         return container;
     }
 
@@ -866,42 +1088,6 @@ namespace vmex::tap::page
         return layer;
     }
 
-    inline PGXC::ComboBox MakeDeviceCombo(const std::vector<audio::DeviceInfo>& devices,
-                                          const std::wstring& selectedId,
-                                          std::function<void(const std::wstring&)> onPick)
-    {
-        PGXC::ComboBox combo;
-        combo.HorizontalAlignment(PGX::HorizontalAlignment::Stretch);
-        combo.MinHeight(32);
-
-        int selected = -1;
-        for (std::size_t i = 0; i < devices.size(); ++i)
-        {
-            const std::wstring label = audio::DisplayDeviceName(devices[i], Settings().showDriverName);
-
-            PGXC::ComboBoxItem item;
-            item.Content(winrt::box_value(winrt::hstring(label)));
-            item.Tag(winrt::box_value(winrt::hstring(devices[i].id)));
-            combo.Items().Append(item);
-
-            if (devices[i].id == selectedId) selected = static_cast<int>(i);
-        }
-        if (selected >= 0) combo.SelectedIndex(selected);
-
-        const std::vector<audio::DeviceInfo> snapshot = devices;
-        combo.SelectionChanged([snapshot, onPick](PGF::IInspectable const& sender,
-                                                  PGXC::SelectionChangedEventArgs const&)
-        {
-            if (auto self = sender.try_as<PGXC::ComboBox>())
-            {
-                const int index = self.SelectedIndex();
-                if (index < 0 || static_cast<std::size_t>(index) >= snapshot.size()) return;
-                onPick(snapshot[static_cast<std::size_t>(index)].id);
-            }
-        });
-        return combo;
-    }
-
     inline void SendSetDefault(bool render, const std::wstring& deviceId)
     {
         SendOrLog(std::string("SETDEFAULT ") + (render ? "render " : "capture ") + Narrow(deviceId) + "\n", L"SETDEFAULT");
@@ -910,6 +1096,7 @@ namespace vmex::tap::page
     inline void SendClearRedirects() { SendOrLog("CLEARREDIRECT\n", L"CLEARREDIRECT"); }
 
     inline void SendUninstall() { SendOrLog("UNINSTALL\n", L"UNINSTALL"); }
+    inline void SendExit() { SendOrLog("EXIT\n", L"EXIT"); }
 
     inline void OpenUrl(const std::wstring& url)
     {
@@ -1040,6 +1227,22 @@ namespace vmex::tap::page
             data.handles.reserve(data.apps.size());
             for (const auto& session : data.apps)
             {
+                if (context->endpointPolicy && session.processId != 0 && !session.appKey.empty() &&
+                    session.appKey != L"#system")
+                {
+                    std::wstring persisted;
+                    if (context->endpointPolicy->GetAppDefaultDevice(
+                            session.processId, audio::DataFlow::Render, audio::DeviceRole::Multimedia, persisted).IsOk() &&
+                        !persisted.empty() && persisted != data.defaultRender)
+                    {
+                        context->redirects[session.appKey] = std::move(persisted);
+                    }
+                    else
+                    {
+                        context->redirects[session.appKey] = std::wstring();
+                    }
+                }
+
                 std::unique_ptr<audio::IAudioSessionHandle> handle;
                 if (context->manager->OpenSession(data.appsEndpoint, session.instanceId, handle).IsOk())
                 {
@@ -1178,6 +1381,7 @@ namespace vmex::tap::page
 
         auto context = std::make_shared<Context>();
         context->manager = audio::CreateAudioDeviceManager();
+        context->endpointPolicy = audio::CreateEndpointPolicyService();
         context->footer = footer;
         context->pageWindow = pageWindow;
         context->list = scroller;
@@ -1372,64 +1576,7 @@ namespace vmex::tap::page
     {
         PGXC::StackPanel root;
         root.Padding(PGX::ThicknessHelper::FromLengths(kBodyInset, 0, kBodyInset, 0));
-
-        PGXC::Grid head = Row(28);
-        PGXC::TextBlock label = SectionLabel(winrt::hstring(text::Embedded().Resolve(
-            Settings().recordingMode ? L"page.label.listenOutput" : L"page.label.defaultOutput")));
-        PGXC::Grid::SetColumn(label, 1);
-        head.Children().Append(label);
-
-        PGXC::CheckBox recording;
-        recording.Content(winrt::box_value(winrt::hstring(text::Embedded().Resolve(L"page.checkbox.recordingMode"))));
-        recording.FontSize(12);
-        recording.MinHeight(0);
-        recording.IsChecked(PGF::IReference<bool>(Settings().recordingMode));
-        recording.HorizontalAlignment(PGX::HorizontalAlignment::Right);
-        recording.VerticalAlignment(PGX::VerticalAlignment::Center);
-        PGXC::Grid::SetColumn(recording, 2);
-        head.Children().Append(recording);
-        root.Children().Append(head);
-
-        recording.Click([context](PGF::IInspectable const& sender, PGX::RoutedEventArgs const&)
-        {
-            auto box = sender.try_as<PGXC::CheckBox>();
-            if (!box) return;
-
-            const bool on = winrt::unbox_value<bool>(box.IsChecked());
-            Settings().recordingMode = on;
-            LogKey(L"log.page.recordingMode", { on ? L"ON" : L"OFF" });
-
-            if (on)
-            {
-                Settings().savedDefaultRender = context->data->defaultRender;
-                Settings().listenEndpoint = Settings().savedDefaultRender;
-                SendSetDefault(true, std::wstring(inject::kVirtualDeviceTarget));
-            }
-            else if (!Settings().listenEndpoint.empty())
-            {
-                SendSetDefault(true, Settings().listenEndpoint);
-            }
-        });
-
-        PGXC::ComboBox output = MakeDeviceCombo(
-            context->data->render,
-            Settings().recordingMode ? Settings().listenEndpoint : context->data->defaultRender,
-            [](const std::wstring& id) { SendSetDefault(true, id); });
-        output.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 0, 8));
-        root.Children().Append(output);
-
-        root.Children().Append(SectionLabel(winrt::hstring(text::Embedded().Resolve(L"page.label.defaultInput"))));
-        PGXC::ComboBox input = MakeDeviceCombo(
-            context->data->capture, context->data->defaultCapture,
-            [](const std::wstring& id) { SendSetDefault(false, id); });
-        input.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 0, 8));
-        if (context->data->capture.empty())
-        {
-            input.IsEnabled(false);
-            input.PlaceholderText(winrt::hstring(text::Embedded().Resolve(L"page.none.capture")));
-        }
-        root.Children().Append(input);
-
+        Settings().recordingMode = false;
         root.Children().Append(BuildVolumeLayer(context));
         root.Children().Append(BuildAppLayer(context));
         return root;
@@ -1463,30 +1610,22 @@ namespace vmex::tap::page
                 if (*busy) return;
                 *busy = true;
 
-                std::wstring error;
                 const bool wanted = toggle.IsOn();
-                const bool applied = wanted
-                    ? autostart::AutostartEntry::Enable(error)
-                    : autostart::AutostartEntry::Disable(error);
+                SendOrLog(wanted ? "AUTOSTART on\n" : "AUTOSTART off\n", L"AUTOSTART");
 
-                const bool actual = autostart::AutostartEntry::IsEnabled();
+                bool actual = autostart::AutostartEntry::IsEnabled();
+                for (int attempt = 0; attempt < 20 && actual != wanted; ++attempt)
+                {
+                    ::Sleep(50);
+                    actual = autostart::AutostartEntry::IsEnabled();
+                }
                 if (toggle.IsOn() != actual) toggle.IsOn(actual);
 
-                if (applied)
-                {
-                    LogKey(L"log.page.autostart", {
-                        wanted ? text::Embedded().Resolve(L"log.page.autostart.enable")
-                               : text::Embedded().Resolve(L"log.page.autostart.remove"),
-                        actual ? text::Embedded().Resolve(L"log.page.autostart.enabled")
-                               : text::Embedded().Resolve(L"log.page.autostart.missing") });
-                }
-                else
-                {
-                    LogKey(L"log.page.autostartFailed", {
-                        wanted ? text::Embedded().Resolve(L"log.page.autostart.enableShort")
-                               : text::Embedded().Resolve(L"log.page.autostart.removeShort"),
-                        error });
-                }
+                LogKey(L"log.page.autostart", {
+                    wanted ? text::Embedded().Resolve(L"log.page.autostart.enable")
+                           : text::Embedded().Resolve(L"log.page.autostart.remove"),
+                    actual ? text::Embedded().Resolve(L"log.page.autostart.enabled")
+                           : text::Embedded().Resolve(L"log.page.autostart.missing") });
                 *busy = false;
             });
             root.Children().Append(row);
@@ -1523,6 +1662,16 @@ namespace vmex::tap::page
         PGXC::Grid spacer;
         spacer.Height(24);
         root.Children().Append(spacer);
+
+        PGXC::Button exit = DangerButton(winrt::hstring(text::Embedded().Resolve(L"page.button.exit")));
+        exit.HorizontalAlignment(PGX::HorizontalAlignment::Stretch);
+        exit.Click([exit](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
+        {
+            exit.IsEnabled(false);
+            exit.Content(winrt::box_value(winrt::hstring(text::Embedded().Resolve(L"page.button.exiting"))));
+            SendExit();
+        });
+        root.Children().Append(exit);
 
         PGXC::Button danger = DangerButton(winrt::hstring(text::Embedded().Resolve(L"page.button.uninstall")));
         danger.HorizontalAlignment(PGX::HorizontalAlignment::Stretch);
