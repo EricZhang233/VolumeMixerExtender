@@ -166,6 +166,9 @@ log.settings.reg_delete_failed: 注册表键删除失败 (error={0})
 log.audio.state_ignored: 仅枚举活动状态的端点, 请求的状态被忽略
 log.audio.enumerated: 枚举音频端点完成 flow={0} 数量={1}
 log.audio.sessions: 枚举音频会话 device={0} 数量={1}
+log.audio.app_sessions: 枚举应用会话完成 应用数={0} 端点={1}
+log.audio.watch_started: 已开始监听音频端点变化
+log.audio.watch_failed: 监听音频端点变化失败（端点变化不再自动刷新）
 audio.session.system_sounds: 系统声音
 audio.session.unknown_app: 未知应用
 log.interop.rogetactivationfactory_unavailable: RoGetActivationFactory 取不到
@@ -246,6 +249,9 @@ log.page.appRedirectOpened: 重定向下拉已展开 app={0}
 log.page.appRedirectClosed: 重定向下拉已收起 app={0}
 log.page.appRedirectPick: 选择重定向 pid={0} 目标={1}
 log.page.appRoute: 重定向端点显示 app={0} 端点={1}
+log.page.appFollow: 应用控制已跟随端点 app={0} 端点={1}
+log.page.defaultDeviceChanged: 系统默认音频端点已变化 device={0}
+log.page.deviceListChanged: 音频端点列表已变化 device={0}
 log.page.commandDropped: 命令未送达宿主(后台进程未运行?), 已丢弃: {0}
 log.page.clearRedirects: 已清除全部重定向并重置列表
 log.page.snapshot: snapshot: render={0} capture={1} apps={2} (apps from {3})

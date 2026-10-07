@@ -95,6 +95,8 @@ namespace vmex::tap::page
         return out;
     }
 
+    struct Context;
+
     struct State final
     {
         bool recordingMode = false;
@@ -106,6 +108,9 @@ namespace vmex::tap::page
 
         bool expectSoundPage = false;
         unsigned long long expectTick = 0;
+
+        audio::IAudioDeviceWatcher* watcher = nullptr;
+        std::weak_ptr<Context> live;
     };
 
     [[nodiscard]] inline State& Settings()
@@ -118,11 +123,21 @@ namespace vmex::tap::page
     {
         std::vector<audio::DeviceInfo> render;
         std::vector<audio::DeviceInfo> capture;
-        std::vector<audio::SessionInfo> apps;
+        std::vector<audio::AppSessionInfo> apps;
         std::vector<std::unique_ptr<audio::IAudioSessionHandle>> handles;
         std::wstring defaultRender;
         std::wstring defaultCapture;
         std::wstring appsEndpoint;
+    };
+
+    struct AppRowBinding final
+    {
+        std::shared_ptr<std::atomic_bool> dragging = std::make_shared<std::atomic_bool>(false);
+        std::shared_ptr<std::atomic_bool> synchronizing = std::make_shared<std::atomic_bool>(false);
+        audio::IAudioSessionHandle* handle = nullptr;
+        std::wstring appKey;
+        PGXC::Slider slider{nullptr};
+        PGXC::Button mute{nullptr};
     };
 
     struct Context;
@@ -143,6 +158,9 @@ namespace vmex::tap::page
         std::map<std::wstring, std::wstring> redirects;
         std::vector<std::shared_ptr<audio::detail::EndpointVolumeMonitor>> endpointMonitors;
         std::vector<PGX::DispatcherTimer> meterTimers;
+        std::vector<std::shared_ptr<AppRowBinding>> rows;
+        PGX::DispatcherTimer settleTimer{nullptr};
+        PGX::DispatcherTimer deviceTimer{nullptr};
         std::shared_ptr<PageData> data;
 
         bool mounting = false;
@@ -402,6 +420,11 @@ namespace vmex::tap::page
 
     inline void SendSetDefault(bool render, const std::wstring& deviceId);
     inline void MountPage(ContextPtr const& context, int page);
+    inline void LoadData(ContextPtr const& context);
+    inline void SyncAppTargets(ContextPtr const& context);
+    inline void ScheduleSettleSync(ContextPtr const& context);
+    inline void RefreshEnvironmentNow(ContextPtr const& context);
+    inline void ScheduleEnvironmentRefresh(ContextPtr const& context);
 
     inline PGXC::Grid MakeEndpointRow(ContextPtr const& context, const audio::DeviceInfo& device)
     {
@@ -563,7 +586,7 @@ namespace vmex::tap::page
             for (auto& item : current) item.isDefault = item.id == deviceId;
             if (render) context->data->defaultRender = deviceId;
             else context->data->defaultCapture = deviceId;
-            MountPage(context, Settings().page);
+            ScheduleEnvironmentRefresh(context);
         });
 
         for (std::size_t i = 0; i < devices.size(); ++i)
@@ -704,7 +727,7 @@ namespace vmex::tap::page
         return holder;
     }
 
-    [[nodiscard]] inline PGX::FrameworkElement MakeAppIcon(const audio::SessionInfo& session)
+    [[nodiscard]] inline PGX::FrameworkElement MakeAppIcon(const audio::AppSessionInfo& session)
     {
         if (session.appKey == L"#system")
         {
@@ -824,7 +847,7 @@ namespace vmex::tap::page
         return line;
     }
 
-    [[nodiscard]] inline PGXC::ComboBox MakeRedirectCombo(ContextPtr const& context, const audio::SessionInfo& session,
+    [[nodiscard]] inline PGXC::ComboBox MakeRedirectCombo(ContextPtr const& context, const audio::AppSessionInfo& session,
                                                         std::function<void(std::wstring const&)> onPicked)
     {
         PGXC::ComboBox combo;
@@ -878,6 +901,7 @@ namespace vmex::tap::page
                     context->redirects[appKey] = std::wstring();
                     LogKey(L"log.page.appRedirectPick", { std::to_wstring(processId), L"(默认)" });
                     SendSetRedirect(processId, std::wstring());
+                    ScheduleSettleSync(context);
                     onPicked(std::wstring());
                     return;
                 }
@@ -888,6 +912,7 @@ namespace vmex::tap::page
                     context->redirects[appKey] = snapshot[position].id;
                     LogKey(L"log.page.appRedirectPick", { std::to_wstring(processId), snapshot[position].friendlyName });
                     SendSetRedirect(processId, snapshot[position].id);
+                    ScheduleSettleSync(context);
                     onPicked(audio::DisplayDeviceName(snapshot[position], Settings().showDriverName));
                 }
             }
@@ -895,7 +920,7 @@ namespace vmex::tap::page
         return combo;
     }
 
-    inline PGXC::StackPanel MakeAppRow(ContextPtr const& context, const audio::SessionInfo& session, audio::IAudioSessionHandle* handle)
+    inline PGXC::StackPanel MakeAppRow(ContextPtr const& context, const audio::AppSessionInfo& session, audio::IAudioSessionHandle* handle)
     {
         const std::wstring appKey = session.appKey;
         const bool movable = session.processId != 0 && !appKey.empty() && appKey != L"#system";
@@ -941,15 +966,20 @@ namespace vmex::tap::page
         trailing.Orientation(PGXC::Orientation::Horizontal);
         trailing.VerticalAlignment(PGX::VerticalAlignment::Center);
 
+        auto binding = std::make_shared<AppRowBinding>();
+        binding->handle = handle;
+        binding->appKey = appKey;
+
         PGXC::Button mute = MakeMuteButton(session.muted);
+        binding->mute = mute;
         if (handle)
         {
-            mute.Click([handle, mute, appKey](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
+            mute.Click([binding, mute, appKey](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
             {
                 float level = 0.0f;
                 bool muted = false;
-                if (!handle->GetState(level, muted).IsOk()) return;
-                if (handle->SetMuted(!muted).IsOk()) SetMuteGlyph(mute, !muted);
+                if (!binding->handle->GetState(level, muted).IsOk()) return;
+                if (binding->handle->SetMuted(!muted).IsOk()) SetMuteGlyph(mute, !muted);
                 LogKey(L"log.page.appMute", { appKey, muted ? L"取消静音" : L"静音" });
             });
         }
@@ -959,21 +989,50 @@ namespace vmex::tap::page
         }
 
         PGXC::Slider slider = MakeVolumeSlider(session.volume);
+        binding->slider = slider;
         if (handle)
         {
-            slider.ValueChanged([handle, appKey](PGF::IInspectable const& sender, PGXCP::RangeBaseValueChangedEventArgs const&)
+            slider.ValueChanged([binding, appKey](PGF::IInspectable const& sender, PGXCP::RangeBaseValueChangedEventArgs const&)
             {
+                if (binding->synchronizing->load(std::memory_order_acquire)) return;
                 if (auto s = sender.try_as<PGXC::Slider>())
                 {
-                    handle->SetVolume(static_cast<float>(s.Value() / 100.0));
+                    binding->handle->SetVolume(static_cast<float>(s.Value() / 100.0));
                     LogKey(L"log.page.appVolume", { appKey, std::to_wstring(static_cast<int>(s.Value())) });
                 }
+            });
+
+            slider.PointerPressed([binding](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
+            {
+                binding->dragging->store(true, std::memory_order_release);
+            });
+            auto refreshAfterDrag = [binding]()
+            {
+                binding->dragging->store(false, std::memory_order_release);
+                if (!binding->handle) return;
+
+                float level = 0.0f;
+                bool muted = false;
+                if (!binding->handle->GetState(level, muted).IsOk()) return;
+
+                binding->synchronizing->store(true, std::memory_order_release);
+                binding->slider.Value(level * 100.0);
+                binding->synchronizing->store(false, std::memory_order_release);
+            };
+            slider.PointerReleased([refreshAfterDrag](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
+            {
+                refreshAfterDrag();
+            });
+            slider.PointerCaptureLost([refreshAfterDrag](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
+            {
+                refreshAfterDrag();
             });
         }
         else
         {
             slider.IsEnabled(false);
         }
+        context->rows.push_back(binding);
         StereoMeter meter = MakeStereoMeter();
         meter.layer.Children().Append(slider);
         meter.layer.Children().Append(meter.left);
@@ -981,11 +1040,13 @@ namespace vmex::tap::page
 
         PGX::DispatcherTimer meterTimer;
         meterTimer.Interval(std::chrono::milliseconds(50));
-        meterTimer.Tick([handle, meter, slider](PGF::IInspectable const&, PGF::IInspectable const&)
+        meterTimer.Tick([binding, meter, slider](PGF::IInspectable const&, PGF::IInspectable const&)
         {
+            if (!binding->handle) return;
+
             float left = 0.0f;
             float right = 0.0f;
-            if (handle->GetPeak(left, right).IsOk())
+            if (binding->handle->GetPeak(left, right).IsOk())
             {
                 UpdateStereoMeter(meter, slider, left, right);
             }
@@ -1141,15 +1202,30 @@ namespace vmex::tap::page
         context->slotRight.Visibility(PGX::Visibility::Visible);
     }
 
+    inline void ReleaseRowWork(ContextPtr const& context)
+    {
+        for (auto& timer : context->meterTimers)
+        {
+            if (timer) timer.Stop();
+        }
+
+        context->meterTimers.clear();
+        context->endpointMonitors.clear();
+        context->rows.clear();
+    }
+
     inline void MountPage(ContextPtr const& context, int page)
     {
         Settings().page = page;
         if (!context->list) return;
 
+        ReleaseRowWork(context);
+
         std::wstring name = text::Embedded().Resolve(L"log.page.name.system");
         if (page == 0)
         {
             name = text::Embedded().Resolve(L"log.page.name.custom");
+            LoadData(context);
             context->list.Content(BuildCustomPage(context));
         }
         else if (page == 1)
@@ -1199,6 +1275,30 @@ namespace vmex::tap::page
         });
     }
 
+    inline void SeedRedirects(ContextPtr const& context)
+    {
+        PageData& data = *context->data;
+        context->redirects.clear();
+        if (!context->endpointPolicy) return;
+
+        for (const auto& app : data.apps)
+        {
+            if (app.processId == 0 || app.appKey.empty() || app.appKey == L"#system") continue;
+
+            std::wstring persisted;
+            if (context->endpointPolicy->GetAppDefaultDevice(
+                    app.processId, audio::DataFlow::Render, audio::DeviceRole::Multimedia, persisted).IsOk() &&
+                !persisted.empty() && persisted != data.defaultRender)
+            {
+                context->redirects[app.appKey] = std::move(persisted);
+            }
+            else
+            {
+                context->redirects[app.appKey] = std::wstring();
+            }
+        }
+    }
+
     inline void LoadData(ContextPtr const& context)
     {
         PageData& data = *context->data;
@@ -1220,43 +1320,184 @@ namespace vmex::tap::page
         data.appsEndpoint = data.defaultRender;
         if (data.appsEndpoint.empty() && !data.render.empty()) data.appsEndpoint = data.render.front().id;
 
-        if (!data.appsEndpoint.empty())
+        data.apps.clear();
+        data.handles.clear();
+
+        context->manager->EnumerateAppSessions(context->redirects, data.apps);
+        SeedRedirects(context);
+        context->manager->EnumerateAppSessions(context->redirects, data.apps);
+
+        data.handles.reserve(data.apps.size());
+        for (const auto& app : data.apps)
         {
-            context->manager->EnumerateSessions(data.appsEndpoint, data.apps);
-
-            data.handles.reserve(data.apps.size());
-            for (const auto& session : data.apps)
+            std::unique_ptr<audio::IAudioSessionHandle> handle;
+            if (context->manager->OpenSession(app.deviceId, app.instanceId, handle).IsOk())
             {
-                if (context->endpointPolicy && session.processId != 0 && !session.appKey.empty() &&
-                    session.appKey != L"#system")
-                {
-                    std::wstring persisted;
-                    if (context->endpointPolicy->GetAppDefaultDevice(
-                            session.processId, audio::DataFlow::Render, audio::DeviceRole::Multimedia, persisted).IsOk() &&
-                        !persisted.empty() && persisted != data.defaultRender)
-                    {
-                        context->redirects[session.appKey] = std::move(persisted);
-                    }
-                    else
-                    {
-                        context->redirects[session.appKey] = std::wstring();
-                    }
-                }
-
-                std::unique_ptr<audio::IAudioSessionHandle> handle;
-                if (context->manager->OpenSession(data.appsEndpoint, session.instanceId, handle).IsOk())
-                {
-                    data.handles.push_back(std::move(handle));
-                }
-                else
-                {
-                    data.handles.push_back(nullptr);
-                }
+                data.handles.push_back(std::move(handle));
+            }
+            else
+            {
+                data.handles.push_back(nullptr);
             }
         }
 
         LogKey(L"log.page.snapshot", { std::to_wstring(data.render.size()), std::to_wstring(data.capture.size()),
                                        std::to_wstring(data.apps.size()), data.appsEndpoint });
+    }
+
+    [[nodiscard]] inline bool IsInLiveTree(PGX::DependencyObject const& node)
+    {
+        if (!node) return false;
+        try { return PGXM::VisualTreeHelper::GetParent(node) != nullptr; } catch (...) { return false; }
+    }
+
+    inline void SyncAppTargets(ContextPtr const& context)
+    {
+        if (!context->manager || !context->data) return;
+        if (Settings().page != 0 || context->rows.empty()) return;
+        if (!IsInLiveTree(context->list)) return;
+
+        std::vector<audio::AppSessionInfo> live;
+        if (!context->manager->EnumerateAppSessions(context->redirects, live).IsOk()) return;
+
+        for (const auto& binding : context->rows)
+        {
+            if (!binding || !binding->handle) continue;
+
+            const audio::AppSessionInfo* match = nullptr;
+            for (const auto& app : live)
+            {
+                if (app.appKey == binding->appKey)
+                {
+                    match = &app;
+                    break;
+                }
+            }
+            if (match == nullptr) continue;
+
+            if (binding->handle->DeviceId() != match->deviceId || binding->handle->InstanceId() != match->instanceId)
+            {
+                if (binding->handle->Rebind(match->deviceId, match->instanceId).IsOk())
+                {
+                    LogKey(L"log.page.appFollow", { binding->appKey, match->deviceName });
+                }
+            }
+
+            if (binding->dragging->load(std::memory_order_acquire)) continue;
+
+            binding->synchronizing->store(true, std::memory_order_release);
+            binding->slider.Value(match->volume * 100.0);
+            SetMuteGlyph(binding->mute, match->muted);
+            binding->synchronizing->store(false, std::memory_order_release);
+        }
+    }
+
+    inline void SyncSettle(ContextPtr const& context)
+    {
+        if (context->settleTimer) context->settleTimer.Stop();
+        SyncAppTargets(context);
+    }
+
+    inline void ScheduleSettleSync(ContextPtr const& context)
+    {
+        if (!context->list) return;
+
+        if (!context->settleTimer)
+        {
+            context->settleTimer = PGX::DispatcherTimer();
+            context->settleTimer.Interval(std::chrono::milliseconds(700));
+
+            ContextPtr weakContext = context;
+            context->settleTimer.Tick([weakContext](PGF::IInspectable const&, PGF::IInspectable const&)
+            {
+                SyncSettle(weakContext);
+            });
+        }
+
+        context->settleTimer.Stop();
+        context->settleTimer.Start();
+    }
+
+    inline void RefreshEnvironmentNow(ContextPtr const& context)
+    {
+        if (!context->list) return;
+        if (context->deviceTimer) context->deviceTimer.Stop();
+
+        if (!IsInLiveTree(context->list)) return;
+
+        if (Settings().page == 0)
+        {
+            MountPage(context, 0);
+            return;
+        }
+
+        LoadData(context);
+    }
+
+    inline void ScheduleEnvironmentRefresh(ContextPtr const& context)
+    {
+        if (!context->list) return;
+
+        if (!context->deviceTimer)
+        {
+            context->deviceTimer = PGX::DispatcherTimer();
+            context->deviceTimer.Interval(std::chrono::milliseconds(400));
+
+            ContextPtr weakContext = context;
+            context->deviceTimer.Tick([weakContext](PGF::IInspectable const&, PGF::IInspectable const&)
+            {
+                RefreshEnvironmentNow(weakContext);
+            });
+        }
+
+        context->deviceTimer.Stop();
+        context->deviceTimer.Start();
+    }
+
+    inline void RefreshEnvironment(ContextPtr const& context, const audio::DeviceEvent& event)
+    {
+        if (event.kind == audio::DeviceEventKind::PropertyChanged) return;
+        if (!IsInLiveTree(context->list)) return;
+
+        if (event.kind == audio::DeviceEventKind::DefaultChanged)
+        {
+            LogKey(L"log.page.defaultDeviceChanged", { event.deviceId });
+        }
+        else
+        {
+            LogKey(L"log.page.deviceListChanged", { event.deviceId });
+        }
+
+        ScheduleEnvironmentRefresh(context);
+    }
+
+    inline void EnsureDeviceWatcher(ContextPtr const& context)
+    {
+        Settings().live = context;
+        if (Settings().watcher || !context->list) return;
+
+        auto dispatcher = context->list.Dispatcher();
+        if (!dispatcher) return;
+
+        auto watcher = audio::CreateAudioDeviceWatcher();
+        if (!watcher) return;
+
+        const Status started = watcher->Start([dispatcher](const audio::DeviceEvent& event)
+        {
+            try
+            {
+                dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Low, [event]()
+                {
+                    ContextPtr context = Settings().live.lock();
+                    if (context) RefreshEnvironment(context, event);
+                });
+            }
+            catch (...) {}
+        });
+
+        if (!started.IsOk()) return;
+
+        Settings().watcher = watcher.release();
     }
 
     inline PGX::FrameworkElement FindByNameDeep(PGX::DependencyObject const& node, wchar_t const* want, int depth)
@@ -1409,9 +1650,9 @@ namespace vmex::tap::page
 
         try { context->savedContent = context->list.Content(); } catch (...) {}
 
-        LoadData(context);
         InstallFooter(context);
         MountPage(context, 0);
+        EnsureDeviceWatcher(context);
 
         MountFooter(context, 0);
         LogKey(L"log.page.takeover", { context->savedContent

@@ -2,6 +2,8 @@
 
 #include "Foundation.h"
 
+#include <map>
+
 namespace vmex::audio
 {
     enum class DataFlow
@@ -128,17 +130,55 @@ namespace vmex::audio
         SessionState state = SessionState::Inactive;
     };
 
+    struct AppSessionInfo final
+    {
+        std::uint32_t processId = 0;
+        std::wstring appKey;
+        std::wstring displayName;
+        std::wstring instanceId;
+        std::wstring deviceId;
+        std::wstring deviceName;
+        float volume = 0.0f;
+        bool muted = false;
+        bool active = false;
+        bool systemSounds = false;
+    };
+
     class IAudioSessionHandle
     {
     public:
         virtual ~IAudioSessionHandle() = default;
 
         [[nodiscard]] virtual std::wstring_view InstanceId() const noexcept = 0;
+        [[nodiscard]] virtual std::wstring_view DeviceId() const noexcept = 0;
         [[nodiscard]] virtual std::uint32_t ProcessId() const noexcept = 0;
         virtual Status GetState(float& volume, bool& muted) = 0;
         virtual Status GetPeak(float& left, float& right) = 0;
         virtual Status SetVolume(float level) = 0;
         virtual Status SetMuted(bool muted) = 0;
+        virtual Status Rebind(std::wstring_view deviceId, std::wstring_view instanceId) = 0;
+    };
+
+    enum class DeviceEventKind
+    {
+        DefaultChanged = 0,
+        ListChanged = 1,
+        PropertyChanged = 2
+    };
+
+    struct DeviceEvent final
+    {
+        DeviceEventKind kind = DeviceEventKind::ListChanged;
+        std::wstring deviceId;
+    };
+
+    class IAudioDeviceWatcher
+    {
+    public:
+        virtual ~IAudioDeviceWatcher() = default;
+
+        virtual Status Start(std::function<void(const DeviceEvent&)> handler) = 0;
+        virtual void Stop() = 0;
     };
 
     struct EndpointSupport final

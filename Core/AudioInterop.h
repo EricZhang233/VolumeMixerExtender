@@ -15,6 +15,7 @@
 #include <functional>
 #include <atomic>
 #include <functional>
+#include <limits>
 #include <memory>
 
 #include "Logger.h"
@@ -124,6 +125,7 @@ struct Session
     bool         systemSounds = false;
     float        volume = 1.0f;
     bool         mute = false;
+    AudioSessionState state = AudioSessionStateInactive;
     Ptr<ISimpleAudioVolume> vol;
 };
 
@@ -569,6 +571,9 @@ inline bool EnumSessionsOnce(const std::wstring& devId, std::vector<Session>& ou
             if (SUCCEEDED(c2->GetProcessId(&pid))) s.pid = pid;
         }
 
+        AudioSessionState state = AudioSessionStateInactive;
+        if (SUCCEEDED(c2->GetState(&state))) s.state = state;
+
         Ptr<ISimpleAudioVolume> vol;
         if (SUCCEEDED(sc->QueryInterface(__uuidof(ISimpleAudioVolume), vol.putv())) && vol) {
             vol->GetMasterVolume(&s.volume);
@@ -591,34 +596,74 @@ inline bool EnumSessions(const std::wstring& devId, std::vector<Session>& out)
     return EnumSessionsOnce(devId, out);
 }
 
-inline Ptr<ISimpleAudioVolume> ResolveSessionVolumeForProcess(
-    const std::wstring& preferredDeviceId, const std::wstring& sessionId, std::uint32_t processId)
+inline int AppSessionScore(AudioSessionState state, bool onPreferred, bool onDefault, bool sameInstance)
 {
-    if (auto volume = ResolveSessionVolume(preferredDeviceId, sessionId))
-    {
-        return volume;
-    }
+    int score = 0;
+    if (onPreferred && state != AudioSessionStateExpired) score += 8;
+    if (state == AudioSessionStateActive) score += 4;
+    else if (state == AudioSessionStateExpired) score -= 4;
+    if (onDefault) score += 2;
+    if (sameInstance) score += 1;
+    return score;
+}
+
+struct SessionTarget
+{
+    std::wstring deviceId;
+    std::wstring instanceId;
+    Ptr<ISimpleAudioVolume> volume;
+    Ptr<IAudioMeterInformation> meter;
+};
+
+inline bool ResolveAppSessionTarget(const std::wstring& sessionId, DWORD processId, bool systemSounds,
+                                    const std::wstring& preferredDeviceId, SessionTarget& out)
+{
+    out = SessionTarget{};
+    if (sessionId.empty() && processId == 0 && !systemSounds) return false;
 
     std::vector<Endpoint> endpoints;
-    if (!EnumEndpoints(eRender, endpoints)) return {};
+    if (!EnumEndpoints(eRender, endpoints)) return false;
+
+    std::wstring defaultId;
+    GetDefaultEndpointId(eRender, defaultId);
+
+    int best = std::numeric_limits<int>::min();
+    std::wstring bestDevice;
+    std::wstring bestSession;
 
     for (const auto& endpoint : endpoints)
     {
         std::vector<Session> sessions;
-        if (!EnumSessions(endpoint.id, sessions)) continue;
+        if (!EnumSessionsOnce(endpoint.id, sessions)) continue;
+
         for (const auto& session : sessions)
         {
-            if ((!sessionId.empty() && session.id == sessionId) ||
-                (processId != 0 && session.pid == processId))
-            {
-                if (auto volume = ResolveSessionVolume(endpoint.id, session.id))
-                {
-                    return volume;
-                }
-            }
+            if (!session.vol) continue;
+
+            const bool sameInstance = !sessionId.empty() && session.id == sessionId;
+            const bool sameApp = systemSounds ? session.systemSounds : (processId != 0 && session.pid == processId);
+            if (!sameInstance && !sameApp) continue;
+
+            const int score = AppSessionScore(session.state, endpoint.id == preferredDeviceId,
+                                              endpoint.id == defaultId, sameInstance);
+            if (score <= best) continue;
+
+            best = score;
+            bestDevice = endpoint.id;
+            bestSession = session.id;
         }
     }
-    return {};
+
+    if (best == std::numeric_limits<int>::min()) return false;
+
+    auto volume = ResolveSessionVolume(bestDevice, bestSession);
+    if (!volume) return false;
+
+    out.deviceId = std::move(bestDevice);
+    out.instanceId = std::move(bestSession);
+    out.volume = std::move(volume);
+    out.meter = ResolveSessionMeter(out.deviceId, out.instanceId);
+    return true;
 }
 
 inline bool SetSessionVolume(Session& s, const std::wstring& devId, float v)

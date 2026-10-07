@@ -4,6 +4,8 @@
 #include "Logger.h"
 
 #include <algorithm>
+#include <functional>
+#include <mutex>
 
 namespace vmex::audio
 {
@@ -37,6 +39,16 @@ namespace vmex::audio
             return info;
         }
 
+        SessionState ToSessionState(AudioSessionState state)
+        {
+            switch (state)
+            {
+            case AudioSessionStateActive: return SessionState::Active;
+            case AudioSessionStateExpired: return SessionState::Expired;
+            default: return SessionState::Inactive;
+            }
+        }
+
         SessionInfo ToSessionInfo(const detail::Session& session)
         {
             SessionInfo info;
@@ -46,7 +58,23 @@ namespace vmex::audio
             info.displayName = session.name;
             info.volume = session.volume;
             info.muted = session.mute;
-            info.state = SessionState::Active;
+            info.state = ToSessionState(session.state);
+            return info;
+        }
+
+        AppSessionInfo ToAppSessionInfo(const detail::Session& session, const detail::Endpoint& endpoint)
+        {
+            AppSessionInfo info;
+            info.processId = session.pid;
+            info.appKey = session.key;
+            info.displayName = session.name;
+            info.instanceId = session.id;
+            info.deviceId = endpoint.id;
+            info.deviceName = endpoint.friendly;
+            info.volume = session.volume;
+            info.muted = session.mute;
+            info.active = (session.state == AudioSessionStateActive);
+            info.systemSounds = session.systemSounds;
             return info;
         }
 
@@ -54,18 +82,36 @@ namespace vmex::audio
         {
         public:
             AudioSessionHandle(std::wstring deviceId, std::wstring instanceId, std::uint32_t processId,
-                               detail::Ptr<ISimpleAudioVolume> volume,
+                               bool systemSounds, detail::Ptr<ISimpleAudioVolume> volume,
                                detail::Ptr<IAudioMeterInformation> meter)
                 : m_deviceId(std::move(deviceId))
                 , m_instanceId(std::move(instanceId))
                 , m_processId(processId)
+                , m_systemSounds(systemSounds)
                 , m_volume(std::move(volume))
                 , m_meter(std::move(meter))
             {
             }
 
             [[nodiscard]] std::wstring_view InstanceId() const noexcept override { return m_instanceId; }
+            [[nodiscard]] std::wstring_view DeviceId() const noexcept override { return m_deviceId; }
             [[nodiscard]] std::uint32_t ProcessId() const noexcept override { return m_processId; }
+
+            Status Rebind(std::wstring_view deviceId, std::wstring_view instanceId) override
+            {
+                if (deviceId.empty() || instanceId.empty())
+                {
+                    return Status::InvalidArguments(L"Rebind: deviceId and instanceId are both required");
+                }
+
+                if (m_deviceId == deviceId && m_instanceId == instanceId) return Status::Ok();
+
+                m_deviceId.assign(deviceId);
+                m_instanceId.assign(instanceId);
+                m_volume.reset();
+                m_meter.reset();
+                return Status::Ok();
+            }
 
             Status GetState(float& volume, bool& muted) override
             {
@@ -130,14 +176,23 @@ namespace vmex::audio
         private:
             [[nodiscard]] bool Reacquire()
             {
-                m_volume = detail::ResolveSessionVolumeForProcess(m_deviceId, m_instanceId, m_processId);
-                m_meter = detail::ResolveSessionMeter(m_deviceId, m_instanceId);
+                detail::SessionTarget target;
+                if (!detail::ResolveAppSessionTarget(m_instanceId, m_processId, m_systemSounds, m_deviceId, target))
+                {
+                    return false;
+                }
+
+                m_deviceId = std::move(target.deviceId);
+                m_instanceId = std::move(target.instanceId);
+                m_volume = std::move(target.volume);
+                m_meter = std::move(target.meter);
                 return static_cast<bool>(m_volume);
             }
 
             std::wstring m_deviceId;
             std::wstring m_instanceId;
             std::uint32_t m_processId = 0;
+            bool m_systemSounds = false;
             detail::Ptr<ISimpleAudioVolume> m_volume;
             detail::Ptr<IAudioMeterInformation> m_meter;
         };
@@ -285,6 +340,69 @@ namespace vmex::audio
                 return Status::Ok();
             }
 
+            Status EnumerateAppSessions(const std::map<std::wstring, std::wstring>& preferredDevices,
+                                        std::vector<AppSessionInfo>& sessions) override
+            {
+                sessions.clear();
+
+                std::vector<detail::Endpoint> endpoints;
+                if (!detail::EnumEndpoints(eRender, endpoints))
+                {
+                    return Status::Failed(L"EnumAudioEndpoints failed (no device enumerator?)");
+                }
+
+                std::wstring defaultId;
+                detail::GetDefaultEndpointId(eRender, defaultId);
+
+                std::vector<AppSessionInfo> candidates;
+                std::vector<AudioSessionState> states;
+                for (const auto& endpoint : endpoints)
+                {
+                    std::vector<detail::Session> found;
+                    if (!detail::EnumSessionsOnce(endpoint.id, found)) continue;
+
+                    for (const auto& session : found)
+                    {
+                        candidates.push_back(ToAppSessionInfo(session, endpoint));
+                        states.push_back(session.state);
+                    }
+                }
+
+                std::vector<std::size_t> chosen;
+                for (std::size_t index = 0; index < candidates.size(); ++index)
+                {
+                    std::size_t slot = chosen.size();
+                    for (std::size_t probe = 0; probe < chosen.size(); ++probe)
+                    {
+                        if (candidates[chosen[probe]].appKey == candidates[index].appKey)
+                        {
+                            slot = probe;
+                            break;
+                        }
+                    }
+
+                    if (slot == chosen.size())
+                    {
+                        chosen.push_back(index);
+                        continue;
+                    }
+
+                    if (Score(candidates[index], states[index], preferredDevices, defaultId) >
+                        Score(candidates[chosen[slot]], states[chosen[slot]], preferredDevices, defaultId))
+                    {
+                        chosen[slot] = index;
+                    }
+                }
+
+                sessions.reserve(chosen.size());
+                for (const std::size_t index : chosen) sessions.push_back(std::move(candidates[index]));
+
+                log::Logger::Instance().WriteKeyFormat(log::Level::Debug, kChannel, L"log.audio.app_sessions",
+                    { std::to_wstring(sessions.size()), std::to_wstring(endpoints.size()) });
+
+                return Status::Ok();
+            }
+
             Status OpenSession(std::wstring_view deviceId, std::wstring_view instanceId,
                                std::unique_ptr<IAudioSessionHandle>& handle) override
             {
@@ -301,27 +419,178 @@ namespace vmex::audio
                 }
 
                 std::uint32_t processId = 0;
+                bool systemSounds = false;
                 {
                     std::vector<detail::Session> found;
                     if (detail::EnumSessions(std::wstring(deviceId), found))
                     {
                         for (const auto& session : found)
                         {
-                            if (session.id == instanceId) { processId = session.pid; break; }
+                            if (session.id == instanceId)
+                            {
+                                processId = session.pid;
+                                systemSounds = session.systemSounds;
+                                break;
+                            }
                         }
                     }
                 }
 
                 handle = std::make_unique<AudioSessionHandle>(
-                    std::wstring(deviceId), std::wstring(instanceId), processId, std::move(volume),
+                    std::wstring(deviceId), std::wstring(instanceId), processId, systemSounds, std::move(volume),
                     detail::ResolveSessionMeter(std::wstring(deviceId), std::wstring(instanceId)));
                 return Status::Ok();
             }
+
+        private:
+            static int Score(const AppSessionInfo& info, AudioSessionState state,
+                             const std::map<std::wstring, std::wstring>& preferredDevices,
+                             const std::wstring& defaultId)
+            {
+                const auto found = preferredDevices.find(info.appKey);
+                const bool onPreferred = found != preferredDevices.end() && found->second == info.deviceId;
+
+                return detail::AppSessionScore(state, onPreferred, info.deviceId == defaultId, false);
+            }
+        };
+
+        class DeviceWatcher final : public IMMNotificationClient, public IAudioDeviceWatcher
+        {
+        public:
+            ~DeviceWatcher() override { Stop(); }
+
+            HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override
+            {
+                if (object == nullptr) return E_POINTER;
+                *object = nullptr;
+
+                if (riid == __uuidof(IUnknown) || riid == __uuidof(IMMNotificationClient))
+                {
+                    *object = static_cast<IMMNotificationClient*>(this);
+                    AddRef();
+                    return S_OK;
+                }
+
+                return E_NOINTERFACE;
+            }
+
+            ULONG STDMETHODCALLTYPE AddRef() override
+            {
+                return static_cast<ULONG>(::InterlockedIncrement(&m_references));
+            }
+
+            ULONG STDMETHODCALLTYPE Release() override
+            {
+                const long remaining = ::InterlockedDecrement(&m_references);
+                if (remaining == 0) delete this;
+                return static_cast<ULONG>(remaining);
+            }
+
+            HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR deviceId, DWORD) override
+            {
+                Notify(DeviceEventKind::ListChanged, deviceId);
+                return S_OK;
+            }
+
+            HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR deviceId) override
+            {
+                Notify(DeviceEventKind::ListChanged, deviceId);
+                return S_OK;
+            }
+
+            HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR deviceId) override
+            {
+                Notify(DeviceEventKind::ListChanged, deviceId);
+                return S_OK;
+            }
+
+            HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole, LPCWSTR deviceId) override
+            {
+                if (flow == eRender || flow == eCapture) Notify(DeviceEventKind::DefaultChanged, deviceId);
+                return S_OK;
+            }
+
+            HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR deviceId, const PROPERTYKEY) override
+            {
+                Notify(DeviceEventKind::PropertyChanged, deviceId);
+                return S_OK;
+            }
+
+            Status Start(std::function<void(const DeviceEvent&)> handler) override
+            {
+                Stop();
+                if (!handler) return Status::InvalidArguments(L"Start: handler is required");
+
+                auto enumerator = detail::MakeEnumerator();
+                if (!enumerator)
+                {
+                    log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.audio.watch_failed");
+                    return Status::Failed(L"Start: no device enumerator");
+                }
+
+                {
+                    std::lock_guard<std::mutex> guard(m_mutex);
+                    m_handler = std::move(handler);
+                }
+
+                if (FAILED(enumerator->RegisterEndpointNotificationCallback(this)))
+                {
+                    {
+                        std::lock_guard<std::mutex> guard(m_mutex);
+                        m_handler = nullptr;
+                    }
+                    log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.audio.watch_failed");
+                    return Status::Failed(L"RegisterEndpointNotificationCallback failed");
+                }
+
+                m_enumerator = std::move(enumerator);
+                log::Logger::Instance().WriteKey(log::Level::Debug, kChannel, L"log.audio.watch_started");
+                return Status::Ok();
+            }
+
+            void Stop() override
+            {
+                if (m_enumerator)
+                {
+                    m_enumerator->UnregisterEndpointNotificationCallback(this);
+                    m_enumerator.reset();
+                }
+
+                std::lock_guard<std::mutex> guard(m_mutex);
+                m_handler = nullptr;
+            }
+
+        private:
+            void Notify(DeviceEventKind kind, LPCWSTR deviceId)
+            {
+                std::function<void(const DeviceEvent&)> handler;
+                {
+                    std::lock_guard<std::mutex> guard(m_mutex);
+                    handler = m_handler;
+                }
+                if (!handler) return;
+
+                DeviceEvent event;
+                event.kind = kind;
+                if (deviceId != nullptr) event.deviceId = deviceId;
+
+                try { handler(event); } catch (...) {}
+            }
+
+            std::mutex m_mutex;
+            std::function<void(const DeviceEvent&)> m_handler;
+            detail::Ptr<IMMDeviceEnumerator> m_enumerator;
+            long m_references = 1;
         };
     }
 
     std::unique_ptr<IAudioDeviceManager> CreateAudioDeviceManager()
     {
         return std::make_unique<WasapiAudioDeviceManager>();
+    }
+
+    std::unique_ptr<IAudioDeviceWatcher> CreateAudioDeviceWatcher()
+    {
+        return std::unique_ptr<IAudioDeviceWatcher>(new DeviceWatcher());
     }
 }
