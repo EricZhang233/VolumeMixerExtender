@@ -11,10 +11,6 @@ namespace vmex::inject
     inline constexpr std::wstring_view kTapDllName = L"vmex_tap.dll";
     inline constexpr std::wstring_view kCoreDllName = L"vmex_core.dll";
 
-    inline constexpr std::string_view kTapInitDataExport = "VmExtTapProvideInitData";
-
-    inline constexpr std::string_view kLauncherRunExport = "VmExtLauncherRun";
-
     inline constexpr std::string_view kXamlEntryPointExport = "InitializeXamlDiagnosticsEx";
 
     inline constexpr std::wstring_view kVirtualDeviceTarget = L"@virtual";
@@ -33,13 +29,4 @@ namespace vmex::inject
     {
         return L"Local\\VmExt.Host.S" + std::to_wstring(sessionId);
     }
-
-    inline constexpr std::wstring_view kTapConfigFileName = L"vmex_tap.ini";
-    inline constexpr std::wstring_view kTapConfigSection = L"vmex";
-
-    inline constexpr std::wstring_view kConfigKeyTap = L"tap";
-    inline constexpr std::wstring_view kConfigKeyDiag = L"diag";
-    inline constexpr std::wstring_view kConfigKeyEndpoint = L"endpoint";
-    inline constexpr std::wstring_view kConfigKeySession = L"session";
-    inline constexpr std::wstring_view kConfigKeyXamlWaitMs = L"xamlwaitms";
 }

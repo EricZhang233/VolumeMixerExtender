@@ -2,9 +2,7 @@
 
 #include "App.h"
 
-#include <atomic>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace vmex::runtime
@@ -15,21 +13,4 @@ namespace vmex::runtime
     [[nodiscard]] std::vector<std::wstring> RemoveGlobalOptions(
         const std::vector<std::wstring>& arguments);
     [[nodiscard]] bool HasAutorunArgument();
-
-    class HostNotifications final
-    {
-    public:
-        HostNotifications() = default;
-        ~HostNotifications();
-
-        HostNotifications(const HostNotifications&) = delete;
-        HostNotifications& operator=(const HostNotifications&) = delete;
-
-        void Start(App& app, bool autorun);
-        void Stop();
-
-    private:
-        std::atomic<bool> m_stop{ false };
-        std::thread m_thread;
-    };
 }

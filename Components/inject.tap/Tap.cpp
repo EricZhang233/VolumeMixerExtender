@@ -28,40 +28,7 @@ namespace vmex::tap
     {
         constexpr std::wstring_view kChannel = L"tap";
 
-        std::mutex g_mutex;
         std::once_flag g_logging;
-        HMODULE g_self = nullptr;
-        std::filesystem::path g_configOverride;
-        bool g_configured = false;
-    }
-
-    void SetSelfModule(HMODULE module)
-    {
-        g_self = module;
-    }
-
-    std::filesystem::path ModuleDirectory()
-    {
-        if (g_self == nullptr)
-        {
-            return platform::GetExecutableDirectory();
-        }
-
-        std::wstring buffer(MAX_PATH, L'\0');
-        for (;;)
-        {
-            const auto length = ::GetModuleFileNameW(g_self, buffer.data(), static_cast<DWORD>(buffer.size()));
-            if (length == 0)
-            {
-                return platform::GetExecutableDirectory();
-            }
-            if (length < buffer.size())
-            {
-                buffer.resize(length);
-                return std::filesystem::path(buffer).parent_path();
-            }
-            buffer.resize(buffer.size() * 2);
-        }
     }
 
     void AttachLoggingOnce()
@@ -74,53 +41,12 @@ namespace vmex::tap
         });
     }
 
-    std::filesystem::path ConfigModulePath()
+    void ProvideInitData(const wchar_t*)
     {
-        {
-            std::lock_guard<std::mutex> guard(g_mutex);
-            if (!g_configOverride.empty())
-            {
-                return g_configOverride;
-            }
-        }
-        return ModuleDirectory() / std::wstring(inject::kTapConfigFileName);
-    }
-
-    void ProvideInitData(const wchar_t* config)
-    {
-        std::lock_guard<std::mutex> guard(g_mutex);
-        g_configured = true;
-
-        if (config == nullptr || *config == L'\0')
-        {
-            return;
-        }
-
-        const std::wstring_view text(config);
-        const auto separator = text.find(L'=');
-        if (separator != std::wstring_view::npos && text.substr(0, separator) == L"cfg")
-        {
-            g_configOverride = std::filesystem::path(text.substr(separator + 1));
-            return;
-        }
-        g_configOverride = std::filesystem::path(text);
     }
 
     unsigned long ConfiguredSessionId()
     {
-        wchar_t buffer[32] = {};
-        const auto path = ConfigModulePath().wstring();
-        const DWORD length = ::GetPrivateProfileStringW(
-            std::wstring(inject::kTapConfigSection).c_str(),
-            std::wstring(inject::kConfigKeySession).c_str(),
-            L"", buffer, ARRAYSIZE(buffer), path.c_str());
-
-        const unsigned long configured = static_cast<unsigned long>(std::wcstoul(buffer, nullptr, 10));
-        if (length > 0 && configured > 0)
-        {
-            return configured;
-        }
-
         unsigned long session = 0;
         if (::ProcessIdToSessionId(::GetCurrentProcessId(), &session) == FALSE || session == 0)
         {
@@ -679,7 +605,6 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
     if (reason == DLL_PROCESS_ATTACH)
     {
         ::DisableThreadLibraryCalls(module);
-        vmex::tap::SetSelfModule(module);
     }
     return TRUE;
 }

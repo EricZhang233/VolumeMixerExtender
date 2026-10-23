@@ -20,11 +20,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         return vmex::kCodeFailed;
     }
 
-    vmex::runtime::HostNotifications notifications;
-    notifications.Start(app, autorun);
-
     app.WaitForShutdown();
-    notifications.Stop();
     app.StopServing();
     app.Shutdown();
     return vmex::kCodeOk;

@@ -76,8 +76,9 @@ internal sealed class ManagerWindow : Window
     internal ManagerWindow(bool selfTest)
     {
         test = selfTest;
-        Title = Core.Text("manager.title"); Width = 760; Height = 830; MinWidth = 620; MinHeight = 600;
+        Title = Core.Text("manager.title"); Width = 620; Height = 710;
         WindowStyle = WindowStyle.SingleBorderWindow;
+        ResizeMode = ResizeMode.NoResize;
         WindowChrome.SetWindowChrome(this, new WindowChrome { CaptionHeight = 72, ResizeBorderThickness = SystemParameters.WindowResizeBorderThickness, GlassFrameThickness = new Thickness(0, 72, 0, 0), UseAeroCaptionButtons = true });
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = Brushes.Transparent;
@@ -97,26 +98,32 @@ internal sealed class ManagerWindow : Window
         var header = new Grid { Margin = new Thickness(32, 0, 160, 0) };
         var heading = Label("manager.title", 23, FontWeights.Normal); heading.Margin = new Thickness(0); heading.VerticalAlignment = VerticalAlignment.Center; header.Children.Add(heading);
         layout.Children.Add(header);
+        var ready = Label("manager.ready", 12, FontWeights.Normal, true); ready.HorizontalAlignment = HorizontalAlignment.Right; ready.VerticalAlignment = VerticalAlignment.Bottom; ready.Margin = new Thickness(0, 0, 12, 6); ready.TextWrapping = TextWrapping.NoWrap;
+        Grid.SetRow(ready, 0); layout.Children.Add(ready);
         body.Margin = new Thickness(32, 4, 32, 24);
         var scroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         scroll.SetResourceReference(StyleProperty, "OverlayScrollViewerStyle");
         Grid.SetRow(scroll, 1); layout.Children.Add(scroll); Content = layout;
-        var runtime = new StackPanel();
-        runtime.Children.Add(Label("manager.runtime", 13, FontWeights.SemiBold, true));
-        status.FontSize = 21; status.FontWeight = FontWeights.Normal; status.Margin = new Thickness(0, 10, 0, 6);
-        status.Text = Core.Text("manager.loading"); runtime.Children.Add(status);
-        injection.Opacity = .65; injection.Margin = new Thickness(0, 0, 0, 20); runtime.Children.Add(injection);
-        var commands = new StackPanel { Orientation = Orientation.Horizontal };
-        host.Content = Core.Text("manager.start"); host.MinWidth = 128; host.Padding = new Thickness(20, 9, 20, 9);
-        host.Margin = new Thickness(10, 0, 0, 0);
-        host.Click += async (_, _) => { if (running && !Confirm("manager.stop", "manager.stop.confirm")) return; await Execute(running ? 2 : 1); };
-        refresh.Content = Core.Text("manager.refresh"); refresh.Margin = new Thickness(10, 0, 0, 0); refresh.Padding = new Thickness(18, 9, 18, 9);
-        refresh.Click += async (_, _) => await Update();
-        runtime.Children.Add(commands); body.Children.Add(Card(runtime, 24));
-        var panel = new Button { Content = Core.Text("manager.panel"), Padding = new Thickness(18, 9, 18, 9) };
+        var runtime = new Grid(); runtime.ColumnDefinitions.Add(new()); runtime.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        status.FontSize = 21; status.FontWeight = FontWeights.Normal; status.Margin = new Thickness(0, 0, 0, 6);
+        status.Text = Core.Text("manager.loading"); texts.Children.Add(status);
+        injection.Opacity = .65; injection.Margin = new Thickness(0, 0, 0, 4); texts.Children.Add(injection);
+        var hint = Label("manager.panel.hint", 12, FontWeights.Normal, true); hint.Margin = new Thickness(0); texts.Children.Add(hint);
+        runtime.Children.Add(texts);
+        var buttons = new Grid { VerticalAlignment = VerticalAlignment.Center };
+        buttons.RowDefinitions.Add(new() { Height = GridLength.Auto }); buttons.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        var panel = new Button { Content = Core.Text("manager.panel"), Padding = new Thickness(18, 9, 18, 9), Margin = new Thickness(0, 0, 0, 10) };
         panel.SetResourceReference(StyleProperty, "AccentButtonStyle");
-        panel.Click += async (_, _) => await Execute(8);
-        commands.Children.Add(panel); commands.Children.Add(host); commands.Children.Add(refresh);
+        panel.Click += async (_, _) => await Execute(8); buttons.Children.Add(panel);
+        host.Content = Core.Text("manager.start"); host.MinWidth = 128; host.Padding = new Thickness(20, 9, 20, 9);
+        host.Click += async (_, _) => { if (running && !Confirm("manager.stop", "manager.stop.confirm")) return; await Execute(running ? 2 : 1); };
+        refresh.Content = Core.Text("manager.refresh"); refresh.Margin = new Thickness(0, 0, 10, 0); refresh.Padding = new Thickness(18, 9, 18, 9);
+        refresh.Click += async (_, _) => await Update();
+        var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        row.Children.Add(refresh); row.Children.Add(host); Grid.SetRow(row, 1); buttons.Children.Add(row);
+        Grid.SetColumn(buttons, 1); runtime.Children.Add(buttons);
+        body.Children.Add(Card(runtime, 24));
         body.Children.Add(Label("manager.settings", 14, FontWeights.SemiBold));
         body.Children.Add(Setting("\uE7E8", "page.toggle.autostart", "manager.autostart.hint", autostart));
         body.Children.Add(Setting("\uE7F4", "page.toggle.showDriverName", "manager.driver.hint", driver));
@@ -124,19 +131,19 @@ internal sealed class ManagerWindow : Window
         driver.Click += async (_, _) => { if (!updating) await Execute(4, driver.IsChecked == true ? 1 : 0); };
         body.Children.Add(Label("manager.maintenance", 14, FontWeights.SemiBold));
         var links = new StackPanel { Orientation = Orientation.Horizontal };
-        foreach (var item in new[] { ("manager.logs", 5), ("manager.project", 6) })
+        void AddLink(string key, int action)
         {
-            var button = new Button { Content = Core.Text(item.Item1), Padding = new Thickness(16, 8, 16, 8), Margin = new Thickness(0, 0, 10, 0) };
-            button.Click += async (_, _) => await Execute(item.Item2); links.Children.Add(button);
+            var button = new Button { Content = Core.Text(key), Padding = new Thickness(16, 8, 16, 8), Margin = new Thickness(0, 0, 10, 0) };
+            button.Click += async (_, _) => await Execute(action); links.Children.Add(button);
         }
+        AddLink("manager.startmenu", 9);
+        var uninstall = new Button { Content = Core.Text("manager.uninstall"), Padding = new Thickness(16, 8, 16, 8), Margin = new Thickness(0, 0, 10, 0) };
+        uninstall.Click += async (_, _) => { if (Confirm("manager.uninstall", "manager.uninstall.confirm")) await Execute(7); };
+        links.Children.Add(uninstall);
+        AddLink("manager.logs", 5);
+        AddLink("manager.project", 6);
         body.Children.Add(Card(links, 20));
-        var uninstall = new StackPanel(); uninstall.Children.Add(Label("manager.uninstall.hint", 13, FontWeights.Normal, true));
-        var remove = new Button { Content = Core.Text("manager.uninstall"), Margin = new Thickness(0, 16, 0, 0), Padding = new Thickness(16, 8, 16, 8), HorizontalAlignment = HorizontalAlignment.Left };
-        remove.Click += async (_, _) => { if (Confirm("manager.uninstall", "manager.uninstall.confirm")) await Execute(7); };
-        uninstall.Children.Add(remove);
-        body.Children.Add(Card(new Expander { Header = Core.Text("manager.uninstall"), Content = uninstall, Padding = new Thickness(2) }, 16));
         feedback.TextWrapping = TextWrapping.Wrap; feedback.Margin = new Thickness(0, 12, 0, 0); body.Children.Add(feedback);
-        var footer = Label("manager.ready", 12, FontWeights.Normal, true); footer.Margin = new Thickness(0, 20, 0, 0); body.Children.Add(footer);
         timer.Tick += async (_, _) => { Theme.Apply(this); await Update(); };
         Closing += (_, args) => { if (busy || modal) args.Cancel = true; };
         Closed += (_, _) => timer.Stop();
@@ -257,6 +264,11 @@ internal sealed class ManagerWindow : Window
             {
                 if (action == 7) MessageBox.Show(this, Core.Text("manager.uninstall.done"), Title, MessageBoxButton.OK, MessageBoxImage.Information);
                 busy = false; Close(); return;
+            }
+            if (action == 9)
+            {
+                MessageBox.Show(this, Core.Text("manager.startmenu.done"), Title, MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
             }
             await ReadState();
         }

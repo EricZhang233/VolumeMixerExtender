@@ -8,7 +8,6 @@
 #include <windows.h>
 #include <objbase.h>
 
-#include <array>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -20,28 +19,18 @@ namespace vmex::launcher
         constexpr std::wstring_view kChannel = L"launcher";
         constexpr std::wstring_view kXamlModuleName = L"Windows.UI.Xaml.dll";
         constexpr std::wstring_view kDiagModuleName = L"xamldiagnostics.dll";
-        constexpr std::wstring_view kDiagSubDirectory = L"XamlDiagnostics";
 
         constexpr unsigned long kClaimGraceMs = 250;
 
         constexpr unsigned long kDefaultXamlWaitMs = 30000;
         constexpr unsigned long kEndpointProbeLimit = 10000;
 
-#if defined(_M_ARM64)
-        constexpr std::wstring_view kArchDirectory = L"arm64";
-#elif defined(_M_IX86)
-        constexpr std::wstring_view kArchDirectory = L"x86";
-#else
-        constexpr std::wstring_view kArchDirectory = L"x64";
-#endif
-
         HMODULE g_self = nullptr;
 
         enum class Claim
         {
             None,
-            SelfInjection,
-            Explicit
+            SelfInjection
         };
 
         std::mutex g_stateMutex;
@@ -80,102 +69,9 @@ namespace vmex::launcher
                 FAILED(result) ? log::Level::Error : log::Level::Info, kChannel, key, arguments);
         }
 
-        std::wstring ReadConfigString(const std::filesystem::path& file, std::wstring_view key, std::wstring_view fallback)
-        {
-            std::wstring buffer(MAX_PATH, L'\0');
-            for (;;)
-            {
-                const DWORD length = ::GetPrivateProfileStringW(
-                    std::wstring(inject::kTapConfigSection).c_str(),
-                    std::wstring(key).c_str(),
-                    std::wstring(fallback).c_str(),
-                    buffer.data(),
-                    static_cast<DWORD>(buffer.size()),
-                    file.c_str());
-
-                if (length + 1 < buffer.size())
-                {
-                    buffer.resize(length);
-                    return buffer;
-                }
-                buffer.resize(buffer.size() * 2);
-            }
-        }
-
-        std::filesystem::path ResolvePayloadPath(const std::filesystem::path& directory, const std::filesystem::path& value)
-        {
-            if (value.empty())
-            {
-                return {};
-            }
-            return value.is_absolute() ? value : directory / value;
-        }
-
         std::filesystem::path LocateXamlDiagnostics()
         {
-            const auto local = ModuleDirectory() / std::wstring(kDiagModuleName);
-            if (platform::FileExists(local))
-            {
-                return local;
-            }
-
-            constexpr std::array<std::wstring_view, 2> kKitsRoots{
-                L"SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots",
-                L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows Kits\\Installed Roots",
-            };
-
-            for (const auto& key : kKitsRoots)
-            {
-                std::array<wchar_t, MAX_PATH> root{};
-                DWORD bytes = static_cast<DWORD>(root.size() * sizeof(wchar_t));
-                if (::RegGetValueW(HKEY_LOCAL_MACHINE, std::wstring(key).c_str(), L"KitsRoot10",
-                                   RRF_RT_REG_SZ, nullptr, root.data(), &bytes) != ERROR_SUCCESS)
-                {
-                    continue;
-                }
-
-                    const auto kitsRoot = std::filesystem::path(root.data());
-                    const auto direct = kitsRoot / L"bin" / std::wstring(kArchDirectory) /
-                                        std::wstring(kDiagSubDirectory) / std::wstring(kDiagModuleName);
-                    if (platform::FileExists(direct))
-                {
-                        return direct;
-                    }
-
-                    std::error_code error;
-                    const auto binRoot = kitsRoot / L"bin";
-                    for (const auto& version : std::filesystem::directory_iterator(binRoot, error))
-                    {
-                        if (error)
-                        {
-                            break;
-                        }
-                        if (!version.is_directory(error) || error)
-                        {
-                            error.clear();
-                            continue;
-                        }
-
-                        const auto candidate = version.path() / std::wstring(kArchDirectory) /
-                                               std::wstring(kDiagSubDirectory) / std::wstring(kDiagModuleName);
-                        if (platform::FileExists(candidate))
-                        {
-                            return candidate;
-                        }
-                    }
-                }
-            return {};
-        }
-
-        unsigned long ReadUnsigned(const std::filesystem::path& configModule, std::wstring_view key, unsigned long fallback)
-        {
-            const auto text = ReadConfigString(configModule, key, {});
-            if (text.empty())
-            {
-                return fallback;
-            }
-            const unsigned long value = static_cast<unsigned long>(std::wcstoul(text.c_str(), nullptr, 10));
-            return value == 0 ? fallback : value;
+            return ModuleDirectory() / std::wstring(kDiagModuleName);
         }
 
         HMODULE WaitForXamlModule(unsigned long timeoutMs)
@@ -195,7 +91,7 @@ namespace vmex::launcher
             }
         }
 
-        void PushConfigToTap(const std::filesystem::path& tapModule, const std::filesystem::path& configModule)
+        void LoadTap(const std::filesystem::path& tapModule)
         {
             const HMODULE tap = ::LoadLibraryW(tapModule.c_str());
             if (tap == nullptr)
@@ -205,24 +101,10 @@ namespace vmex::launcher
                 Record(result, L"log.launcher.tap_load_failed",
                        { tapModule.wstring(), std::to_wstring(error),
                          Hex(static_cast<std::uint32_t>(result)) });
-                return;
             }
-
-            const std::string exportName(inject::kTapInitDataExport);
-            const auto push = reinterpret_cast<void(__stdcall*)(const wchar_t*)>(
-                ::GetProcAddress(tap, exportName.c_str()));
-            if (push == nullptr)
-            {
-                Record(E_FAIL, L"log.launcher.tap_export_missing",
-                       { std::wstring(exportName.begin(), exportName.end()),
-                         Hex(static_cast<std::uint32_t>(E_FAIL)) });
-                return;
-            }
-
-            push(configModule.c_str());
         }
 
-        HRESULT InjectCore(const std::filesystem::path& configOverride)
+        HRESULT InjectCore()
         {
             const HRESULT com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
             log::Logger::Instance().WriteKeyFormat(
@@ -230,12 +112,7 @@ namespace vmex::launcher
                 { std::to_wstring(::GetCurrentProcessId()), Hex(static_cast<std::uint32_t>(com)) });
 
             const auto directory = ModuleDirectory();
-            const auto configModule = configOverride.empty()
-                ? directory / std::wstring(inject::kTapConfigFileName)
-                : configOverride;
-
-            const auto tapModule = ResolvePayloadPath(
-                directory, ReadConfigString(configModule, inject::kConfigKeyTap, inject::kTapDllName));
+            const auto tapModule = directory / std::wstring(inject::kTapDllName);
             if (!platform::FileExists(tapModule))
             {
                 const HRESULT result = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
@@ -244,22 +121,17 @@ namespace vmex::launcher
                 return result;
             }
 
-            const auto configuredDiag = ResolvePayloadPath(
-                directory, ReadConfigString(configModule, inject::kConfigKeyDiag, {}));
-            const auto diagnostics = configuredDiag.empty() ? LocateXamlDiagnostics() : configuredDiag;
+            const auto diagnostics = LocateXamlDiagnostics();
             if (!platform::FileExists(diagnostics))
             {
                 const HRESULT result = HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
                 Record(result, L"log.launcher.diag_missing",
-                       { std::wstring(kDiagModuleName), configModule.wstring(),
+                       { std::wstring(kDiagModuleName), diagnostics.wstring(),
                          Hex(static_cast<std::uint32_t>(result)) });
                 return result;
             }
 
-            const auto waitMs = ReadUnsigned(configModule, inject::kConfigKeyXamlWaitMs, kDefaultXamlWaitMs);
-            const auto firstEndpoint = ReadUnsigned(configModule, inject::kConfigKeyEndpoint, 1);
-
-            const HMODULE xaml = WaitForXamlModule(waitMs);
+            const HMODULE xaml = WaitForXamlModule(kDefaultXamlWaitMs);
             if (xaml == nullptr)
             {
                 const HRESULT result = HRESULT_FROM_WIN32(WAIT_TIMEOUT);
@@ -289,20 +161,18 @@ namespace vmex::launcher
                 return E_INVALIDARG;
             }
 
-            PushConfigToTap(tapModule, configModule);
-
-            const std::wstring initData = L"cfg=" + configModule.wstring();
+            LoadTap(tapModule);
 
             log::Logger::Instance().WriteKeyFormat(
                 log::Level::Info, kChannel, L"log.launcher.payload_paths",
-                { tapModule.wstring(), diagnostics.wstring(), std::to_wstring(initData.size()) });
+                { tapModule.wstring(), diagnostics.wstring() });
 
-            for (unsigned long index = firstEndpoint; index < firstEndpoint + kEndpointProbeLimit; ++index)
+            for (unsigned long index = 1; index < 1 + kEndpointProbeLimit; ++index)
             {
                 const auto endpoint = inject::DiagEndPointName(index);
                 const HRESULT hr = initialize(endpoint.c_str(), ::GetCurrentProcessId(),
                                               diagnostics.c_str(), tapModule.c_str(), tapClsid,
-                                              initData.c_str());
+                                              L"");
                 if (SUCCEEDED(hr))
                 {
                     log::Logger::Instance().WriteKeyFormat(
@@ -319,7 +189,7 @@ namespace vmex::launcher
                     return hr;
                 }
 
-                if (index < firstEndpoint + 3 || (index % 1000) == 0)
+                if (index < 4 || (index % 1000) == 0)
                 {
                     log::Logger::Instance().WriteKeyFormat(
                         log::Level::Debug, kChannel, L"log.launcher.endpoint_probe",
@@ -333,7 +203,7 @@ namespace vmex::launcher
             return result;
         }
 
-        HRESULT RunOnce(const std::filesystem::path& configOverride)
+        HRESULT RunOnce()
         {
             std::lock_guard<std::mutex> guard(g_runMutex);
             if (g_succeeded)
@@ -342,7 +212,7 @@ namespace vmex::launcher
             }
 
             AttachLogging();
-            g_result = InjectCore(configOverride);
+            g_result = InjectCore();
             if (SUCCEEDED(g_result))
             {
                 g_succeeded = true;
@@ -375,15 +245,6 @@ namespace vmex::launcher
         g_self = module;
     }
 
-    HRESULT Inject(const std::filesystem::path& configModule)
-    {
-        {
-            std::lock_guard<std::mutex> guard(g_stateMutex);
-            g_claim = Claim::Explicit;
-        }
-        return RunOnce(configModule);
-    }
-
     void BeginSelfInjection()
     {
         const HANDLE thread = ::CreateThread(nullptr, 0, [](LPVOID) -> DWORD
@@ -399,7 +260,7 @@ namespace vmex::launcher
                 g_claim = Claim::SelfInjection;
             }
 
-            RunOnce({});
+            RunOnce();
             return 0;
         }, nullptr, 0, nullptr);
 
@@ -408,13 +269,6 @@ namespace vmex::launcher
             ::CloseHandle(thread);
         }
     }
-}
-
-extern "C" __declspec(dllexport) HRESULT __stdcall VmExtLauncherRun(const wchar_t* configModule)
-{
-    return vmex::launcher::Inject(configModule == nullptr
-        ? std::filesystem::path{}
-        : std::filesystem::path(configModule));
 }
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)

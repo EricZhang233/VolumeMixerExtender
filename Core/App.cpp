@@ -128,8 +128,7 @@ namespace vmex
 
         Status PrepareDeployment()
         {
-            return inject::DeployPayloads(
-                platform::GetCacheDirectory(), platform::GetCurrentSessionId(), deployment);
+            return inject::DeployPayloads(deployment);
         }
 
         void HandleTapCommand(const inject::TapCommand& command) override;
@@ -430,7 +429,7 @@ namespace vmex
         monitor->Start();
 
         log::Logger::Instance().WriteKeyFormat(
-            log::Level::Info, kChannel, L"log.app.monitor", { m_impl->deployment.directory.wstring() });
+            log::Level::Info, kChannel, L"log.app.monitor", { m_impl->deployment.launcher.wstring() });
 
         m_impl->monitor = std::move(monitor);
         return Status::Ok();
@@ -807,8 +806,7 @@ namespace vmex
             }
 
             for (const auto item : { payload::Item::Launcher, payload::Item::Tap,
-                                     payload::Item::Diagnostics, payload::Item::NotificationToolkit,
-                                     payload::Item::Core })
+                                     payload::Item::Diagnostics, payload::Item::Core })
             {
                 const auto name = std::wstring(payload::ToString(item));
                 output.Field(name, payload::Exists(item) ? std::to_wstring(payload::Size(item)) : app.Text().Resolve(L"cli.field.missing"));

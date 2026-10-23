@@ -53,12 +53,12 @@ manager.subtitle: 管理后台运行与偏好设置
 manager.autostart.hint: 登录 Windows 时自动运行。
 manager.cancel: 取消
 manager.done: 完成
-manager.runtime: 运行状态
 manager.loading: 正在读取运行状态…
 manager.start: 启动程序
 manager.stop: 退出程序
 manager.refresh: 刷新
 manager.panel: 打开音量面板
+manager.panel.hint: 使用提示：可以由控制中心音量条右侧的按钮或[Win+Ctrl+V]快捷键打开。
 manager.panel.pending: 面板尚未完成接管，请稍后重试。
 cmd.panel.summary: 启动后台程序并打开音量面板
 manager.settings: 设置
@@ -66,8 +66,9 @@ manager.driver.hint: 下次打开音量面板时生效，无需重启程序。
 manager.maintenance: 维护
 manager.logs: 打开日志目录
 manager.project: 项目主页
+manager.startmenu: 注册到开始菜单
+manager.startmenu.done: 已注册到开始菜单，可在开始菜单中找到管理器。
 manager.uninstall: 卸载并清理
-manager.uninstall.hint: 清除自启、配置、缓存、应用重定向及音量偏好，保留程序文件。
 manager.ready: 关闭窗口后仍可使用音量面板。
 manager.working: 正在完成操作，请稍候…
 manager.failed: 操作未完成：{0}
@@ -237,6 +238,11 @@ log.autostart.deleted: 自启项已删除
 autostart.error.exe_missing: 找不到 {0}，拒绝注册（否则会得到一个永远跑不起来的自启项）
 autostart.error.write_failed: 自启项写入失败 (error={0})
 autostart.error.delete_failed: 自启项删除失败 (error={0})
+startmenu.error.exe_missing: 找不到 {0}，拒绝注册开始菜单快捷方式。
+startmenu.error.write_failed: 开始菜单快捷方式写入失败 (error={0})
+log.startmenu.exe_missing: 找不到 {0}，拒绝注册开始菜单
+log.startmenu.write_failed: 开始菜单快捷方式写入失败：{0} (error={1})
+log.startmenu.registered: 开始菜单快捷方式已注册：{0}
 log.tap.class_request: DllGetClassObject 类对象请求 {0} {1}
 log.tap.guid.qi_ok: Tap::QueryInterface 返回接口 {0}
 log.tap.guid.qi_nointerface: Tap::QueryInterface 不支持的接口 E_NOINTERFACE {0}
@@ -335,14 +341,13 @@ log.page.name.system: 系统页
 log.page.name.custom: 自定义Mixer
 log.page.name.settings: 设置
 log.launcher.tap_load_failed: 加载 TAP 模块失败: {0} (error={1}, {2})
-log.launcher.tap_export_missing: TAP 模块缺少导出 {0} ({1})
 log.launcher.attached: 启动器已挂载 pid={0} CoInitializeEx={1}
 log.launcher.tap_module_missing: TAP 模块不存在: {0} ({1})
-log.launcher.diag_missing: 找不到诊断模块 {0}, 配置={1} ({2})
+log.launcher.diag_missing: 找不到诊断模块 {0}, 路径={1} ({2})
 log.launcher.xaml_not_loaded: 等待 {0} 超时 ({1})
 log.launcher.xaml_export_missing: {0} 缺少导出 {1} ({2})
 log.launcher.class_id_invalid: 类 ID 无效: {0} ({1})
-log.launcher.payload_paths: 载荷路径 tap={0} diag={1} 初始化数据长度={2}
+log.launcher.payload_paths: 载荷路径 tap={0} diag={1}
 log.launcher.endpoint_success: 注入成功 endpoint={0} ({1})
 log.launcher.arguments_rejected: {0} 拒绝参数 endpoint={1} ({2})
 log.launcher.endpoint_probe: 探测 endpoint={0} ({1})

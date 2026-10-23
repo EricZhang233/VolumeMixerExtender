@@ -67,7 +67,7 @@
 ### Three steps
 
 1. **Download**: grab the latest archive from [Releases](https://github.com/EricZhang233/VolumeMixerExtender/releases) and extract it anywhere (paths with spaces or non-ASCII characters are fine).
-2. **Run**: double-click `vmex.exe`. It has no console window; it stays resident in the background and hooks into the system shell automatically, showing one notification on startup and another once the hook is complete. To have it ready right after sign-in, click the footer gear and turn on **Manager → Start with Windows**; you can also run `vmex_manager.exe` directly.
+2. **Run**: double-click `vmex.exe`. It has no console window; it stays resident in the background and hooks into the system shell automatically. To have it ready right after sign-in, click the footer gear and turn on **Manager → Start with Windows**; you can also run `vmex_manager.exe` directly.
 3. **Use it**: press `Win+A` to open Quick Settings and pick the audio output entry — what you see is the custom page.
 
 > 💡 Prefer the command line? `vmex_cli.exe -help` lists every command, and `vmex_cli.exe skill` prints the integration document for scripts and AI agents.
@@ -116,13 +116,13 @@ Click the footer gear or run `vmex_manager.exe` to open the WPF manager. The set
 | **Show driver name** | Whether device names carry the driver suffix; on by default, applied the next time the panel opens |
 | **Status and start** | Shows the background host and panel integration status; starts the host when stopped |
 | **Exit** | Ends panel integration and the background host, then closes the manager on success; keeps auto-start and user data |
+| **Register to Start menu** | Creates a manager shortcut in the system Start menu, overwriting an existing one |
 | **Open log folder** | Opens this program's log folder for troubleshooting |
 | **Uninstall and clean up** | After a standard confirmation dialog, stops integration and clears auto-start, configuration, logs, cache, all application redirections and volume preferences; keeps program files and leaves the window open with details if a step fails |
 
-### Background host and notifications
+### Background host
 
 *   Double-clicking `vmex.exe` is all it takes: no console window, no tray icon, no main window.
-*   One system notification on startup and another once the hook is complete; it stays quiet when it was started by the sign-in auto-start.
 *   Single instance: when it is already running, a second launch is refused instead of starting another copy.
 
 ---

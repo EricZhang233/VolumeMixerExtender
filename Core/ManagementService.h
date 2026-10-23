@@ -23,6 +23,7 @@ namespace vmex::management
     Status OpenProject();
     Status SetAutostart(bool enabled);
     Status SetShowDriverName(bool enabled);
+    Status RegisterStartMenu();
     Status Uninstall();
     Status StopInjection();
 }

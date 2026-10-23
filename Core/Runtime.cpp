@@ -1,6 +1,5 @@
 #include "Runtime.h"
 
-#include "NotificationService.h"
 #include "Platform.h"
 
 #include <windows.h>
@@ -77,44 +76,4 @@ namespace vmex::runtime
         return autorun;
     }
 
-    HostNotifications::~HostNotifications()
-    {
-        Stop();
-    }
-
-    void HostNotifications::Start(App& app, bool autorun)
-    {
-        Stop();
-        if (autorun) return;
-
-        const auto started = notification::Show(L"VolumeMixerExtender", L"主程序已启动");
-        if (!started.IsOk())
-        {
-            app.Report(log::Level::Warn, L"app", started.detail);
-        }
-
-        m_stop.store(false);
-        m_thread = std::thread([this, &app]()
-        {
-            for (int attempt = 0; attempt < 200 && !m_stop.load(); ++attempt)
-            {
-                if (app.InjectionState().tapLoaded)
-                {
-                    const auto completed = notification::Show(L"VolumeMixerExtender", L"注入已完成");
-                    if (!completed.IsOk())
-                    {
-                        app.Report(log::Level::Warn, L"app", completed.detail);
-                    }
-                    return;
-                }
-                ::Sleep(100);
-            }
-        });
-    }
-
-    void HostNotifications::Stop()
-    {
-        m_stop.store(true);
-        if (m_thread.joinable()) m_thread.join();
-    }
 }

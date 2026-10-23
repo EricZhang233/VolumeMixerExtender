@@ -4,6 +4,7 @@
 #include "App.h"
 #include "AutostartEntry.h"
 #include "HostPresence.h"
+#include "StartMenuEntry.h"
 #include "InjectionContract.h"
 #include "Logger.h"
 #include "Platform.h"
@@ -233,6 +234,15 @@ namespace vmex::management
         const bool applied = settings::WriteBool(settings::kShowDriverName, enabled) &&
             settings::ReadBool(settings::kShowDriverName, !enabled) == enabled;
         return Report(L"show-driver-name", applied ? Status::Ok() : Status::Failed(L"settings-write"));
+    }
+
+    Status RegisterStartMenu()
+    {
+        Operation operation;
+        if (!operation.Locked()) return Status::Failed(L"management-busy");
+        std::wstring error;
+        const bool applied = startmenu::StartMenuEntry::Register(error);
+        return Report(L"startmenu", applied ? Status::Ok() : Status::Failed(error));
     }
 
     Status Uninstall()

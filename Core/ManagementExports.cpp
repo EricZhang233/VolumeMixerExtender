@@ -78,6 +78,7 @@ extern "C" __declspec(dllexport) int VmexManagerExecute(int action, int value, w
         case 6: result = vmex::management::OpenProject(); break;
         case 7: result = vmex::management::Uninstall(); break;
         case 8: result = vmex::management::OpenPanel(); break;
+        case 9: result = vmex::management::RegisterStartMenu(); break;
         default: result = vmex::Status::InvalidArguments(L"management-action"); break;
         }
     }

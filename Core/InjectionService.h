@@ -17,8 +17,6 @@ namespace vmex::inject
         std::filesystem::path launcherModule;
         std::filesystem::path tapModule;
         std::filesystem::path coreModule;
-        std::filesystem::path configModule;
-        std::wstring initData;
         std::uint32_t timeoutMs = 5000;
     };
 

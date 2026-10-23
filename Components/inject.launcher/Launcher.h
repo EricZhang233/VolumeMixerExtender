@@ -18,7 +18,5 @@ namespace vmex::launcher
 
     void SetSelfModule(HMODULE module);
 
-    [[nodiscard]] HRESULT Inject(const std::filesystem::path& configModule);
-
     void BeginSelfInjection();
 }

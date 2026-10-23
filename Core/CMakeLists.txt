@@ -28,11 +28,11 @@ add_library(vmex_core SHARED
     ManagementService.cpp
     ManagementExports.cpp
     MaintenanceWorkflow.cpp
-    NotificationService.cpp
     PayloadDeployment.cpp
     PayloadResources.cpp
     Platform.cpp
     Runtime.cpp
+    StartMenuEntry.cpp
     Strings.cpp
     TapCommand.cpp
     TapPipeServer.cpp
