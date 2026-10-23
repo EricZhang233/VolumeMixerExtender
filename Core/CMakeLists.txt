@@ -25,6 +25,9 @@ add_library(vmex_core SHARED
     InjectionService.cpp
     Log.cpp
     Logger.cpp
+    ManagementService.cpp
+    ManagementExports.cpp
+    MaintenanceWorkflow.cpp
     NotificationService.cpp
     PayloadDeployment.cpp
     PayloadResources.cpp

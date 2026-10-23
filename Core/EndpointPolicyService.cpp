@@ -2,6 +2,7 @@
 
 #include "AudioInterop.h"
 #include "Logger.h"
+#include "MaintenanceWorkflow.h"
 
 namespace vmex::audio
 {
@@ -89,10 +90,55 @@ namespace vmex::audio
 
             Status ClearAppDefaultDevices() override
             {
-                if (!detail::ClearAllAppRedirects())
+                struct Actions final : maintenance::IAudioResetActions
+                {
+                    Status ClearRouting() override
+                    {
+                        return detail::ClearAllAppRedirects() ? Status::Ok() : Status::Failed(L"clear-routing");
+                    }
+                    Status ResetSessionVolumes() override
+                    {
+                        bool volumes = true;
+                        for (const auto flow : { eRender, eCapture })
+                        {
+                            std::vector<detail::Endpoint> endpoints;
+                            if (!detail::EnumEndpointsOnce(flow, endpoints))
+                            {
+                                volumes = false;
+                                continue;
+                            }
+                            for (const auto& endpoint : endpoints)
+                            {
+                                std::vector<detail::Session> sessions;
+                                if (!detail::EnumSessionsOnce(endpoint.id, sessions))
+                                {
+                                    volumes = false;
+                                    continue;
+                                }
+                                for (auto& session : sessions)
+                                {
+                                    if (!session.systemSounds && !detail::SetSessionVolume(session, endpoint.id, 1.0f))
+                                        volumes = false;
+                                }
+                            }
+                        }
+                        return volumes ? Status::Ok() : Status::Failed(L"reset-session-volumes");
+                    }
+                    Status ClearPersistedVolumes() override
+                    {
+                        const LSTATUS cleared = ::RegDeleteTreeW(HKEY_CURRENT_USER,
+                            L"Software\\Microsoft\\Internet Explorer\\LowRegistry\\Audio\\PolicyConfig\\PropertyStore");
+                        return cleared == ERROR_SUCCESS || cleared == ERROR_FILE_NOT_FOUND ? Status::Ok() :
+                            Status::FromWin32(L"clear-persisted-volumes", cleared);
+                    }
+                } actions;
+                const auto result = maintenance::ResetAudioPreferences(actions);
+                log::Logger::Instance().WriteKeyFormat(log::Level::Info, kChannel, L"log.audio.preferences_reset",
+                    { std::to_wstring(result.code), result.detail });
+                if (!result)
                 {
                     log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.audio.policy_clear_redirect_failed");
-                    return Status::Failed(L"clear-redirect");
+                    return result;
                 }
 
                 return Status::Ok();

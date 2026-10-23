@@ -10,8 +10,7 @@ namespace vmex::inject
         SetDefault,
         SetRedirect,
         ClearRedirect,
-        Autostart,
-        Uninstall,
+        Manager,
         Exit
     };
 

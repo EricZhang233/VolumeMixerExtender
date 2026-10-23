@@ -15,6 +15,42 @@ namespace vmex::inject
         constexpr std::wstring_view kChannel = L"pipe";
         constexpr std::size_t kReadBufferSize = 512;
         constexpr std::size_t kMaxAccumulated = 4096;
+
+        bool IsCurrentUser(HANDLE pipe)
+        {
+            ULONG pid = 0;
+            DWORD session = 0;
+            DWORD ownSession = 0;
+            if (!::ProcessIdToSessionId(::GetCurrentProcessId(), &ownSession)) return false;
+            if (!::GetNamedPipeClientProcessId(pipe, &pid) || !::ProcessIdToSessionId(pid, &session) ||
+                session != ownSession) return false;
+            HANDLE local = nullptr;
+            HANDLE remote = nullptr;
+            if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &local)) return false;
+            if (!::ImpersonateNamedPipeClient(pipe))
+            {
+                ::CloseHandle(local);
+                return false;
+            }
+            const bool opened = ::OpenThreadToken(::GetCurrentThread(), TOKEN_QUERY, TRUE, &remote) != FALSE;
+            ::RevertToSelf();
+            bool same = false;
+            if (opened)
+            {
+                DWORD localSize = 0;
+                DWORD remoteSize = 0;
+                ::GetTokenInformation(local, TokenUser, nullptr, 0, &localSize);
+                ::GetTokenInformation(remote, TokenUser, nullptr, 0, &remoteSize);
+                std::vector<std::byte> localUser(localSize), remoteUser(remoteSize);
+                if (::GetTokenInformation(local, TokenUser, localUser.data(), localSize, &localSize) &&
+                    ::GetTokenInformation(remote, TokenUser, remoteUser.data(), remoteSize, &remoteSize))
+                    same = ::EqualSid(reinterpret_cast<TOKEN_USER*>(localUser.data())->User.Sid,
+                                      reinterpret_cast<TOKEN_USER*>(remoteUser.data())->User.Sid) != FALSE;
+                ::CloseHandle(remote);
+            }
+            ::CloseHandle(local);
+            return same;
+        }
     }
 
     TapPipeServer::TapPipeServer(std::wstring pipeName, ITapCommandHandler& handler)
@@ -74,7 +110,7 @@ namespace vmex::inject
             const HANDLE pipe = ::CreateNamedPipeW(
                 m_pipeName.c_str(),
                 PIPE_ACCESS_INBOUND,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 1,
                 4096,
                 4096,
@@ -118,12 +154,27 @@ namespace vmex::inject
             {
                 std::string accumulated;
                 std::array<char, kReadBufferSize> buffer{};
-                for (;;)
+                const ULONGLONG deadline = ::GetTickCount64() + 2000;
+                bool authorized = false;
+                while (m_running.load() && ::GetTickCount64() < deadline)
                 {
+                    DWORD available = 0;
+                    if (!::PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) break;
+                    if (available == 0)
+                    {
+                        ::Sleep(10);
+                        continue;
+                    }
                     DWORD read = 0;
                     if (::ReadFile(pipe, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr) == FALSE || read == 0)
                     {
                         break;
+                    }
+
+                    if (!authorized)
+                    {
+                        authorized = IsCurrentUser(pipe);
+                        if (!authorized) break;
                     }
 
                     accumulated.append(buffer.data(), read);
@@ -145,7 +196,7 @@ namespace vmex::inject
 
                     if (accumulated.size() > kMaxAccumulated)
                     {
-                        accumulated.clear();
+                        break;
                     }
                 }
 

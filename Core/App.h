@@ -19,6 +19,7 @@ namespace vmex
         log::Level logLevel = log::Level::Info;
         bool consoleLog = false;
         bool autorun = false;
+        bool saveConfig = true;
     };
 
     class App final

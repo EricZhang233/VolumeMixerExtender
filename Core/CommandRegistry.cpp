@@ -194,7 +194,7 @@ namespace vmex::cli
                     continue;
                 }
 
-                std::wstring usage = L"vmex " + command.name;
+                std::wstring usage = L"vmex_cli " + command.name;
                 for (const auto& argument : command.arguments)
                 {
                     usage.append(argument.required ? L" <" : L" [");

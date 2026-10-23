@@ -10,7 +10,8 @@
 #include "Strings.h"
 #include "TapCommand.h"
 #include "TapPipeServer.h"
-#include "UninstallService.h"
+#include "ManagementService.h"
+#include "UserSettings.h"
 #include "Version.h"
 
 #include <windows.h>
@@ -231,7 +232,7 @@ namespace vmex
 
         StopServing();
 
-        if (!m_impl->options.configFile.empty())
+        if (m_impl->options.saveConfig && !m_impl->options.configFile.empty())
         {
             m_impl->config.Save();
         }
@@ -480,57 +481,18 @@ namespace vmex
         case inject::TapVerb::ClearRedirect:
             HandleClearRedirect();
             break;
-        case inject::TapVerb::Autostart:
+        case inject::TapVerb::Manager:
         {
-            std::wstring error;
-            const bool enable = !command.arguments.empty() &&
-                strings::EqualsIgnoreCase(command.arguments[0], L"on");
-            const bool disable = !command.arguments.empty() &&
-                strings::EqualsIgnoreCase(command.arguments[0], L"off");
-            if (!enable && !disable)
-            {
-                log::Logger::Instance().WriteKeyFormat(
-                    log::Level::Warn, kPipeChannel, L"log.pipe.autostart_invalid", { command.raw });
-                break;
-            }
-
-            const bool applied = enable
-                ? autostart::AutostartEntry::Enable(error)
-                : autostart::AutostartEntry::Disable(error);
-            log::Logger::Instance().WriteKeyFormat(
-                applied ? log::Level::Info : log::Level::Error,
-                kPipeChannel,
-                applied ? L"log.pipe.autostart_done" : L"log.pipe.autostart_failed",
-                { enable ? L"on" : L"off", error });
-            break;
-        }
-        case inject::TapVerb::Uninstall:
-        {
-            inject::State state;
-            if (monitor != nullptr) state = monitor->Snapshot();
-            else injection->QueryState(state);
-            monitor.reset();
-            const auto result = uninstall::DisableAutostartAndTerminateShellHost(state.target.processId);
-            if (result.ok)
-            {
-                log::Logger::Instance().WriteKey(log::Level::Info, kPipeChannel, L"log.pipe.uninstall_done");
-                ::SetEvent(ShutdownEvent());
-            }
-            else
-            {
-                log::Logger::Instance().WriteKeyFormat(
-                    log::Level::Error, kPipeChannel, L"log.pipe.uninstall_failed", { result.detail });
-            }
+            const auto opened = management::OpenManager();
+            if (!opened)
+                ::MessageBoxW(nullptr, text.Resolve(L"manager.missing").c_str(),
+                              text.Resolve(L"manager.title").c_str(), MB_OK | MB_ICONERROR);
             break;
         }
         case inject::TapVerb::Exit:
         {
-            inject::State state;
-            if (monitor != nullptr) state = monitor->Snapshot();
-            else injection->QueryState(state);
-            monitor.reset();
-            const auto result = uninstall::TerminateShellHost(state.target.processId);
-            if (result.ok)
+            const auto result = management::StopInjection();
+            if (result.IsOk())
             {
                 log::Logger::Instance().WriteKey(log::Level::Info, kPipeChannel, L"log.pipe.exit_done");
                 ::SetEvent(ShutdownEvent());
@@ -654,6 +616,46 @@ namespace vmex
 
     void App::RegisterCommands()
     {
+        for (const auto name : { L"start", L"stop", L"manager", L"panel", L"logs", L"project", L"uninstall" })
+        {
+            const std::wstring commandName(name);
+            auto command = MakeCommand(commandName, L"cli.group.core", L"cmd." + commandName + L".summary");
+            if (commandName == L"uninstall")
+                command.options.push_back(cli::OptionSpec{ L"yes", L"", L"cmd.uninstall.yes", false, false });
+            command.handler = [commandName](const cli::Invocation& invocation, cli::ICliOutput& output) -> cli::Result {
+                if (commandName == L"uninstall" && !invocation.HasFlag(L"yes"))
+                    return { cli::Outcome::InvalidArguments, App::Instance().Text().Resolve(L"cmd.uninstall.confirm") };
+                Status result;
+                if (commandName == L"start") result = management::StartHost();
+                else if (commandName == L"stop") result = management::StopHost();
+                else if (commandName == L"manager") result = management::OpenManager();
+                else if (commandName == L"panel") result = management::OpenPanel();
+                else if (commandName == L"logs") result = management::OpenLogs();
+                else if (commandName == L"project") result = management::OpenProject();
+                else
+                {
+                    App::Instance().m_impl->options.saveConfig = false;
+                    result = management::Uninstall();
+                }
+                if (!result) output.Error(App::Instance().Text().ResolveFormat(L"cli.error.operation_failed", { result.detail }));
+                return { result ? cli::Outcome::Success : cli::Outcome::Failed, {} };
+            };
+            m_impl->commands.Add(std::move(command));
+        }
+        auto driver = MakeCommand(L"show-driver-name", L"cli.group.config", L"cmd.show-driver-name.summary");
+        driver.arguments.push_back(cli::ArgumentSpec{ L"state", L"cmd.autostart.arg.state", false });
+        driver.handler = [](const cli::Invocation& invocation, cli::ICliOutput& output) -> cli::Result {
+            if (const auto* value = invocation.Positional(0))
+            {
+                if (*value != L"on" && *value != L"off") return { cli::Outcome::InvalidArguments, {} };
+                const auto applied = management::SetShowDriverName(*value == L"on");
+                if (!applied) return { cli::Outcome::Failed, applied.detail };
+            }
+            output.Field(App::Instance().Text().Resolve(L"cli.field.value"),
+                         settings::ReadBool(settings::kShowDriverName, true) ? L"on" : L"off");
+            return { cli::Outcome::Success, {} };
+        };
+        m_impl->commands.Add(std::move(driver));
         auto help = MakeCommand(L"help", L"cli.group.core", L"cmd.help.summary");
         help.aliases = { L"-help", L"--help", L"-h" };
         help.arguments.push_back(cli::ArgumentSpec{ L"command", L"cmd.help.arg.command", false });
@@ -974,11 +976,15 @@ namespace vmex
                 bool applied = false;
                 if (*state == L"on")
                 {
-                    applied = autostart::AutostartEntry::Enable(error);
+                    const auto result = management::SetAutostart(true);
+                    applied = result.IsOk();
+                    error = result.detail;
                 }
                 else if (*state == L"off")
                 {
-                    applied = autostart::AutostartEntry::Disable(error);
+                    const auto result = management::SetAutostart(false);
+                    applied = result.IsOk();
+                    error = result.detail;
                 }
                 else
                 {

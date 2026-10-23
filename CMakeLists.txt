@@ -29,6 +29,8 @@ set(VMEX_PRODUCT_NAME "${CMAKE_MATCH_1}")
 
 project(VolumeMixerExtender VERSION "${VMEX_VERSION}" LANGUAGES CXX RC)
 
+include(CTest)
+
 function(vmex_add_version_resource target description internal_name original_name file_type)
     set(VMEX_RC_DESCRIPTION "${description}")
     set(VMEX_RC_INTERNAL_NAME "${internal_name}")
@@ -67,8 +69,18 @@ if(MSVC)
 endif()
 
 add_subdirectory(Core)
+vmex_add_version_resource(vmex_core "VolumeMixerExtender core" "vmex_core" "vmex_core.dll" VFT_DLL)
 add_subdirectory(Components/inject.launcher)
 add_subdirectory(Components/inject.tap)
+
+if(BUILD_TESTING)
+    add_executable(vmex_tests Test/CoreTests.cpp)
+    target_link_libraries(vmex_tests PRIVATE vmex_core)
+    foreach(suite uninstall audio commands resources config pipe)
+        add_test(NAME "core.${suite}" COMMAND vmex_tests "${suite}")
+        set_tests_properties("core.${suite}" PROPERTIES TIMEOUT 15)
+    endforeach()
+endif()
 
 set(VMEX_PAYLOAD_RC "${CMAKE_BINARY_DIR}/generated/PayloadResources.rc")
 set(VMEX_NOTIFICATION_SCRIPT
@@ -119,6 +131,23 @@ add_executable(vmex_cli
     "${VMEX_PAYLOAD_RC}"
 )
 
+find_program(VMEX_DOTNET dotnet REQUIRED)
+set(VMEX_MANAGER_EXECUTABLE "${CMAKE_SOURCE_DIR}/bin/$<CONFIG>/vmex_manager.exe")
+add_custom_target(vmex_manager ALL
+    COMMAND "${VMEX_DOTNET}" publish "${CMAKE_SOURCE_DIR}/Manager/Manager.csproj"
+        -c $<CONFIG> "-p:Version=${VMEX_VERSION}" "-p:FileVersion=${VMEX_VERSION}"
+        "-p:AssemblyVersion=${VMEX_VERSION}" "-p:InformationalVersion=${VMEX_VERSION}"
+        -o "${CMAKE_BINARY_DIR}/manager/$<CONFIG>"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_BINARY_DIR}/manager/$<CONFIG>/vmex_manager.exe" "${VMEX_MANAGER_EXECUTABLE}"
+    DEPENDS vmex_core
+    VERBATIM)
+if(BUILD_TESTING)
+    add_custom_target(vmex_manager_ui_tests DEPENDS vmex_manager)
+    add_test(NAME manager.wpf COMMAND "${VMEX_MANAGER_EXECUTABLE}" --self-test)
+    set_tests_properties(manager.wpf PROPERTIES TIMEOUT 30)
+endif()
+
 set_target_properties(vmex PROPERTIES VS_DPI_AWARE "PerMonitor")
 set_target_properties(vmex_cli PROPERTIES OUTPUT_NAME "vmex_cli")
 
@@ -132,26 +161,17 @@ vmex_add_version_resource(vmex "VolumeMixerExtender background host" "vmex" "vme
 vmex_add_version_resource(vmex_cli "VolumeMixerExtender command line interface" "vmex_cli" "vmex_cli.exe" VFT_APP)
 
 set(VMEX_PACKAGE_NAME "${VMEX_PRODUCT_NAME}_${VMEX_VERSION}")
-set(VMEX_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/output")
+set(VMEX_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/output" CACHE PATH "Release package output directory")
 
-add_custom_command(TARGET vmex POST_BUILD
+add_custom_target(package ALL
     COMMAND "${CMAKE_COMMAND}"
         "-DVMEX_PACKAGE_DIR=${VMEX_PACKAGE_DIR}"
         "-DVMEX_PACKAGE_NAME=${VMEX_PACKAGE_NAME}"
         "-DVMEX_EXECUTABLE=$<TARGET_FILE:vmex>"
         "-DVMEX_CLI_EXECUTABLE=$<TARGET_FILE:vmex_cli>"
         "-DVMEX_CORE_DLL=$<TARGET_FILE:vmex_core>"
+        "-DVMEX_MANAGER_EXECUTABLE=${VMEX_MANAGER_EXECUTABLE}"
         "-DVMEX_CONFIG=$<CONFIG>"
         -P "${CMAKE_SOURCE_DIR}/cmake/Package.cmake"
-    VERBATIM)
-
-add_custom_target(package
-    COMMAND "${CMAKE_COMMAND}"
-        "-DVMEX_PACKAGE_DIR=${VMEX_PACKAGE_DIR}"
-        "-DVMEX_PACKAGE_NAME=${VMEX_PACKAGE_NAME}"
-        "-DVMEX_EXECUTABLE=$<TARGET_FILE:vmex>"
-        "-DVMEX_CLI_EXECUTABLE=$<TARGET_FILE:vmex_cli>"
-        "-DVMEX_CORE_DLL=$<TARGET_FILE:vmex_core>"
-        -P "${CMAKE_SOURCE_DIR}/cmake/Package.cmake"
-    DEPENDS vmex vmex_cli
+    DEPENDS vmex vmex_cli vmex_manager
     VERBATIM)

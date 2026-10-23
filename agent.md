@@ -8,6 +8,7 @@
 本仓库为 C++20 / CMake 工程，壳层与 Core 的对应关系固定如下：
 - 宿主壳层 `vmex.exe`：根目录 `Program.cpp`，无控制台常驻，只做进程生命周期编排。
 - CLI 壳层 `vmex_cli.exe`：根目录 `CliProgram.cpp` 与 `CliService.cpp`，只做参数解析与控制台 I/O。
+- 管理器壳层 `vmex_manager.exe`：`Manager/`，使用 C#、WPF 与 .NET Framework 4.8，只做界面与异步调用；主进程与自启入口不依赖管理器或 .NET。
 - UI 层 `vmex_tap`：注入载荷（`Components/inject.tap`），只做 XAML 页面渲染。
 - 注入入口 `vmex_launcher`：注入载荷（`Components/inject.launcher`），只做把 TAP 与诊断模块装进目标进程。
 - 业务逻辑单一存在于 `Core/`，被各壳层共用；禁止壳层与 Core 之间平行实现，禁止壳层先行实现。
@@ -23,6 +24,7 @@
 
 ### 5. 按需引入的母法规范
 - `github-workflows.md`：采用 `post_release.yml` 与 `promote_prerelease.yml`。
+- 发布实现按用户要求对齐 EGL：标签检出后先运行 CTest，再构建并验证 Release 包，上传成功后发布说明；失败退回草稿。无需将本地 output 压缩包提交进仓库。
 - `devrules.md`：用户配置存于 `HKCU\Software\EricSoft\VolumeMixerExtender`，缓存与日志根为 `%TEMP%\eric\VolumeMixerExtender`。
 
 ### 6. CLI 覆盖范围（补充母法第 6 条）

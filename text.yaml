@@ -41,6 +41,55 @@ cli.field.state: 状态
 cli.field.default: 默认
 cli.value.yes: 是
 cli.value.no: 否
+manager.title: VolumeMixerExtender
+manager.heading: VolumeMixerExtender
+manager.window.minimize: 最小化
+manager.window.maximize: 最大化或还原
+manager.window.close: 关闭
+manager.panel.ready: 音量面板已就绪
+manager.panel.preparing: 正在准备音量面板…
+manager.panel.stopped: 打开音量面板时将自动启动程序。
+manager.subtitle: 管理后台运行与偏好设置
+manager.autostart.hint: 登录 Windows 时自动运行。
+manager.cancel: 取消
+manager.done: 完成
+manager.runtime: 运行状态
+manager.loading: 正在读取运行状态…
+manager.start: 启动程序
+manager.stop: 退出程序
+manager.refresh: 刷新
+manager.panel: 打开音量面板
+manager.panel.pending: 面板尚未完成接管，请稍后重试。
+cmd.panel.summary: 启动后台程序并打开音量面板
+manager.settings: 设置
+manager.driver.hint: 下次打开音量面板时生效，无需重启程序。
+manager.maintenance: 维护
+manager.logs: 打开日志目录
+manager.project: 项目主页
+manager.uninstall: 卸载并清理
+manager.uninstall.hint: 清除自启、配置、缓存、应用重定向及音量偏好，保留程序文件。
+manager.ready: 关闭窗口后仍可使用音量面板。
+manager.working: 正在完成操作，请稍候…
+manager.failed: 操作未完成：{0}
+manager.unresponsive: 未能连接，请刷新重试
+manager.injection: 面板接管
+manager.injected: 已就绪
+manager.pending: 未接管或正在等待系统面板
+manager.stop.confirm: 将退出后台程序，系统声音面板可能短暂重启。开机启动与用户数据会保留。完成后管理器也会关闭。是否继续？
+manager.uninstall.confirm: 将退出程序并清除开机启动、本程序配置、日志及缓存，同时清除当前用户全部应用的音频设备重定向与保存的音量偏好，包括其他工具设置的偏好。应用音量将恢复为 100%，系统主音量和设备总音量不变。系统声音面板可能短暂重启。程序文件保留。是否继续卸载？
+manager.uninstall.done: 卸载完成，程序文件已保留，可手动删除解压目录。
+manager.missing: 找不到管理器，请重新解压完整程序包。音量面板仍可正常使用。
+log.management.result: 管理操作 {0}，结果 {1}，详情 {2}
+log.audio.preferences_reset: 清除应用音频偏好，结果 {0}，详情 {1}
+cmd.start.summary: 启动后台主程序，已经运行时不重复启动。
+cmd.stop.summary: 退出后台主程序并停止接管，保留自启与数据。
+cmd.manager.summary: 打开或激活 VolumeMixerExtender 窗口，并自动启动后台程序。
+cmd.logs.summary: 打开本程序日志目录。
+cmd.project.summary: 打开项目主页。
+cmd.uninstall.summary: 卸载并清除自启、配置、缓存、全部应用重定向和音量偏好，保留程序文件。
+cmd.uninstall.yes: 明确确认清除全部应用音频偏好和本程序数据。
+cmd.uninstall.confirm: 卸载会清除所有应用的重定向及音量偏好。请使用 uninstall --yes 明确确认。
+cmd.show-driver-name.summary: 查询或设置是否显示驱动名，可选 on 或 off，下次打开面板生效。
 audio.state.active: 活动
 audio.state.disabled: 已禁用
 audio.state.not-present: 不存在
@@ -60,7 +109,7 @@ skill.title: VolumeMixerExtender 接入文档
 skill.section.purpose: 用途
 skill.purpose.text: 通过命令行完整驱动快速设置音量面板的注入入口与自定义声音页面, 不依赖图形界面。
 skill.section.workflow: 工作流
-skill.workflow.text: 确认 ShellHost 就绪后执行 inject, 随后可查询状态并驱动音频端点与会话。
+skill.workflow.text: 使用 start 启动后台程序、status 查询状态、stop 退出；manager 打开独立管理器；show-driver-name 与 autostart 接受 on/off；clear-redirect 清除全部应用重定向与音量偏好；uninstall --yes 清除自启、配置、缓存及应用音频偏好并保留程序文件。host 仍可在当前终端常驻。
 skill.section.commands: 命令清单
 skill.section.exitcodes: 退出码
 skill.exitcode.text: 0 成功; 1 参数错误; 2 尚未实现; 3 运行失败
@@ -90,7 +139,7 @@ cmd.redirect.opt.flow: 数据流 render 或 capture
 cmd.redirect.opt.role: 只设置指定角色, 省略则设置全部角色
 cmd.default.summary: 设置系统默认端点
 cmd.redirect.summary: 设置逐应用端点重定向
-cmd.clear-redirect.summary: 清除全部逐应用重定向
+cmd.clear-redirect.summary: 清除当前用户全部应用重定向与保存的音量偏好，应用音量恢复为 100%，设备总音量不变
 cmd.autostart.summary: 查询或设置开机自启
 cmd.autostart.arg.state: on 注册自启, off 取消自启, 省略则只查询
 log.app.init: 应用初始化, 配置={0}
@@ -238,7 +287,7 @@ page.capture.caption: 输入设备（{0}）
 page.footer.github: GitHub
 page.footer.clearRedirect: 清除重定向
 page.footer.back: 返回
-page.footer.settings: 设置
+page.footer.settings: 打开管理器
 log.page.appsEmpty: 应用列表为空（端点 {0}）
 log.page.openUrlFailed: ShellExecuteW(open) 失败 code={0}
 log.page.mountPage: MountPage({0}={1}) 正文已重建，底栏已同步

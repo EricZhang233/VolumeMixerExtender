@@ -44,8 +44,8 @@
 *   🔊 **Default devices in one click**: output and input devices each get their own list — click a device row to make it the system default, with the current default highlighted in the accent colour.
 *   🎚️ **Endpoint and per-app volume**: device master volume, per-app volume and mute, and live level meters all live on one page, so there is no more digging through system settings.
 *   🔀 **Per-app output redirection**: send a single app to a specific output device — "game to the headset, player to the speakers"; a redirected app always shows where its audio goes.
-*   🧹 **Clear every redirection at once**: the left footer slot returns all apps to the default device, with the result visible immediately.
-*   🪟 **Three pages, one footer**: the custom page, the settings page and the system page share the same footer row and can be switched at any time, leaving the native page intact.
+*   🧹 **One-click clear**: the left footer slot returns all apps to the default device and clears saved application volume preferences, restoring them to 100%; endpoint volume stays unchanged.
+*   🪟 **Independent manager**: the footer gear opens a WPF manager; custom and system pages remain switchable, and the manager exits when closed.
 *   💻 **Command-line management**: `vmex_cli.exe` covers injection, status, endpoints, default devices, redirection and auto-start, with full documentation built into `-help` and `skill`.
 *   🚀 **Extract and run**: `vmex.exe` stays resident without a console, hooks in automatically and runs as a single instance — no window and no tray icon.
 
@@ -60,14 +60,14 @@
 | Item | Requirement |
 | :--- | :--- |
 | Operating system | Windows 11 26H2 (Build 26300) or later, x64 |
-| Runtime dependencies | None. Fully native, with no .NET or third-party runtime to install |
+| Runtime dependencies | No extra runtime for the host or CLI; the WPF manager uses Windows 11’s built-in .NET Framework 4.8 without bundling a runtime |
 | Administrator rights | Not required — everything runs per-user (only `HKCU` and your user folders are written) |
 | Installation | Not required — extract the archive and run |
 
 ### Three steps
 
 1. **Download**: grab the latest archive from [Releases](https://github.com/EricZhang233/VolumeMixerExtender/releases) and extract it anywhere (paths with spaces or non-ASCII characters are fine).
-2. **Run**: double-click `vmex.exe`. It has no console window; it stays resident in the background and hooks into the system shell automatically, showing one notification on startup and another once the hook is complete. To have it ready right after sign-in, turn on **Settings → Start with Windows** on the custom page.
+2. **Run**: double-click `vmex.exe`. It has no console window; it stays resident in the background and hooks into the system shell automatically, showing one notification on startup and another once the hook is complete. To have it ready right after sign-in, click the footer gear and turn on **Manager → Start with Windows**; you can also run `vmex_manager.exe` directly.
 3. **Use it**: press `Win+A` to open Quick Settings and pick the audio output entry — what you see is the custom page.
 
 > 💡 Prefer the command line? `vmex_cli.exe -help` lists every command, and `vmex_cli.exe skill` prints the integration document for scripts and AI agents.
@@ -103,16 +103,21 @@
 *   **Click the redirection bottom to expand**: choose a target output device from the drop-down; the first entry, "Default device", clears the redirect and follows the system default again.
 *   **The destination is always visible**: a redirected app shows a "→ endpoint" line under its name, so you can see at a glance which device it is currently using.
 *   **System sounds stay out**: the `System sounds` row offers no redirection.
-*   **One-click clear**: the left footer slot, "Clear redirection", returns every app to the default device and refreshes the page immediately.
+*   **One-click clear**: the left footer slot, "Clear redirection", returns all apps to the default device, clears the current user's saved application volume preferences and restores current application sessions to 100%. System master and endpoint volumes stay unchanged. Preferences set with other tools are also cleared.
+*   **Stereo levels**: two peak bars sit above and below the slider track, using a foreground colour that follows the light or dark theme independently of the accent-coloured track.
 
-### Settings page
+### Independent manager
+
+Click the footer gear or run `vmex_manager.exe` to open the WPF manager. The settings page has been removed from the audio panel. Opening the manager automatically starts the host and provides an Open audio panel button; closing it leaves no manager process or tray icon. The host and sign-in auto-start retain their original entry point and use Core directly. Opening it again activates the existing window.
 
 | Item | Description |
 | :--- | :--- |
 | **Start with Windows** | Registers or removes the sign-in auto-start. The switch reads the auto-start entry itself, so it also honestly shows "off" when Windows has disabled it under Task Manager → Startup |
-| **Show driver name** | Whether device names carry the driver suffix; on by default |
-| **Exit** | Ends the hook and quits the background host; the system shell restarts and the volume panel returns to its native state |
-| **Uninstall from system** | After five consecutive clicks (no more than 0.5 s apart) it deletes the auto-start entry and ends the shell process; it only falls back to native system behaviour and never deletes program files |
+| **Show driver name** | Whether device names carry the driver suffix; on by default, applied the next time the panel opens |
+| **Status and start** | Shows the background host and panel integration status; starts the host when stopped |
+| **Exit** | Ends panel integration and the background host, then closes the manager on success; keeps auto-start and user data |
+| **Open log folder** | Opens this program's log folder for troubleshooting |
+| **Uninstall and clean up** | After a standard confirmation dialog, stops integration and clears auto-start, configuration, logs, cache, all application redirections and volume preferences; keeps program files and leaves the window open with details if a step fails |
 
 ### Background host and notifications
 
@@ -135,7 +140,7 @@ vmex_cli.exe -help     # every command and argument
 vmex_cli.exe skill     # the integration document for scripts and AI agents
 ```
 
-This version can do the following from the command line: payload extraction, injection and status queries, the background host, endpoint enumeration (`devices`), default-device switching (`default`), per-app redirection and clearing it (`redirect` / `clear-redirect`) and sign-in auto-start (`autostart`). The full list and its arguments live in `-help`, which is updated together with the program.
+This version supports payload extraction, injection and status queries, the host (`start` / `stop` / `host`), the manager (`manager`), opening the panel (`panel`), logs (`logs`), the project page (`project`), driver-name display (`show-driver-name on|off`), endpoint enumeration (`devices`), default-device switching (`default`), application redirection and clearing (`redirect` / `clear-redirect`), auto-start (`autostart`) and uninstall cleanup (`uninstall --yes`). The full list and its arguments live in `-help`, which is updated together with the program.
 
 ---
 
@@ -143,13 +148,14 @@ This version can do the following from the command line: payload extraction, inj
 
 ## Architecture
 
-Every line of business logic in **VolumeMixerExtender** exists exactly once: both shells (the background host and the console) share a single Core, with no parallel implementations.
+Every line of business logic in **VolumeMixerExtender** exists exactly once: the host, CLI and WPF manager share a single Core. The manager renders the interface and does not run a resident service.
 
 ```mermaid
 flowchart TB
     subgraph Shell["Shells · no business logic"]
         HOST["vmex.exe<br/>console-less background host"]
         CLI["vmex_cli.exe<br/>argument parsing / output formatting"]
+        GUI["vmex_manager.exe<br/>WPF manager"]
     end
     subgraph Core["Core · the only business layer"]
         SVC["Injection and monitoring · audio devices and sessions<br/>endpoint policy · payload deployment<br/>auto-start · user settings · logging"]
@@ -159,12 +165,13 @@ flowchart TB
     end
     HOST --> SVC
     CLI --> SVC
+    GUI --> SVC
     SVC -->|deploy and hook| TAP
     TAP -->|page actions · named pipe| SVC
     SVC --> OS["Windows audio APIs · registry · Startup folder"]
 ```
 
-*   **Fully native**: C++20 + CMake with zero third-party libraries; the archive contains just `vmex.exe`, `vmex_cli.exe` and `vmex_core.dll`, while the injected payloads are embedded in the program and extracted on demand.
+*   **Implementation**: a C++20 Core and C# WPF manager, built through CMake; the archive contains `vmex.exe`, `vmex_cli.exe`, `vmex_manager.exe`, `vmex_core.dll`. The host and CLI do not depend on WPF; injected payloads are embedded and extracted on demand.
 *   **One Core**: the background host and the command line share the business layer, so features stay aligned and logging is unified.
 *   **The page is the payload**: the interface is rendered by a module injected into the system shell, following the system light/dark theme and accent colour — no extra window and no tray presence.
 *   **Actions go through a local pipe**: write operations from the page are handed to the host over a named pipe, so the page itself never holds system handles for long.
@@ -180,13 +187,13 @@ flowchart TB
 <details>
 <summary><b>Why is there a vmex.exe in Task Manager?</b></summary>
 
-It is the background host: it hooks into the system shell and makes the actions you take on the page actually happen. It has no window and no tray icon, and it uploads nothing. When you no longer need it, end it with **Settings → Exit** on the custom page.
+It is the background host: it hooks into the system shell and makes the actions you take on the page actually happen. It has no window and no tray icon, and it uploads nothing. When you no longer need it, click the footer gear and select **Manager → Exit**.
 </details>
 
 <details>
 <summary><b>How do I exit completely instead of staying in the background?</b></summary>
 
-Open **Settings** from the middle slot of the custom page footer and click "Exit": the hook is ended, the background host quits, the system shell restarts and the volume panel returns to its native state. The "Start with Windows" switch is unaffected — turn it off on the same page if you want it gone.
+Click the footer gear to open the manager, then select "Exit": panel integration ends, the host exits and the manager closes. If a payload is loaded, the system sound panel briefly restarts and returns to its native behaviour. Auto-start is preserved. Closing only the manager does not stop the host.
 </details>
 
 <details>
@@ -210,7 +217,7 @@ Per-app redirections and the system default devices are stored by Windows itself
 <details>
 <summary><b>How do I upgrade?</b></summary>
 
-Let it exit first (**Settings → Exit**), then overwrite the original folder with the files from the new archive and double-click `vmex.exe` again. The injected module lives inside the system shell process, so it cannot be replaced without restarting the shell — which is exactly why exiting first is required.
+Let it exit first (**Manager → Exit**), then overwrite the original folder with the files from the new archive, and double-click `vmex.exe` again. The injected module lives inside the system shell process, so panel integration must end before replacing it.
 </details>
 
 <details>
@@ -234,6 +241,20 @@ No. **Windows 11 26H2 (Build 26300)** or later is required; on older builds the 
 ---
 
 ## Contribution & Support
+
+### Build and self tests
+
+The build requires the Visual Studio C++ toolchain, Windows SDK, CMake, PowerShell 7 and .NET 10 SDK. The WPF manager targets .NET Framework 4.8, built into Windows 11. No .NET or Windows App SDK runtime is bundled.
+
+```powershell
+cmake --preset vs18-x64 -DBUILD_TESTING=ON
+cmake --build --preset debug
+ctest --test-dir obj/vs18-x64 -C Debug --output-on-failure
+```
+
+CTest verifies uninstall failure protection, partial audio reset failures, command parsing and real local pipes, configuration and resources. A separate WPF window smoke test checks real controls, light and dark themes, control templates and layout. Tests do not clear user audio preferences. Routing on real devices, saved volume after restarting applications and meter readability at different scale factors still require machine validation.
+
+Releases automatically check out the matching tag, run self tests, build and verify the package, then upload it before publishing the notes. Failures return the release to draft. Local `output` archives do not need committing. After 48 hours, prereleases are promoted only when the package exists, the matching release pipeline succeeded, and there are no `block-release` issues or `[no-release]` marker.
 
 We welcome contributions of any kind — bug reports, documentation improvements or code (PRs).
 

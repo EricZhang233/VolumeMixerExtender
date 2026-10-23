@@ -12,5 +12,4 @@ namespace vmex::uninstall
     };
 
     [[nodiscard]] Result TerminateShellHost(std::uint32_t processId);
-    [[nodiscard]] Result DisableAutostartAndTerminateShellHost(std::uint32_t processId);
 }

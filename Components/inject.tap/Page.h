@@ -1,6 +1,5 @@
 #pragma once
 
-#include "AutostartEntry.h"
 #include "AppIcons.h"
 #include "AudioDeviceManager.h"
 #include "AudioInterop.h"
@@ -23,6 +22,7 @@
 #include <winrt/Windows.UI.h>
 #include <winrt/Windows.UI.Core.h>
 #include <winrt/Windows.UI.Text.h>
+#include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Windows.UI.Xaml.h>
 #include <winrt/Windows.UI.Xaml.Automation.h>
 #include <winrt/Windows.UI.Xaml.Controls.h>
@@ -304,38 +304,6 @@ namespace vmex::tap::page
             static_cast<std::uint8_t>(color.B * 0.58f)));
     }
 
-    inline void ApplyDangerVisual(PGXC::Button const& button, bool armed)
-    {
-        const auto background = DangerBrush(armed ? 0x38 : 0x10);
-        const auto border = DangerBrush(armed ? 0xE6 : 0x73);
-
-        button.Background(background);
-        button.BorderBrush(border);
-
-        auto resources = button.Resources();
-        resources.Insert(winrt::box_value(L"ButtonBackgroundPointerOver"), background);
-        resources.Insert(winrt::box_value(L"ButtonBackgroundPressed"), border);
-        resources.Insert(winrt::box_value(L"ButtonBorderBrushPointerOver"), border);
-        resources.Insert(winrt::box_value(L"ButtonBorderBrushPressed"), border);
-    }
-
-    inline PGXC::Button DangerButton(winrt::hstring const& value)
-    {
-        PGXC::Button button;
-        button.Content(winrt::box_value(value));
-        button.FontSize(13);
-        button.MinHeight(40);
-        button.CornerRadius(PGX::CornerRadiusHelper::FromUniformRadius(5));
-        button.Foreground(DangerBrush(0xFF));
-        button.BorderThickness(PGX::ThicknessHelper::FromLengths(1, 1, 1, 1));
-        auto resources = button.Resources();
-        const auto text = DangerBrush(0xFF);
-        resources.Insert(winrt::box_value(L"ButtonForegroundPointerOver"), text);
-        resources.Insert(winrt::box_value(L"ButtonForegroundPressed"), text);
-
-        ApplyDangerVisual(button, false);
-        return button;
-    }
 
     [[nodiscard]] inline winrt::hstring MuteGlyph(bool muted)
     {
@@ -384,12 +352,25 @@ namespace vmex::tap::page
         PGXSH::Rectangle right{nullptr};
     };
 
+    inline PGXM::SolidColorBrush MeterBrush()
+    {
+        static thread_local winrt::Windows::UI::ViewManagement::UISettings ui;
+        static thread_local winrt::Windows::UI::ViewManagement::AccessibilitySettings accessibility;
+        const auto color = accessibility.HighContrast() ?
+            ui.UIElementColor(winrt::Windows::UI::ViewManagement::UIElementType::Hotlight) :
+            ui.GetColorValue(winrt::Windows::UI::ViewManagement::UIColorType::Foreground);
+        static thread_local PGXM::SolidColorBrush brush(color);
+        if (brush.Color() != color) brush.Color(color);
+        return brush;
+    }
+
     inline StereoMeter MakeStereoMeter()
     {
         StereoMeter meter;
         meter.layer = PGXC::Grid();
         meter.layer.Width(150);
         meter.layer.Height(32);
+        meter.layer.UseLayoutRounding(true);
 
         meter.left = PGXSH::Rectangle();
         meter.right = PGXSH::Rectangle();
@@ -401,7 +382,7 @@ namespace vmex::tap::page
             bar.HorizontalAlignment(PGX::HorizontalAlignment::Left);
             bar.VerticalAlignment(PGX::VerticalAlignment::Center);
         }
-        const auto accent = AccentBrush();
+        const auto accent = MeterBrush();
         meter.left.Fill(accent);
         meter.right.Fill(accent);
         meter.left.Margin(PGX::ThicknessHelper::FromLengths(0, -2, 0, 0));
@@ -413,6 +394,9 @@ namespace vmex::tap::page
                                   float leftPeak, float rightPeak)
     {
         const double trackWidth = std::max(0.0, slider.ActualWidth() - 12.0);
+        const auto brush = MeterBrush();
+        meter.left.Fill(brush);
+        meter.right.Fill(brush);
         const double volume = std::clamp(slider.Value() / 100.0, 0.0, 1.0);
         meter.left.Width(trackWidth * std::clamp(static_cast<double>(leftPeak), 0.0, 1.0) * volume);
         meter.right.Width(trackWidth * std::clamp(static_cast<double>(rightPeak), 0.0, 1.0) * volume);
@@ -1156,21 +1140,8 @@ namespace vmex::tap::page
 
     inline void SendClearRedirects() { SendOrLog("CLEARREDIRECT\n", L"CLEARREDIRECT"); }
 
-    inline void SendUninstall() { SendOrLog("UNINSTALL\n", L"UNINSTALL"); }
-    inline void SendExit() { SendOrLog("EXIT\n", L"EXIT"); }
-
-    inline void OpenUrl(const std::wstring& url)
-    {
-        const auto result = reinterpret_cast<INT_PTR>(::ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
-        if (result <= 32)
-        {
-            LogKey(L"log.page.openUrlFailed", { std::to_wstring(static_cast<long long>(result)) });
-        }
-    }
 
     inline PGXC::StackPanel BuildCustomPage(ContextPtr const& context);
-
-    inline PGXC::StackPanel BuildSettingsPage(ContextPtr const& context);
 
     inline void MountFooter(ContextPtr const& context, int attempt);
 
@@ -1184,20 +1155,20 @@ namespace vmex::tap::page
         if (!context->slotLeft) return;
 
         const bool custom = (Settings().page == 0);
-        const bool settings = (Settings().page == 1);
-
-        const PGX::Visibility twoSlots = (custom || settings) ? PGX::Visibility::Visible : PGX::Visibility::Collapsed;
+        const PGX::Visibility twoSlots = custom ? PGX::Visibility::Visible : PGX::Visibility::Collapsed;
         context->slotLeft.Visibility(twoSlots);
         context->slotMid.Visibility(twoSlots);
         if (context->systemItem)
         {
-            context->systemItem.Visibility((custom || settings) ? PGX::Visibility::Collapsed : PGX::Visibility::Visible);
+            context->systemItem.Visibility(custom ? PGX::Visibility::Collapsed : PGX::Visibility::Visible);
         }
 
-        context->slotLeft.Content(winrt::box_value(winrt::hstring(text::Embedded().Resolve(
-            settings ? L"page.footer.github" : L"page.footer.clearRedirect"))));
-        context->slotMid.Content(winrt::box_value(winrt::hstring(text::Embedded().Resolve(
-            settings ? L"page.footer.back" : L"page.footer.settings"))));
+        context->slotLeft.Content(winrt::box_value(winrt::hstring(text::Embedded().Resolve(L"page.footer.clearRedirect"))));
+        const auto settingsGlyph = Glyph(L"\xE713", 16);
+        settingsGlyph.Margin(PGX::ThicknessHelper::FromUniformLength(0));
+        context->slotMid.Content(settingsGlyph);
+        PGXC::ToolTipService::SetToolTip(context->slotMid, winrt::box_value(winrt::hstring(text::Embedded().Resolve(L"page.footer.settings"))));
+        PGX::Automation::AutomationProperties::SetName(context->slotMid, winrt::hstring(text::Embedded().Resolve(L"page.footer.settings")));
         context->slotRight.Content(winrt::box_value(custom ? L"SystemMixer" : L"MixerExtender"));
         context->slotRight.Visibility(PGX::Visibility::Visible);
     }
@@ -1228,11 +1199,6 @@ namespace vmex::tap::page
             LoadData(context);
             context->list.Content(BuildCustomPage(context));
         }
-        else if (page == 1)
-        {
-            name = text::Embedded().Resolve(L"log.page.name.settings");
-            context->list.Content(BuildSettingsPage(context));
-        }
         else
         {
             context->list.Content(context->savedContent);
@@ -1251,11 +1217,7 @@ namespace vmex::tap::page
         ContextPtr weakContext = context;
         context->slotLeft.Click([weakContext](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
         {
-            if (Settings().page == 1)
-            {
-                OpenUrl(L"https://github.com/EricZhang233/VolumeMixerExtender");
-            }
-            else if (Settings().page == 0)
+            if (Settings().page == 0)
             {
                 SendClearRedirects();
                 weakContext->redirects.clear();
@@ -1265,8 +1227,7 @@ namespace vmex::tap::page
         });
         context->slotMid.Click([weakContext](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
         {
-            if (Settings().page == 0) MountPage(weakContext, 1);
-            else if (Settings().page == 1) MountPage(weakContext, 0);
+            if (Settings().page == 0) SendOrLog("MANAGER\n", L"MANAGER");
         });
         context->slotRight.Click([weakContext](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
         {
@@ -1301,6 +1262,7 @@ namespace vmex::tap::page
 
     inline void LoadData(ContextPtr const& context)
     {
+        Settings().showDriverName = settings::ReadBool(settings::kShowDriverName, true);
         PageData& data = *context->data;
         if (!context->manager) return;
 
@@ -1823,134 +1785,4 @@ namespace vmex::tap::page
         return root;
     }
 
-    inline PGXC::StackPanel BuildSettingsPage(ContextPtr const& context)
-    {
-        PGXC::StackPanel root;
-        root.Padding(PGX::ThicknessHelper::FromLengths(kBodyInset, 0, kBodyInset, 0));
-        root.Children().Append(SectionLabel(winrt::hstring(text::Embedded().Resolve(L"page.section.general"))));
-
-        {
-            PGXC::Grid row = Row(44);
-            PGXC::StackPanel block = NameBlock(text::Embedded().Resolve(L"page.toggle.autostart"), std::wstring());
-            PGXC::Grid::SetColumn(block, 1);
-            row.Children().Append(block);
-
-            PGXC::ToggleSwitch toggle;
-            toggle.OnContent(nullptr);
-            toggle.OffContent(nullptr);
-            toggle.MinWidth(0);
-            toggle.IsOn(autostart::AutostartEntry::IsEnabled());
-            toggle.HorizontalAlignment(PGX::HorizontalAlignment::Right);
-            toggle.VerticalAlignment(PGX::VerticalAlignment::Center);
-            PGXC::Grid::SetColumn(toggle, 2);
-            row.Children().Append(toggle);
-
-            auto busy = std::make_shared<bool>(false);
-            toggle.Toggled([toggle, busy](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
-            {
-                if (*busy) return;
-                *busy = true;
-
-                const bool wanted = toggle.IsOn();
-                SendOrLog(wanted ? "AUTOSTART on\n" : "AUTOSTART off\n", L"AUTOSTART");
-
-                bool actual = autostart::AutostartEntry::IsEnabled();
-                for (int attempt = 0; attempt < 20 && actual != wanted; ++attempt)
-                {
-                    ::Sleep(50);
-                    actual = autostart::AutostartEntry::IsEnabled();
-                }
-                if (toggle.IsOn() != actual) toggle.IsOn(actual);
-
-                LogKey(L"log.page.autostart", {
-                    wanted ? text::Embedded().Resolve(L"log.page.autostart.enable")
-                           : text::Embedded().Resolve(L"log.page.autostart.remove"),
-                    actual ? text::Embedded().Resolve(L"log.page.autostart.enabled")
-                           : text::Embedded().Resolve(L"log.page.autostart.missing") });
-                *busy = false;
-            });
-            root.Children().Append(row);
-        }
-
-        {
-            PGXC::Grid row = Row(44);
-            PGXC::StackPanel block = NameBlock(text::Embedded().Resolve(L"page.toggle.showDriverName"), std::wstring());
-            PGXC::Grid::SetColumn(block, 1);
-            row.Children().Append(block);
-
-            PGXC::ToggleSwitch toggle;
-            toggle.OnContent(nullptr);
-            toggle.OffContent(nullptr);
-            toggle.MinWidth(0);
-            toggle.IsOn(Settings().showDriverName);
-            toggle.HorizontalAlignment(PGX::HorizontalAlignment::Right);
-            toggle.VerticalAlignment(PGX::VerticalAlignment::Center);
-            PGXC::Grid::SetColumn(toggle, 2);
-            row.Children().Append(toggle);
-
-            ContextPtr weakContext = context;
-            toggle.Toggled([weakContext, toggle](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
-            {
-                Settings().showDriverName = toggle.IsOn();
-                settings::WriteBool(settings::kShowDriverName, Settings().showDriverName);
-                LogKey(L"log.page.showDriverName", { Settings().showDriverName ? L"1" : L"0" });
-
-                MountPage(weakContext, Settings().page);
-            });
-            root.Children().Append(row);
-        }
-
-        PGXC::Grid spacer;
-        spacer.Height(24);
-        root.Children().Append(spacer);
-
-        PGXC::Button exit = DangerButton(winrt::hstring(text::Embedded().Resolve(L"page.button.exit")));
-        exit.HorizontalAlignment(PGX::HorizontalAlignment::Stretch);
-        exit.Click([exit](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
-        {
-            exit.IsEnabled(false);
-            exit.Content(winrt::box_value(winrt::hstring(text::Embedded().Resolve(L"page.button.exiting"))));
-            SendExit();
-        });
-        root.Children().Append(exit);
-
-        PGXC::Button danger = DangerButton(winrt::hstring(text::Embedded().Resolve(L"page.button.uninstall")));
-        danger.HorizontalAlignment(PGX::HorizontalAlignment::Stretch);
-
-        auto hits = std::make_shared<int>(0);
-        auto timer = std::make_shared<PGX::DispatcherTimer>();
-        timer->Interval(std::chrono::milliseconds(500));
-        timer->Tick([hits, timer, danger](PGF::IInspectable const&, PGF::IInspectable const&)
-        {
-            timer->Stop();
-            *hits = 0;
-            danger.Content(winrt::box_value(winrt::hstring(text::Embedded().Resolve(L"page.button.uninstall"))));
-            ApplyDangerVisual(danger, false);
-        });
-
-        danger.Click([hits, timer, danger](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
-        {
-            ++(*hits);
-            if (*hits >= 5)
-            {
-                timer->Stop();
-                *hits = 0;
-                danger.IsEnabled(false);
-                danger.Content(winrt::box_value(winrt::hstring(text::Embedded().Resolve(L"page.button.uninstalling"))));
-                ApplyDangerVisual(danger, false);
-                SendUninstall();
-                return;
-            }
-
-            danger.Content(winrt::box_value(winrt::hstring(text::Embedded().ResolveFormat(
-                L"page.button.uninstallCount", { std::to_wstring(5 - *hits) }))));
-
-            ApplyDangerVisual(danger, true);
-
-            timer->Stop();
-            timer->Start();
-        });
-        root.Children().Append(danger);
-        return root;
-    }
 }

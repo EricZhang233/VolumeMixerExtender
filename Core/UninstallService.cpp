@@ -1,7 +1,5 @@
 #include "UninstallService.h"
 
-#include "AutostartEntry.h"
-
 #include <windows.h>
 #include <cwchar>
 
@@ -14,7 +12,7 @@ namespace vmex::uninstall
             return { false, L"shellhost-pid-missing" };
         }
 
-        const HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+        const HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
                                              FALSE, processId);
         if (!process)
         {
@@ -35,7 +33,8 @@ namespace vmex::uninstall
             return { false, L"target-is-not-shellhost" };
         }
 
-        const bool terminated = ::TerminateProcess(process, 0) != FALSE;
+        const bool terminated = ::TerminateProcess(process, 0) != FALSE &&
+            ::WaitForSingleObject(process, 5000) == WAIT_OBJECT_0;
         const DWORD error = terminated ? ERROR_SUCCESS : ::GetLastError();
         ::CloseHandle(process);
         if (!terminated)
@@ -46,14 +45,4 @@ namespace vmex::uninstall
         return { true, {} };
     }
 
-    Result DisableAutostartAndTerminateShellHost(std::uint32_t processId)
-    {
-        std::wstring error;
-        if (!autostart::AutostartEntry::Disable(error))
-        {
-            return { false, L"autostart-disable-failed:" + error };
-        }
-
-        return TerminateShellHost(processId);
-    }
 }
