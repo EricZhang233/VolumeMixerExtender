@@ -23,7 +23,7 @@ namespace vmex::recording
         virtual Status SelectVirtualDevice() = 0;
         virtual Status RestoreDefaults() = 0;
         virtual void StopMirror() noexcept = 0;
-        virtual void DisconnectVirtualDevice() noexcept = 0;
+        virtual Status DisconnectVirtualDevice() = 0;
         virtual Status ChangeMonitor(std::wstring_view monitorDevice) = 0;
         virtual Status MirrorState() const { return Status::Ok(); }
     };
@@ -42,6 +42,8 @@ namespace vmex::recording
         [[nodiscard]] Snapshot State() const;
 
     private:
+        Status Cleanup();
+        Status Rollback(Status failure);
         IBackend& m_backend;
         Snapshot m_state;
         mutable std::recursive_mutex m_mutex;

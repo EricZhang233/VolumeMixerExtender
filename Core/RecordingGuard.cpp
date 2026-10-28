@@ -1,0 +1,162 @@
+#include "RecordingGuard.h"
+
+#include "AudioInterop.h"
+#include "AudioRoutingCleanup.h"
+#include "Platform.h"
+#include "Strings.h"
+#include "RecordingDriverService.h"
+
+namespace vmex::recording
+{
+    Status RecoverAfterHostExit(IRecoveryActions& actions)
+    {
+        Status result;
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            try
+            {
+                result = actions.RestoreDefaults();
+                if (result) result = actions.ClearRedirects();
+                if (result) result = actions.DisableEndpoint();
+            }
+            catch (...) { result = Status::Failed(L"recording-recovery-exception"); }
+            if (result) break;
+            if (attempt < 2) ::Sleep(250);
+        }
+        return result;
+    }
+
+    Guard::~Guard() { Stop(); }
+
+    Status Guard::Start(const std::array<std::wstring, 2>& defaults, std::wstring_view endpoint)
+    {
+        Stop();
+        SECURITY_ATTRIBUTES attributes{ sizeof(attributes), nullptr, TRUE };
+        stop = ::CreateEventW(&attributes, TRUE, FALSE, nullptr);
+        HANDLE ready = ::CreateEventW(&attributes, TRUE, FALSE, nullptr);
+        HANDLE parent = nullptr;
+        const bool duplicated = ::DuplicateHandle(::GetCurrentProcess(), ::GetCurrentProcess(), ::GetCurrentProcess(),
+            &parent, SYNCHRONIZE, TRUE, 0) != FALSE;
+        if (!stop || !ready || !duplicated)
+        {
+            if (ready) ::CloseHandle(ready);
+            if (parent) ::CloseHandle(parent);
+            Stop();
+            return Status::Failed(L"recording-guard-handles");
+        }
+        const auto executable = platform::GetExecutableDirectory() / L"vmex_cli.exe";
+        std::wstring command = L"\"" + executable.wstring() + L"\" --recording-guard " +
+            std::to_wstring(reinterpret_cast<std::uintptr_t>(parent)) + L" " +
+            std::to_wstring(reinterpret_cast<std::uintptr_t>(stop)) + L" " +
+            std::to_wstring(reinterpret_cast<std::uintptr_t>(ready));
+        for (const auto& value : { defaults[0], defaults[1], std::wstring(endpoint) })
+        {
+            if (value.empty() || value.find_first_of(L"\"\r\n") != std::wstring::npos)
+            {
+                ::CloseHandle(parent); ::CloseHandle(ready); Stop();
+                return Status::InvalidArguments(L"recording-guard-endpoint");
+            }
+            command += L" \"" + value + L"\"";
+        }
+        SIZE_T bytes = 0;
+        ::InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+        std::vector<std::byte> storage(bytes);
+        auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+        HANDLE handles[]{ parent, stop, ready };
+        bool initialized = ::InitializeProcThreadAttributeList(list, 1, 0, &bytes) != FALSE;
+        bool valid = initialized && ::UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            handles, sizeof(handles), nullptr, nullptr);
+        STARTUPINFOEXW startup{};
+        startup.StartupInfo.cb = sizeof(startup);
+        startup.lpAttributeList = list;
+        PROCESS_INFORMATION child{};
+        if (valid) valid = ::CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
+            CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup.StartupInfo, &child) != FALSE;
+        if (initialized) ::DeleteProcThreadAttributeList(list);
+        ::CloseHandle(parent);
+        if (valid)
+        {
+            process = child.hProcess;
+            ::CloseHandle(child.hThread);
+            HANDLE waits[]{ ready, process };
+            valid = ::WaitForMultipleObjects(2, waits, FALSE, 5000) == WAIT_OBJECT_0 && Running();
+        }
+        ::CloseHandle(ready);
+        if (!valid) { Stop(); return Status::Failed(L"recording-guard-start"); }
+        return Status::Ok();
+    }
+
+    void Guard::Stop() noexcept
+    {
+        if (stop) ::SetEvent(stop);
+        if (process) { ::WaitForSingleObject(process, 5000); ::CloseHandle(process); process = nullptr; }
+        if (stop) { ::CloseHandle(stop); stop = nullptr; }
+    }
+
+    bool Guard::Running() const { return process && ::WaitForSingleObject(process, 0) == WAIT_TIMEOUT; }
+
+    void Guard::Abandon() noexcept
+    {
+        if (process) { ::CloseHandle(process); process = nullptr; }
+        if (stop) { ::CloseHandle(stop); stop = nullptr; }
+    }
+
+    int RunGuard(const std::vector<std::wstring>& arguments)
+    {
+        if (arguments.size() != 7) return kCodeInvalidArguments;
+        std::array<HANDLE, 3> handles{};
+        for (size_t i = 0; i < handles.size(); ++i)
+        {
+            std::int64_t value = 0;
+            if (!strings::TryParseInt(arguments[i + 1], value) || value <= 0) return kCodeInvalidArguments;
+            handles[i] = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(value));
+            DWORD flags = 0;
+            if (!::GetHandleInformation(handles[i], &flags)) return kCodeInvalidArguments;
+        }
+        const auto com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        if (FAILED(com)) return kCodeFailed;
+        text::AttachEmbeddedToLogger();
+        log::Logger::Instance().AddSink(log::CreateFileSink(log::SessionLogFile(L"recording-guard")));
+        ::SetEvent(handles[2]);
+        const auto wait = ::WaitForMultipleObjects(2, handles.data(), FALSE, INFINITE);
+        Status result;
+        if (wait == WAIT_OBJECT_0)
+        {
+            struct Recovery final : IRecoveryActions
+            {
+                const std::vector<std::wstring>& arguments;
+                explicit Recovery(const std::vector<std::wstring>& values) : arguments(values) {}
+                Status RestoreDefaults() override
+                {
+                    Status restored;
+                    for (int i = 0; i < 2; ++i)
+                    {
+                        auto enumerator = audio::detail::MakeEnumerator();
+                        audio::detail::Ptr<IMMDevice> current;
+                        if (!enumerator || FAILED(enumerator->GetDefaultAudioEndpoint(eRender, static_cast<ERole>(i), current.put())))
+                        {
+                            restored = Status::Failed(L"recording-guard-default-query");
+                            continue;
+                        }
+                        LPWSTR id = nullptr;
+                        if (FAILED(current->GetId(&id))) { restored = Status::Failed(L"recording-guard-default-id"); continue; }
+                        if (audio::detail::TakeDeviceId(id) != arguments[6]) continue;
+                        const auto result = audio::detail::SetSystemDefaultEndpointForRoleResult(arguments[i + 4], static_cast<ERole>(i));
+                        if (FAILED(result)) restored = Status::FromHResult(L"recording-guard-restore", result);
+                    }
+                    return restored;
+                }
+                Status ClearRedirects() override { return ClearVirtualRedirects(arguments[6]); }
+                Status DisableEndpoint() override { return SetRecordingEndpointEnabled(arguments[6], false); }
+            } recovery(arguments);
+            result = RecoverAfterHostExit(recovery);
+            log::Logger::Instance().WriteKeyFormat(result ? log::Level::Info : log::Level::Error,
+                L"recording", L"log.recording.result", { L"guard-recover", std::to_wstring(result.code), result.detail });
+        }
+        else if (wait != WAIT_OBJECT_0 + 1) result = Status::Failed(L"recording-guard-wait");
+        for (const auto handle : handles) ::CloseHandle(handle);
+        log::Logger::Instance().Flush();
+        ::CoUninitialize();
+        return result.code;
+    }
+}

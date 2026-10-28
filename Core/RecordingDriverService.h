@@ -13,7 +13,11 @@ namespace vmex::recording
     };
 
     DriverState QueryDriver();
+    Status QueryRecordingReadiness(std::wstring_view monitorDevice = {});
+    Status SetRecordingEndpointEnabled(std::wstring_view id, bool enabled);
     Status ValidateDriverPackage(const std::filesystem::path& directory, bool& testSigned);
+    Status DisableCableEndpoints();
+    Status RestoreCableEndpoints();
     Status InstallDriver();
     Status UninstallDriver();
 }

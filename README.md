@@ -108,9 +108,17 @@
 
 ### 独立管理器
 
-录制模式位于输出设备列表末行，通过原生开关启用。开启后默认输出切到虚拟设备 V，实体设备 R 用于监听；逐应用混音区直接控制 V，应用音量和静音同时影响录制与监听，R 的总音量只影响监听。V 不出现在顶部设备列表中，开启录制时可在应用重定向菜单中选择。
+录制模式位于输出设备列表末行，通过原生开关启用。开启后默认输出切到 VB-CABLE 的 CABLE Input（V），开启前的默认设备成为监听 R；逐应用混音区直接控制 V，应用音量和静音同时影响录制与监听，R 的总音量只影响监听。V 始终不出现在主设备列表中，仅开启录制时可在应用重定向菜单中选择。关闭时恢复开启前记住的默认设备，并将所有单独重定向到 V 的应用恢复为跟随默认，保留指向其他设备的重定向与应用音量。录制状态不持久化；录制期间使用独立保护进程，在宿主崩溃或被结束时尝试恢复默认设备并清理 V 重定向。
 
-录制模式需要安装随包 `Driver/` 目录中的虚拟音频驱动。管理器提供安装与卸载按钮，并完成签名校验与证书导入，操作需要管理员权限；首次安装请按界面提示完成系统准备。驱动的实体机音频验收尚未完成。
+录制模式使用随包 `Driver/VBCABLE/` 中的 VB-Audio 官方 VB-CABLE 标准版，只保留 Windows 11 x64 所需的原版文件。管理器验证原版安装器及微软签名后打开官方安装窗口，请在其中点击 Install Driver 或 Remove Driver，操作需要管理员权限，完成后重启 Windows。无需测试签名或导入自签证书。后台宿主启动及安装完成后将三个虚拟端点全部置于禁用待机状态；开启录制仅临时启用 `CABLE Input`，`CABLE In 16 Ch` 和 `CABLE Output` 保持禁用。关闭录制先恢复默认设备及应用路由、停止监听，再禁用 `CABLE Input`；失败保留待清理状态供重试，宿主崩溃时保护进程也会尝试恢复和禁用。录制软件从默认输出（`CABLE Input`）的桌面音频或回环采集系统声，麦克风使用实体端点。VB-CABLE 是共享设备，这些启停操作也会影响使用它的其他程序；本程序不修改驱动。目标 Windows 11 26H2 的实体机音频验收尚未完成。
+
+录制模式开关按配置完整性显示：驱动已安装并正常启动、CABLE Input 存在且硬件归属已确认、实体监听输出可用即可显示。Windows 枚举包含已禁用端点，CABLE Input 的待机禁用不影响开关显示；实际虚拟音频流在启用端点后创建，失败自动回滚。未安装或配置未就绪时整行隐藏；面板打开时及打开期间异步复查。安装、修复与诊断仍可通过管理器和 CLI 进行。`driver hide` 先退出录制再将三个端点禁用，`driver show` 先退出录制再恢复本程序有记录的禁用操作，用于手动诊断。
+
+端点操作只处理已确认硬件归属的标准 VB-CABLE，无法确认时跳过并记录原因。`driver show` 仅恢复本程序有记录的隐藏操作，保留用户原本禁用的端点；记录存于用户配置下的 `HiddenCableEndpoints`，跨程序重启保留。安装器取消、操作未生效或失败时恢复操作前的端点状态；本程序卸载清理配置前也会先恢复自身隐藏的端点，恢复失败则保留记录供重试。旧版本未记录归属的隐藏状态需要通过 Windows 声音设置手动恢复。
+
+管理器、CLI 和录制请求统一只连接当前会话中同一程序目录下的宿主；移动或复制程序目录后，请先退出旧目录中的宿主再启动新目录中的程序。
+
+管理器标题栏关闭按钮左侧的“关于”图标展示当前版本、开发者、项目主页与第三方引用信息，并提供 VB-CABLE 来源、许可及捐款/购买入口。VB-CABLE 是 Donationware，欢迎支持作者；专业使用与企业或组织分发须遵守 [VB-Audio 官方许可条款](https://vb-audio.com/Services/licensing.htm)，其许可独立于本项目的 GPL。
 
 点面板底栏齿轮，或运行 `vmex_manager.exe` 打开 WPF 管理器。设置页已从音量面板移除。管理器打开时会自动启动后台程序，可点击「打开音量面板」直接进入声音页，关闭后不留托盘或后台管理器进程；主进程与登录自启保持原入口，直接使用 Core。重复打开会激活已有窗口。
 
@@ -121,7 +129,8 @@
 | **运行状态与启动** | 查询后台进程与面板接管状态；未运行时可启动程序 |
 | **退出程序** | 结束接管并退出后台进程，成功后管理器也关闭；保留自启与数据 |
 | **注册到开始菜单** | 在系统开始菜单创建管理器快捷方式，已存在则覆盖 |
-| **录制模式驱动** | 查询驱动状态，安装或卸载虚拟音频驱动；卸载前退出录制模式 |
+| **录制模式驱动** | 查询 VB-CABLE 状态并打开官方安装器或卸载器；操作前退出录制模式 |
+| **关于** | 标题栏图标打开版本、开发者与第三方组件来源、许可及支持入口 |
 | **打开日志目录** | 打开本程序日志目录，方便排查问题 |
 | **卸载并清理** | 普通确认框确认后停止接管，清除自启、配置、日志、缓存、全部应用重定向和音量偏好，保留程序文件；失败保留窗口与详情供重试 |
 
@@ -145,7 +154,7 @@ vmex_cli.exe -help     # 完整命令与参数说明
 vmex_cli.exe skill     # 面向脚本与 AI Agent 的接入文档
 ```
 
-当前版本可以在命令行完成：注入与状态查询、后台进程（`start` / `stop` / `host`）、管理器（`manager`）、打开面板（`panel`）、日志目录（`logs`）、项目主页（`project`）、驱动名显示（`show-driver-name on|off`）、端点枚举（`devices`）、默认设备切换（`default`）、逐应用重定向与清除（`redirect` / `clear-redirect`）、开机自启（`autostart`）及卸载清理（`uninstall --yes`）。完整清单与参数以 `-help` 为准，它随程序一起更新。
+当前版本可以在命令行完成：注入与状态查询、后台进程（`start` / `stop` / `host`）、管理器（`manager`）、打开面板（`panel`）、日志目录（`logs`）、项目主页（`project`）、驱动名显示（`show-driver-name on|off`）、端点枚举（`devices`）、默认设备切换（`default`）、逐应用重定向与清除（`redirect` / `clear-redirect`）、录制模式（`recording`）、驱动管理（`driver`，含隐藏或恢复多余端点）、开机自启（`autostart`）及卸载清理（`uninstall --yes`）。完整清单与参数以 `-help` 为准，它随程序一起更新。
 
 ---
 
@@ -249,7 +258,7 @@ flowchart TB
 
 ### 构建与自测
 
-需要 Visual Studio C++ 工具链、Windows SDK、CMake、PowerShell 7 与 .NET 10 SDK。首次构建会下载固定版本的 SDK/WDK 与 Microsoft SYSVAD 作为驱动构建依赖，缓存于 obj/driver-deps。管理器编译为 .NET Framework 4.8，使用 Windows 11 自带的运行时，发布不携带 .NET 或 Windows App SDK。
+需要 Visual Studio C++ 工具链、Windows SDK、CMake、PowerShell 7 与 .NET 10 SDK。首次构建下载固定 SHA-256 的 VB-CABLE 官方 Pack45，缓存于 obj/driver-deps/vbcable，只把 Windows 11 x64 所需的原版文件解压到产物的 Driver/VBCABLE；不再构建或分发自研测试驱动。管理器编译为 .NET Framework 4.8，使用 Windows 11 自带的运行时，发布不携带 .NET 或 Windows App SDK。`vmex_cli.exe about` 显示与管理器相同的关于信息，`recording` 和 `driver` 的完整用法见 `-help` 与 `skill`。
 
 ```powershell
 cmake --preset vs18-x64 -DBUILD_TESTING=ON
@@ -273,6 +282,7 @@ CTest 验证卸载中途失败的保护行为、音频重置部分失败的结�
 ## 特别致谢
 
 *   [**EarTrumpet**](https://github.com/File-New-Project/EarTrumpet)：逐应用音量与输出端点的概念与交互参考。本项目在这一方向上重写了会话枚举策略——每次使用都重新枚举、不跨时间缓存失效的枚举器，以避免「应用列表丢失后永久空白」那一类经典问题。
+*   [**VB-CABLE / VB-Audio Software**](https://www.vb-cable.com/)：录制模式使用其官方标准版虚拟音频驱动，随包分发 Windows 11 x64 所需的原版文件；VB-CABLE 是 Donationware，欢迎捐款或购买许可，使用与分发须遵守其 [独立许可条款](https://vb-audio.com/Services/licensing.htm)。
 *   [**Windows App SDK / XAML 诊断接口**](https://learn.microsoft.com/windows/apps/)：本项目的接管能力建立在系统自带的 XAML 诊断与可视化树接口之上。
 
 ---

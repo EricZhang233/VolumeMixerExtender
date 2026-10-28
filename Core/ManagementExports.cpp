@@ -2,6 +2,7 @@
 #include "ManagementService.h"
 #include "TextService.h"
 #include "RecordingDriverService.h"
+#include "AboutService.h"
 #include <windows.h>
 #include <objbase.h>
 #include <algorithm>
@@ -42,6 +43,12 @@ extern "C" __declspec(dllexport) void VmexManagerText(const wchar_t* key, wchar_
     catch (...) { Copy(L"", buffer, capacity); }
 }
 
+extern "C" __declspec(dllexport) void VmexManagerAbout(wchar_t* buffer, int capacity) noexcept
+{
+    try { Copy(vmex::about::Information(), buffer, capacity); }
+    catch (...) { Copy(L"", buffer, capacity); }
+}
+
 extern "C" __declspec(dllexport) int VmexManagerQuery(int* values, int count) noexcept
 {
     if (!values || count != 6) return vmex::kCodeInvalidArguments;
@@ -61,7 +68,6 @@ extern "C" __declspec(dllexport) int VmexManagerQuery(int* values, int count) no
     }
     catch (...) { return vmex::kCodeFailed; }
 }
-
 extern "C" __declspec(dllexport) int VmexManagerExecute(int action, int value, wchar_t* error, int capacity) noexcept
 {
     const HRESULT com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);

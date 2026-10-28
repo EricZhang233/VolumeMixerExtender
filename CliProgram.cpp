@@ -2,6 +2,7 @@
 #include "CliService.h"
 #include "Runtime.h"
 #include "TextService.h"
+#include "RecordingGuard.h"
 
 #include <string>
 #include <vector>
@@ -13,6 +14,8 @@ namespace
 int wmain(int argc, wchar_t** argv)
 {
     const auto arguments = vmex::runtime::CollectArguments(argc, argv);
+    if (!arguments.empty() && arguments.front() == L"--recording-guard")
+        return vmex::recording::RunGuard(arguments);
     auto& app = vmex::App::Instance();
     const auto status = app.Initialize(vmex::runtime::BuildOptions(arguments));
     if (!status.IsOk())

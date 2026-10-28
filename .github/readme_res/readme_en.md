@@ -108,9 +108,17 @@
 
 ### Independent manager
 
-Recording mode appears as the last row in the output-device list, with a native toggle. It switches the default output to virtual device V and mirrors audio to physical monitor R. The application mixer controls V directly, so application volume and mute affect both recording and monitoring; R's master volume only affects monitoring. V is hidden from the top device list and becomes available in application routing menus while recording mode is enabled.
+Recording mode appears as the last row in the output-device list, with a native toggle. It switches the default output to VB-CABLE's CABLE Input (V), using the previous default device as monitor R. The application mixer controls V directly, so application volume and mute affect both recording and monitoring; R's master volume only affects monitoring. V is always hidden from the main device list and is available in application routing menus only while recording is enabled. Disabling recording restores the remembered default devices and returns all applications explicitly routed to V to the default, preserving routes to other devices and application volumes. Recording state is not persisted. A separate guard process attempts to restore defaults and clear V routes if the host crashes or is terminated.
 
-Recording mode requires the virtual audio driver in the bundled `Driver/` folder. The manager provides installation and removal buttons, verifies signatures and imports certificates. These operations require administrator privileges; follow the on-screen instructions to prepare the system for the first installation. Physical-machine audio validation remains pending.
+Recording mode uses VB-Audio's official VB-CABLE standard package, with only the original files needed for Windows 11 x64 shipped in `Driver/VBCABLE/`. After checking the original installer and Microsoft signature, the manager opens the official installer; click Install Driver or Remove Driver there. These operations require administrator privileges and a Windows restart afterwards. Test signing and self-signed certificate imports are unnecessary. Host startup and successful installation disable all three virtual endpoints for standby. Enabling recording temporarily enables only `CABLE Input`; `CABLE In 16 Ch` and `CABLE Output` remain disabled. Disabling recording restores default devices and application routes, stops monitoring, then disables `CABLE Input`. Failed cleanup remains pending for retry; the guard process also attempts recovery and disable after a host crash. Record system audio through the default output's desktop-audio/loopback and use physical microphones. VB-CABLE is shared, so these state changes also affect other applications using it. The driver is never modified. Physical-machine audio validation on the target Windows 11 26H2 remains pending.
+
+The recording-mode toggle depends on configuration: the driver must be installed and running, CABLE Input must exist with verified hardware identity, and a physical monitor output must be available. Enumeration includes disabled endpoints, so disabling CABLE Input for standby does not hide the toggle. Virtual audio streams are created after enabling the endpoint; startup failure rolls back. The entire row is hidden if installation or configuration is incomplete. Readiness is checked asynchronously when the panel opens and while it remains open. Installation, repair and diagnostics remain available through the manager and CLI. For manual diagnosis, `driver hide` exits recording and disables all three endpoints; `driver show` exits recording and reverses the program's recorded disable operations.
+
+Endpoint operations only affect standard VB-CABLE endpoints with verified hardware identity; unverified endpoints are skipped and logged. `driver show` reverses only this program's recorded hiding operations, preserving endpoints previously disabled by the user. Records are stored under `HiddenCableEndpoints` in the user configuration and survive program restarts. If the installer is cancelled, makes no effective change, or fails, endpoint state is restored. Program cleanup also restores its hidden endpoints before deleting configuration, retaining recovery records if restoration fails. Hidden states from older versions without ownership records must be restored manually in Windows sound settings.
+
+The manager, CLI and recording requests connect only to a host in the current session running from the same program directory. After moving or copying the program, exit the host from the old directory before starting the new copy.
+
+The About icon to the left of the manager's title-bar close button shows the current version, developer, project homepage and third-party references, with links to VB-CABLE's source website, licensing and donation/purchase page. VB-CABLE is donationware; supporting its authors is welcome. Professional use and distribution to businesses or organizations must follow [VB-Audio's official licensing terms](https://vb-audio.com/Services/licensing.htm), independently of this project's GPL license.
 
 Click the footer gear or run `vmex_manager.exe` to open the WPF manager. The settings page has been removed from the audio panel. Opening the manager automatically starts the host and provides an Open audio panel button; closing it leaves no manager process or tray icon. The host and sign-in auto-start retain their original entry point and use Core directly. Opening it again activates the existing window.
 
@@ -121,6 +129,8 @@ Click the footer gear or run `vmex_manager.exe` to open the WPF manager. The set
 | **Status and start** | Shows the background host and panel integration status; starts the host when stopped |
 | **Exit** | Ends panel integration and the background host, then closes the manager on success; keeps auto-start and user data |
 | **Register to Start menu** | Creates a manager shortcut in the system Start menu, overwriting an existing one |
+| **Recording-mode driver** | Shows VB-CABLE status and opens its official installer or uninstaller; exits recording mode before either operation |
+| **About** | Title-bar icon opens version, developer and third-party source, licensing and support information |
 | **Open log folder** | Opens this program's log folder for troubleshooting |
 | **Uninstall and clean up** | After a standard confirmation dialog, stops integration and clears auto-start, configuration, logs, cache, all application redirections and volume preferences; keeps program files and leaves the window open with details if a step fails |
 
@@ -144,7 +154,7 @@ vmex_cli.exe -help     # every command and argument
 vmex_cli.exe skill     # the integration document for scripts and AI agents
 ```
 
-This version supports injection and status queries, the host (`start` / `stop` / `host`), the manager (`manager`), opening the panel (`panel`), logs (`logs`), the project page (`project`), driver-name display (`show-driver-name on|off`), endpoint enumeration (`devices`), default-device switching (`default`), application redirection and clearing (`redirect` / `clear-redirect`), auto-start (`autostart`) and uninstall cleanup (`uninstall --yes`). The full list and its arguments live in `-help`, which is updated together with the program.
+This version supports injection and status queries, the host (`start` / `stop` / `host`), the manager (`manager`), opening the panel (`panel`), logs (`logs`), the project page (`project`), driver-name display (`show-driver-name on|off`), endpoint enumeration (`devices`), default-device switching (`default`), application redirection and clearing (`redirect` / `clear-redirect`), recording (`recording`), driver management (`driver`, including hiding or restoring extra endpoints), auto-start (`autostart`) and uninstall cleanup (`uninstall --yes`). The full list and its arguments live in `-help`, which is updated together with the program.
 
 ---
 
@@ -248,7 +258,7 @@ No. **Windows 11 26H2 (Build 26300)** or later is required; on older builds the 
 
 ### Build and self tests
 
-The build requires the Visual Studio C++ toolchain, Windows SDK, CMake, PowerShell 7 and .NET 10 SDK. The WPF manager targets .NET Framework 4.8, built into Windows 11. No .NET or Windows App SDK runtime is bundled.
+The build requires the Visual Studio C++ toolchain, Windows SDK, CMake, PowerShell 7 and .NET 10 SDK. The first build downloads the official VB-CABLE Pack45 with a pinned SHA-256 hash, caches it in obj/driver-deps/vbcable and extracts only the original files needed for Windows 11 x64 into Driver/VBCABLE in the output. The custom test driver is no longer built or distributed. The WPF manager targets .NET Framework 4.8, built into Windows 11. No .NET or Windows App SDK runtime is bundled. `vmex_cli.exe about` shows the same About information as the manager; see `-help` and `skill` for the complete `recording` and `driver` commands.
 
 ```powershell
 cmake --preset vs18-x64 -DBUILD_TESTING=ON
@@ -272,6 +282,7 @@ If you find this project helpful, please give it a heart-felt ⭐️ **Star**!
 ## Special Thanks
 
 *   [**EarTrumpet**](https://github.com/File-New-Project/EarTrumpet): the concept and interaction reference for per-app volume and output endpoints. This project rewrote the session enumeration strategy along those lines — re-enumerating on every use and never caching an invalidated enumerator over time — to avoid the classic "app list goes blank and stays blank" class of problems.
+*   [**VB-CABLE / VB-Audio Software**](https://www.vb-cable.com/): recording mode uses the official standard virtual audio driver, with the original files needed for Windows 11 x64 shipped alongside. VB-CABLE is donationware; donations or license purchases are welcome, and use and distribution must follow its [independent licensing terms](https://vb-audio.com/Services/licensing.htm).
 *   [**Windows App SDK / XAML diagnostics**](https://learn.microsoft.com/windows/apps/): the ability to take over the page rests on the XAML diagnostics and visual tree interfaces that ship with the system.
 
 ---

@@ -81,10 +81,11 @@ add_subdirectory(Components/inject.tap)
 if(BUILD_TESTING)
     add_executable(vmex_tests Test/CoreTests.cpp)
     target_link_libraries(vmex_tests PRIVATE vmex_core)
-    foreach(suite uninstall audio recording commands resources config pipe)
+    foreach(suite uninstall audio recording guard commands resources config pipe)
         add_test(NAME "core.${suite}" COMMAND vmex_tests "${suite}")
         set_tests_properties("core.${suite}" PROPERTIES TIMEOUT 15)
     endforeach()
+    set_tests_properties(core.guard PROPERTIES TIMEOUT 30)
 endif()
 
 set(VMEX_DIAGNOSTICS_DLL "" CACHE FILEPATH "Path to xamldiagnostics.dll to ship")
@@ -143,6 +144,9 @@ set_target_properties(vmex_cli PROPERTIES OUTPUT_NAME "vmex_cli")
 
 add_dependencies(vmex vmex_launcher vmex_tap)
 add_dependencies(vmex_cli vmex_launcher vmex_tap)
+if(BUILD_TESTING)
+    add_dependencies(vmex_tests vmex_cli)
+endif()
 
 target_link_libraries(vmex PRIVATE vmex_core WindowsApp.lib)
 target_link_libraries(vmex_cli PRIVATE vmex_core WindowsApp.lib)
@@ -152,20 +156,22 @@ vmex_add_version_resource(vmex_cli "VolumeMixerExtender command line interface" 
 
 set(VMEX_PACKAGE_NAME "${VMEX_PRODUCT_NAME}_${VMEX_VERSION}")
 set(VMEX_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/output" CACHE PATH "Release package output directory")
-option(VMEX_BUILD_RECORDING_DRIVER "Build the recording driver package" ON)
-set(VMEX_SYSVAD_SOURCE "" CACHE PATH "Optional local checkout of the pinned Microsoft driver samples")
+option(VMEX_BUILD_RECORDING_DRIVER "Prepare the VB-CABLE driver package for Windows 11 x64" ON)
 set(VMEX_DRIVER_PACKAGE_DIR "")
 if(VMEX_BUILD_RECORDING_DRIVER)
     find_program(VMEX_PWSH pwsh REQUIRED)
+    set(VMEX_DRIVER_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/bin/$<CONFIG>/Driver/VBCABLE")
     add_custom_target(vmex_recording_driver
-        COMMAND "${VMEX_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/Components/recording.driver/build-driver.ps1"
-            -Configuration $<CONFIG> -Generator "${CMAKE_GENERATOR}" -SysvadSource "${VMEX_SYSVAD_SOURCE}"
+        COMMAND "${CMAKE_COMMAND}"
+            "-DVMEX_CABLE_CACHE=${CMAKE_SOURCE_DIR}/obj/driver-deps/vbcable"
+            "-DVMEX_CABLE_DESTINATION=${VMEX_DRIVER_PACKAGE_DIR}"
+            -P "${CMAKE_SOURCE_DIR}/cmake/PrepareVbCable.cmake"
         VERBATIM)
-    set(VMEX_DRIVER_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/bin/$<CONFIG>/Driver")
+    add_dependencies(vmex_core vmex_recording_driver)
     if(BUILD_TESTING)
         add_dependencies(vmex_tests vmex_recording_driver)
         add_test(NAME driver.package COMMAND "${VMEX_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/Test/DriverPackageTests.ps1"
-            -Path "${VMEX_DRIVER_PACKAGE_DIR}" -Version "${VMEX_VERSION}")
+            -Path "${VMEX_DRIVER_PACKAGE_DIR}")
         set_tests_properties(driver.package PROPERTIES TIMEOUT 30)
         add_test(NAME driver.trust COMMAND vmex_tests driver-trust)
         set_tests_properties(driver.trust PROPERTIES TIMEOUT 30)

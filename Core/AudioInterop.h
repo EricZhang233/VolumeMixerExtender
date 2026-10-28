@@ -110,9 +110,11 @@ struct Endpoint
 {
     std::wstring id;
     std::wstring friendly;
+    std::wstring description;
     std::wstring interfaceName;
     std::wstring enumerator;
     EDataFlow    flow = eRender;
+    DWORD        state = DEVICE_STATE_ACTIVE;
     bool         isDefault = false;
 };
 
@@ -185,9 +187,8 @@ inline std::wstring DisplayDeviceName(const Endpoint& ep, bool showDriverName)
 
 inline bool IsOurVirtualDevice(const Endpoint& ep)
 {
-    if (ep.friendly.find(L"OC Virtual") != std::wstring::npos) return true;
-    if (ep.friendly.find(L"OCVirtual") != std::wstring::npos) return true;
-    return false;
+    return ep.interfaceName == L"VB-Audio Virtual Cable" ||
+        ep.friendly.find(L"(VB-Audio Virtual Cable)") != std::wstring::npos;
 }
 
 inline bool ReadEndpoint(IMMDevice* dev, EDataFlow flow, Endpoint& out)
@@ -195,10 +196,12 @@ inline bool ReadEndpoint(IMMDevice* dev, EDataFlow flow, Endpoint& out)
     out.flow = flow;
     out.id = TakeDeviceId([&] { LPWSTR p = nullptr; dev->GetId(&p); return p; }());
     if (out.id.empty()) return false;
+    dev->GetState(&out.state);
 
     Ptr<IPropertyStore> props;
     if (SUCCEEDED(dev->OpenPropertyStore(STGM_READ, props.put()))) {
         GetPropString(props.get(), kPkeyFriendlyName, out.friendly);
+        GetPropString(props.get(), kPkeyDeviceDesc, out.description);
         GetPropString(props.get(), kPkeyInterfaceName, out.interfaceName);
         GetPropString(props.get(), kPkeyEnumeratorName, out.enumerator);
     }
@@ -219,14 +222,15 @@ inline bool GetDefaultEndpointId(EDataFlow flow, std::wstring& out)
     return !out.empty();
 }
 
-inline bool EnumEndpointsOnce(EDataFlow flow, std::vector<Endpoint>& out, bool includeVirtual = false)
+inline bool EnumEndpointsOnce(EDataFlow flow, std::vector<Endpoint>& out, bool includeVirtual = false,
+                              DWORD states = DEVICE_STATE_ACTIVE)
 {
     out.clear();
     auto e = MakeEnumerator();
     if (!e) return false;
 
     Ptr<IMMDeviceCollection> coll;
-    if (FAILED(e->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, coll.put())) || !coll) return false;
+    if (FAILED(e->EnumAudioEndpoints(flow, states, coll.put())) || !coll) return false;
 
     UINT count = 0;
     if (FAILED(coll->GetCount(&count))) return false;
@@ -253,7 +257,43 @@ inline bool EnumEndpoints(EDataFlow flow, std::vector<Endpoint>& out, bool inclu
     return EnumEndpointsOnce(flow, out, includeVirtual);
 }
 
-inline bool FindVirtualEndpoint(std::wstring& id, std::wstring& friendly)
+inline bool EnumEndpointsWithState(EDataFlow flow, DWORD states, std::vector<Endpoint>& out)
+{
+    return EnumEndpointsOnce(flow, out, true, states);
+}
+
+enum class CableEndpointRole { Unknown, Playback, MultichannelPlayback, Capture };
+
+inline CableEndpointRole GetCableEndpointRole(const Endpoint& endpoint)
+{
+    if (endpoint.interfaceName != L"VB-Audio Virtual Cable") return CableEndpointRole::Unknown;
+    if (endpoint.flow == eRender)
+    {
+        if (endpoint.description == L"CABLE Input") return CableEndpointRole::Playback;
+        if (endpoint.description == L"CABLE In 16 Ch") return CableEndpointRole::MultichannelPlayback;
+    }
+    if (endpoint.flow == eCapture && endpoint.description == L"CABLE Output") return CableEndpointRole::Capture;
+    return CableEndpointRole::Unknown;
+}
+
+inline bool IsExtraCableEndpoint(const Endpoint& endpoint)
+{
+    const auto role = GetCableEndpointRole(endpoint);
+    return role == CableEndpointRole::MultichannelPlayback || role == CableEndpointRole::Capture;
+}
+
+inline bool EndpointVisibilityMatches(DWORD state, bool visible)
+{
+    return visible ? (state == DEVICE_STATE_ACTIVE || state == DEVICE_STATE_UNPLUGGED) : state == DEVICE_STATE_DISABLED;
+}
+
+inline bool CableEndpointNeedsVisibilityChange(const Endpoint& endpoint, bool visible)
+{
+    const bool disabled = (endpoint.state & DEVICE_STATE_DISABLED) != 0;
+    return disabled == visible;
+}
+
+inline bool FindVirtualEndpoint(std::wstring& id, std::wstring& friendly, bool includeDisabled = false)
 {
     id.clear();
     friendly.clear();
@@ -262,7 +302,7 @@ inline bool FindVirtualEndpoint(std::wstring& id, std::wstring& friendly)
     if (!e) return false;
 
     Ptr<IMMDeviceCollection> coll;
-    if (FAILED(e->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, coll.put())) || !coll) return false;
+    if (FAILED(e->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE | (includeDisabled ? DEVICE_STATE_DISABLED : 0), coll.put())) || !coll) return false;
 
     UINT count = 0;
     if (FAILED(coll->GetCount(&count))) return false;
@@ -272,7 +312,7 @@ inline bool FindVirtualEndpoint(std::wstring& id, std::wstring& friendly)
         if (FAILED(coll->Item(i, dev.put())) || !dev) continue;
         Endpoint ep;
         if (!ReadEndpoint(dev.get(), eRender, ep)) continue;
-        if (!IsOurVirtualDevice(ep)) continue;
+        if (GetCableEndpointRole(ep) != CableEndpointRole::Playback) continue;
         id = ep.id;
         friendly = ep.friendly;
         return true;
@@ -820,6 +860,16 @@ inline Ptr<IPolicyConfig> CreatePolicyConfig()
 
     log::Logger::Instance().WriteKey(log::Level::Debug, L"audio", L"log.interop.ipolicyconfig_unavailable");
     return {};
+}
+
+inline bool SetEndpointVisible(const std::wstring& rawDeviceId, bool visible)
+{
+    if (rawDeviceId.empty()) return false;
+
+    auto pc = CreatePolicyConfig();
+    if (!pc) return false;
+
+    return SUCCEEDED(pc->SetEndpointVisibility(rawDeviceId.c_str(), visible ? 1 : 0));
 }
 
 inline HRESULT SetSystemDefaultEndpointForRoleResult(const std::wstring& rawDeviceId, ERole role)

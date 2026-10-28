@@ -244,7 +244,13 @@ namespace vmex::audio
                 std::vector<detail::Endpoint> endpoints;
                 if (!detail::EnumEndpoints(eRender, endpoints, recordingMode))
                     return Status::Failed(L"routing-devices");
-                for (const auto& endpoint : endpoints) devices.push_back(ToDeviceInfo(endpoint));
+                std::wstring virtualId, friendly;
+                if (recordingMode) detail::FindVirtualEndpoint(virtualId, friendly);
+                for (const auto& endpoint : endpoints)
+                {
+                    if (detail::IsOurVirtualDevice(endpoint) && endpoint.id != virtualId) continue;
+                    devices.push_back(ToDeviceInfo(endpoint));
+                }
                 return Status::Ok();
             }
 

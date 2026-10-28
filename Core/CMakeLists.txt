@@ -11,15 +11,18 @@ configure_file(
     @ONLY)
 
 add_library(vmex_core SHARED
+    AboutService.cpp
     App.cpp
     AppIcons.cpp
     AudioDeviceManager.cpp
     AudioMirror.cpp
+    AudioRoutingCleanup.cpp
     AutostartEntry.cpp
     CliTypes.cpp
     CommandRegistry.cpp
     ConfigService.cpp
     EndpointPolicyService.cpp
+    EndpointVisibility.cpp
     Foundation.cpp
     HostPresence.cpp
     InjectionMonitor.cpp
@@ -31,6 +34,7 @@ add_library(vmex_core SHARED
     MaintenanceWorkflow.cpp
     RecordingMode.cpp
     RecordingBackend.cpp
+    RecordingGuard.cpp
     RecordingClient.cpp
     RecordingDriverService.cpp
     PayloadDeployment.cpp

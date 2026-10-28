@@ -26,8 +26,15 @@ namespace vmex::recording
     Mode::~Mode()
     {
         try { Disable(); } catch (...) {}
+    }
+
+    Status Mode::Cleanup()
+    {
         m_backend.StopMirror();
-        m_backend.DisconnectVirtualDevice();
+        const auto result = Guard([&] { return m_backend.DisconnectVirtualDevice(); });
+        if (result) m_state = {};
+        else m_state.cleanupPending = true;
+        return result;
     }
 
     Status Mode::Enable()
@@ -39,37 +46,38 @@ namespace vmex::recording
         auto result = Guard([&] { return m_backend.SaveDefaults(monitor); });
         if (!result) return Report(L"enable", result);
         if (monitor.empty()) return Report(L"enable", Status::Failed(L"recording-monitor-missing"));
+        m_state.monitorDevice = monitor;
         result = Guard([&] { return m_backend.ConnectVirtualDevice(); });
         if (!result)
         {
-            m_backend.DisconnectVirtualDevice();
-            return Report(L"enable", result);
+            return Report(L"enable", Rollback(result));
         }
         result = Guard([&] { return m_backend.StartMirror(monitor); });
         if (!result)
         {
-            m_backend.StopMirror();
-            m_backend.DisconnectVirtualDevice();
-            return Report(L"enable", result);
+            return Report(L"enable", Rollback(result));
         }
         m_state.monitorDevice = std::move(monitor);
         result = Guard([&] { return m_backend.SelectVirtualDevice(); });
         if (!result)
         {
-            const auto restored = Guard([&] { return m_backend.RestoreDefaults(); });
-            if (!restored)
-            {
-                m_state.cleanupPending = true;
-                return Report(L"enable", Status::Failed(result.detail + L"; " + restored.detail));
-            }
-            m_backend.StopMirror();
-            m_backend.DisconnectVirtualDevice();
-            m_state = {};
-            return Report(L"enable", result);
+            return Report(L"enable", Rollback(result));
         }
         m_state.enabled = true;
         m_failure = Status::Ok();
         return Report(L"enable", Status::Ok());
+    }
+
+    Status Mode::Rollback(Status failure)
+    {
+        const auto restored = Guard([&] { return m_backend.RestoreDefaults(); });
+        if (!restored)
+        {
+            m_state.cleanupPending = true;
+            return Status::Failed(failure.detail + L"; " + restored.detail);
+        }
+        const auto cleaned = Cleanup();
+        return cleaned ? failure : Status::Failed(failure.detail + L"; " + cleaned.detail);
     }
 
     Status Mode::Disable()
@@ -83,10 +91,7 @@ namespace vmex::recording
             m_state.cleanupPending = true;
             return Report(L"disable", result);
         }
-        m_backend.StopMirror();
-        m_backend.DisconnectVirtualDevice();
-        m_state = {};
-        return Report(L"disable", Status::Ok());
+        return Report(L"disable", Cleanup());
     }
 
     Status Mode::ChangeMonitor(std::wstring_view monitorDevice)

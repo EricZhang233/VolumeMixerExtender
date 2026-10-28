@@ -1,87 +1,97 @@
 #include "RecordingDriverService.h"
 
+#include "AudioInterop.h"
 #include "RecordingClient.h"
 #include "Platform.h"
 #include "TextService.h"
 #include "Logger.h"
+#include "EndpointVisibility.h"
+#include "UserSettings.h"
 #include <windows.h>
 #include <setupapi.h>
 #include <cfgmgr32.h>
-#include <newdev.h>
-#include <shlobj.h>
 #include <shellapi.h>
 #include <wincrypt.h>
 #include <wintrust.h>
 #include <softpub.h>
 #include <mscat.h>
-#include <algorithm>
+#include <devicetopology.h>
+#include <functiondiscoverykeys_devpkey.h>
 #include <array>
+#include <cwctype>
 
 namespace vmex::recording
 {
     namespace
     {
         constexpr GUID mediaClass{ 0x4d36e96c, 0xe325, 0x11ce, { 0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18 } };
-        constexpr wchar_t hardwareId[] = L"ROOT\\VMEX_RECORDING\0";
+        constexpr std::wstring_view kChannel = L"recording.driver";
+        constexpr std::array<const wchar_t*, 9> packageFiles{
+            L"vbMmeCable64_win10.inf", L"vbaudio_cable64_win10.cat", L"vbaudio_cable64_win10.sys",
+            L"vbaudio_cable64arm_win10.sys", L"VBCABLE_ControlPanel.exe", L"VBCABLE_Setup_x64.exe",
+            L"pin_in.ico", L"pin_out.ico", L"readme.txt" };
 
-        struct Certificate final
+        bool HasPackage(const std::filesystem::path& directory)
         {
-            PCCERT_CONTEXT value = nullptr;
-            explicit Certificate(const std::filesystem::path& path)
+            for (const auto name : packageFiles)
             {
-                ::CryptQueryObject(CERT_QUERY_OBJECT_FILE, path.c_str(), CERT_QUERY_CONTENT_FLAG_CERT,
-                    CERT_QUERY_FORMAT_FLAG_BINARY, 0, nullptr, nullptr, nullptr, nullptr, nullptr,
-                    reinterpret_cast<const void**>(&value));
+                std::error_code error;
+                const auto file = directory / name;
+                if (!std::filesystem::is_regular_file(file, error) || error) return false;
+                const auto size = std::filesystem::file_size(file, error);
+                if (error || size == 0) return false;
             }
-            ~Certificate() { if (value) ::CertFreeCertificateContext(value); }
-            bool TestSigned() const
-            {
-                return value && ::CertCompareCertificateName(X509_ASN_ENCODING,
-                    &value->pCertInfo->Subject, &value->pCertInfo->Issuer);
-            }
-        };
-
-        bool VerifySignature(WINTRUST_DATA& data, PCCERT_CONTEXT certificate, bool testSigned)
-        {
-            GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-            data.cbStruct = sizeof(data);
-            data.dwUIChoice = WTD_UI_NONE;
-            data.fdwRevocationChecks = WTD_REVOKE_NONE;
-            data.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
-            data.dwStateAction = WTD_STATEACTION_VERIFY;
-            const auto result = ::WinVerifyTrust(nullptr, &action, &data);
-            bool valid = result == ERROR_SUCCESS || (testSigned && result == CERT_E_UNTRUSTEDROOT);
-            auto* provider = ::WTHelperProvDataFromStateData(data.hWVTStateData);
-            auto* signer = provider ? ::WTHelperGetProvSignerFromChain(provider, 0, FALSE, 0) : nullptr;
-            valid = valid && signer && signer->csCertChain &&
-                certificate->cbCertEncoded == signer->pasCertChain[0].pCert->cbCertEncoded &&
-                std::equal(certificate->pbCertEncoded, certificate->pbCertEncoded + certificate->cbCertEncoded,
-                    signer->pasCertChain[0].pCert->pbCertEncoded);
-            data.dwStateAction = WTD_STATEACTION_CLOSE;
-            ::WinVerifyTrust(nullptr, &action, &data);
-            return valid;
+            return true;
         }
 
-        bool VerifyFile(const std::filesystem::path& path, PCCERT_CONTEXT certificate, bool testSigned)
+        std::filesystem::path Package()
         {
-            WINTRUST_FILE_INFO file{ sizeof(file) };
-            file.pcwszFilePath = path.c_str();
-            WINTRUST_DATA data{};
-            data.dwUnionChoice = WTD_CHOICE_FILE;
-            data.pFile = &file;
-            return VerifySignature(data, certificate, testSigned);
+            return platform::GetExecutableDirectory() / L"Driver" / L"VBCABLE";
         }
 
-        bool VerifyMember(const std::filesystem::path& catalog, const std::filesystem::path& path,
-            PCCERT_CONTEXT certificate, bool testSigned)
+        std::wstring HashFile(const std::filesystem::path& path)
         {
+            HCRYPTPROV provider = 0;
+            HCRYPTHASH hash = 0;
+            HANDLE file = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+            std::wstring result;
+            if (file != INVALID_HANDLE_VALUE && ::CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) &&
+                ::CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash))
+            {
+                std::array<BYTE, 65536> buffer{};
+                DWORD read = 0;
+                bool valid = true;
+                for (;;)
+                {
+                    if (!::ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr)) { valid = false; break; }
+                    if (!read) break;
+                    if (!::CryptHashData(hash, buffer.data(), read, 0)) { valid = false; break; }
+                }
+                std::array<BYTE, 32> digest{};
+                DWORD bytes = static_cast<DWORD>(digest.size());
+                if (valid && ::CryptGetHashParam(hash, HP_HASHVAL, digest.data(), &bytes, 0) && bytes == digest.size())
+                {
+                    constexpr wchar_t digits[] = L"0123456789ABCDEF";
+                    for (const auto byte : digest) { result += digits[byte >> 4]; result += digits[byte & 15]; }
+                }
+            }
+            if (hash) ::CryptDestroyHash(hash);
+            if (provider) ::CryptReleaseContext(provider, 0);
+            if (file != INVALID_HANDLE_VALUE) ::CloseHandle(file);
+            return result;
+        }
+
+        bool VerifyMember(const std::filesystem::path& directory, const wchar_t* name)
+        {
+            const auto path = directory / name;
+            const auto catalog = directory / L"vbaudio_cable64_win10.cat";
             HCATADMIN admin = nullptr;
             if (!::CryptCATAdminAcquireContext2(&admin, nullptr, BCRYPT_SHA256_ALGORITHM, nullptr, 0)) return false;
-            const auto handle = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+            HANDLE file = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
             std::array<BYTE, 32> hash{};
             DWORD size = static_cast<DWORD>(hash.size());
-            bool valid = handle != INVALID_HANDLE_VALUE &&
-                ::CryptCATAdminCalcHashFromFileHandle2(admin, handle, &size, hash.data(), 0) && size == hash.size();
+            bool valid = file != INVALID_HANDLE_VALUE &&
+                ::CryptCATAdminCalcHashFromFileHandle2(admin, file, &size, hash.data(), 0) && size == hash.size();
             if (valid)
             {
                 std::wstring tag;
@@ -91,75 +101,98 @@ namespace vmex::recording
                 member.pcwszCatalogFilePath = catalog.c_str();
                 member.pcwszMemberTag = tag.c_str();
                 member.pcwszMemberFilePath = path.c_str();
-                member.hMemberFile = handle;
+                member.hMemberFile = file;
                 member.pbCalculatedFileHash = hash.data();
                 member.cbCalculatedFileHash = size;
                 member.hCatAdmin = admin;
-                WINTRUST_DATA data{};
+                WINTRUST_DATA data{ sizeof(data) };
+                data.dwUIChoice = WTD_UI_NONE;
                 data.dwUnionChoice = WTD_CHOICE_CATALOG;
                 data.pCatalog = &member;
-                valid = VerifySignature(data, certificate, testSigned);
+                data.dwStateAction = WTD_STATEACTION_VERIFY;
+                data.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
+                GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+                valid = ::WinVerifyTrust(nullptr, &action, &data) == ERROR_SUCCESS;
+                auto* provider = ::WTHelperProvDataFromStateData(data.hWVTStateData);
+                auto* signer = provider ? ::WTHelperGetProvSignerFromChain(provider, 0, FALSE, 0) : nullptr;
+                std::array<wchar_t, 256> subject{};
+                valid = valid && signer && signer->csCertChain &&
+                    ::CertGetNameStringW(signer->pasCertChain[0].pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr,
+                        subject.data(), static_cast<DWORD>(subject.size())) > 1 &&
+                    std::wstring_view(subject.data()) == L"Microsoft Windows Hardware Compatibility Publisher";
+                data.dwStateAction = WTD_STATEACTION_CLOSE;
+                ::WinVerifyTrust(nullptr, &action, &data);
             }
-            if (handle != INVALID_HANDLE_VALUE) ::CloseHandle(handle);
+            if (file != INVALID_HANDLE_VALUE) ::CloseHandle(file);
             ::CryptCATAdminReleaseContext(admin, 0);
             return valid;
         }
 
-        bool TestSigningEnabled()
+        enum class CableVendor { Unknown, Match, Mismatch };
+
+        CableVendor ProbeDeviceInstance(std::wstring instance)
         {
-            struct Information { ULONG length; ULONG options; } info{ sizeof(Information), 0 };
-            using Query = LONG(NTAPI*)(ULONG, void*, ULONG, ULONG*);
-            const auto query = reinterpret_cast<Query>(::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation"));
-            return query && query(103, &info, sizeof(info), nullptr) >= 0 && (info.options & 2) != 0;
+            DEVINST device = 0;
+            if (::CM_Locate_DevNodeW(&device, instance.data(), CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS)
+                return CableVendor::Unknown;
+            bool foundIdentity = false;
+            for (unsigned depth = 0; depth < 16; ++depth)
+            {
+                std::array<wchar_t, 4096> ids{};
+                ULONG bytes = sizeof(ids) - 2 * sizeof(wchar_t), type = 0;
+                if (::CM_Get_DevNode_Registry_PropertyW(device, CM_DRP_HARDWAREID, &type, ids.data(), &bytes, 0) == CR_SUCCESS &&
+                    type == REG_MULTI_SZ)
+                {
+                    foundIdentity = true;
+                    for (const auto* id = ids.data(); *id; id += ::wcslen(id) + 1)
+                        if (IsCableHardwareId(id)) return CableVendor::Match;
+                }
+                DEVINST parent = 0;
+                if (::CM_Get_Parent(&parent, device, 0) != CR_SUCCESS) break;
+                device = parent;
+            }
+            return foundIdentity ? CableVendor::Mismatch : CableVendor::Unknown;
         }
 
-        struct CertificateImport final
+        CableVendor ProbeCableVendor(const std::wstring& endpointId)
         {
-            std::array<PCCERT_CONTEXT, 2> added{};
-            bool committed = false;
-            ~CertificateImport()
-            {
-                for (const auto certificate : added)
-                    if (certificate)
-                    {
-                        if (committed) ::CertFreeCertificateContext(certificate);
-                        else if (!::CertDeleteCertificateFromStore(certificate))
-                            log::Logger::Instance().WriteKeyFormat(log::Level::Error, L"recording.driver", L"log.recording.result",
-                                { L"driver-certificate-rollback", std::to_wstring(::GetLastError()), L"" });
-                    }
-            }
-            Status Import(PCCERT_CONTEXT certificate)
-            {
-                constexpr std::array<const wchar_t*, 2> names{ L"ROOT", L"TrustedPublisher" };
-                for (size_t index = 0; index < names.size(); ++index)
-                {
-                    const auto store = ::CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
-                        CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_OPEN_EXISTING_FLAG, names[index]);
-                    if (!store) return Status::FromLastError(L"driver-certificate-store");
-                    auto* existing = ::CertFindCertificateInStore(store, X509_ASN_ENCODING, 0,
-                        CERT_FIND_EXISTING, certificate, nullptr);
-                    bool success = true;
-                    if (existing) ::CertFreeCertificateContext(existing);
-                    else success = ::CertAddCertificateContextToStore(store, certificate, CERT_STORE_ADD_NEW, &added[index]) != FALSE;
-                    const auto error = ::GetLastError();
-                    ::CertCloseStore(store, 0);
-                    if (!success) return Status::FromWin32(L"driver-certificate-import", error);
-                }
-                return Status::Ok();
-            }
-        };
+            auto enumerator = audio::detail::MakeEnumerator();
+            if (!enumerator) return CableVendor::Unknown;
+            audio::detail::Ptr<IMMDevice> endpoint;
+            if (FAILED(enumerator->GetDevice(endpointId.c_str(), endpoint.put())) || !endpoint)
+                return CableVendor::Unknown;
+            audio::detail::Ptr<IPropertyStore> endpointProperties;
+            std::wstring endpointInstance;
+            if (SUCCEEDED(endpoint->OpenPropertyStore(STGM_READ, endpointProperties.put())) &&
+                audio::detail::GetPropString(endpointProperties.get(), PKEY_Device_InstanceId, endpointInstance) &&
+                ProbeDeviceInstance(endpointInstance) == CableVendor::Match) return CableVendor::Match;
+            audio::detail::Ptr<IDeviceTopology> topology;
+            if (FAILED(endpoint->Activate(__uuidof(IDeviceTopology), CLSCTX_ALL, nullptr, topology.putv())) || !topology)
+                return CableVendor::Unknown;
+            audio::detail::Ptr<IConnector> connector;
+            if (FAILED(topology->GetConnector(0, connector.put())) || !connector)
+                return CableVendor::Unknown;
+            LPWSTR connected = nullptr;
+            if (FAILED(connector->GetDeviceIdConnectedTo(&connected))) return CableVendor::Unknown;
+            const auto connectedId = audio::detail::TakeDeviceId(connected);
+            if (connectedId.empty()) return CableVendor::Unknown;
+            audio::detail::Ptr<IMMDevice> node;
+            if (FAILED(enumerator->GetDevice(connectedId.c_str(), node.put())) || !node)
+                return CableVendor::Unknown;
+            audio::detail::Ptr<IPropertyStore> properties;
+            if (FAILED(node->OpenPropertyStore(STGM_READ, properties.put())) || !properties)
+                return CableVendor::Unknown;
+            std::wstring instance;
+            if (!audio::detail::GetPropString(properties.get(), PKEY_Device_InstanceId, instance))
+                return CableVendor::Unknown;
+            return ProbeDeviceInstance(instance);
+        }
 
-        struct Devices final
+        struct EndpointOperation final
         {
-            HDEVINFO value = ::SetupDiGetClassDevsW(&mediaClass, nullptr, nullptr, 0);
-            ~Devices() { if (value != INVALID_HANDLE_VALUE) ::SetupDiDestroyDeviceInfoList(value); }
-        };
-
-        struct Operation final
-        {
-            HANDLE mutex = ::CreateMutexW(nullptr, FALSE, L"Global\\Vmex.Recording.DriverOperation");
+            HANDLE mutex = ::CreateMutexW(nullptr, FALSE, L"Local\\Vmex.CableEndpointOperation");
             bool locked = false;
-            Operation()
+            EndpointOperation()
             {
                 if (mutex)
                 {
@@ -167,33 +200,111 @@ namespace vmex::recording
                     locked = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
                 }
             }
-            ~Operation() { if (locked) ::ReleaseMutex(mutex); if (mutex) ::CloseHandle(mutex); }
+            ~EndpointOperation() { if (locked) ::ReleaseMutex(mutex); if (mutex) ::CloseHandle(mutex); }
         };
 
-        bool FindDevice(HDEVINFO devices, SP_DEVINFO_DATA& device)
+        const std::wstring ownershipKey = std::wstring(settings::kRootKey) + L"\\HiddenCableEndpoints";
+
+        class VisibilityActions final : public IVisibilityActions
         {
-            for (DWORD index = 0; ::SetupDiEnumDeviceInfo(devices, index, &device); ++index)
+        public:
+            Status Enumerate(std::vector<VisibilityState>& result) override
             {
-                std::array<wchar_t, 4096> ids{};
-                DWORD bytes = 0;
-                if (!::SetupDiGetDeviceRegistryPropertyW(devices, &device, SPDRP_HARDWAREID, nullptr,
-                    reinterpret_cast<PBYTE>(ids.data()), sizeof(ids) - sizeof(wchar_t), &bytes)) continue;
-                for (const auto* id = ids.data(); *id; id += ::wcslen(id) + 1)
-                    if (::_wcsicmp(id, hardwareId) == 0) return true;
+                for (const auto flow : { eRender, eCapture })
+                {
+                    std::vector<audio::detail::Endpoint> endpoints;
+                    if (!audio::detail::EnumEndpointsWithState(flow, DEVICE_STATE_ACTIVE | DEVICE_STATE_DISABLED, endpoints))
+                        return Status::Failed(L"recording-endpoints");
+                    for (const auto& endpoint : endpoints)
+                    {
+                        if (audio::detail::GetCableEndpointRole(endpoint) == audio::detail::CableEndpointRole::Unknown) continue;
+                        DWORD owned = 0, size = sizeof(owned);
+                        const auto read = ::RegGetValueW(HKEY_CURRENT_USER, ownershipKey.c_str(), endpoint.id.c_str(),
+                            RRF_RT_REG_DWORD, nullptr, &owned, &size);
+                        if (read != ERROR_SUCCESS && read != ERROR_FILE_NOT_FOUND)
+                            return Status::FromWin32(L"endpoint-ownership-read", read);
+                        const auto vendor = ProbeCableVendor(endpoint.id);
+                        if (vendor != CableVendor::Match)
+                        {
+                            log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kChannel,
+                                vendor == CableVendor::Unknown ? L"log.recording.endpoint_vendor_unknown" :
+                                    L"log.recording.endpoint_vendor_mismatch", { endpoint.friendly });
+                            if (owned) return Status::Failed(L"endpoint-owned-identity-unavailable");
+                            continue;
+                        }
+                        result.push_back({ endpoint.id, (endpoint.state & DEVICE_STATE_DISABLED) == 0, owned != 0 });
+                    }
+                }
+                return Status::Ok();
             }
-            return false;
-        }
 
-        std::filesystem::path Package()
-        {
-            return platform::GetExecutableDirectory() / L"Driver" / L"vmex_recording.inf";
-        }
+            Status Store(std::wstring_view id, bool owned) override
+            {
+                HKEY key = nullptr;
+                const auto opened = owned ? ::RegCreateKeyExW(HKEY_CURRENT_USER, ownershipKey.c_str(), 0, nullptr, 0,
+                    KEY_SET_VALUE, nullptr, &key, nullptr) :
+                    ::RegOpenKeyExW(HKEY_CURRENT_USER, ownershipKey.c_str(), 0, KEY_SET_VALUE, &key);
+                if (!owned && opened == ERROR_FILE_NOT_FOUND) return Status::Ok();
+                if (opened != ERROR_SUCCESS) return Status::FromWin32(L"endpoint-ownership-open", opened);
+                const DWORD value = 1;
+                const auto written = owned ? ::RegSetValueExW(key, std::wstring(id).c_str(), 0, REG_DWORD,
+                    reinterpret_cast<const BYTE*>(&value), sizeof(value)) : ::RegDeleteValueW(key, std::wstring(id).c_str());
+                ::RegCloseKey(key);
+                return written == ERROR_SUCCESS || (!owned && written == ERROR_FILE_NOT_FOUND) ? Status::Ok() :
+                    Status::FromWin32(L"endpoint-ownership-write", written);
+            }
 
-        bool HasPackage()
+            Status SetVisible(std::wstring_view id, bool visible) override
+            {
+                auto enumerator = audio::detail::MakeEnumerator();
+                auto device = audio::detail::FindDevice(enumerator.get(), std::wstring(id));
+                audio::detail::Ptr<IMMEndpoint> endpointType;
+                EDataFlow flow = eAll;
+                audio::detail::Endpoint endpoint;
+                if (!device || FAILED(device->QueryInterface(__uuidof(IMMEndpoint), endpointType.putv())) ||
+                    FAILED(endpointType->GetDataFlow(&flow)) || !audio::detail::ReadEndpoint(device.get(), flow, endpoint) ||
+                    audio::detail::GetCableEndpointRole(endpoint) == audio::detail::CableEndpointRole::Unknown ||
+                    ProbeCableVendor(std::wstring(id)) != CableVendor::Match)
+                {
+                    log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kChannel,
+                        L"log.recording.endpoint_vendor_mismatch", { std::wstring(id) });
+                    return Status::Failed(L"endpoint-role-or-identity-changed");
+                }
+                bool changed = audio::detail::EndpointVisibilityMatches(endpoint.state, visible);
+                if (!changed && audio::detail::SetEndpointVisible(std::wstring(id), visible))
+                {
+                    const auto deadline = ::GetTickCount64() + 1000;
+                    do
+                    {
+                        DWORD state = 0;
+                        if (SUCCEEDED(device->GetState(&state)) && audio::detail::EndpointVisibilityMatches(state, visible))
+                        {
+                            changed = true;
+                            break;
+                        }
+                        ::Sleep(20);
+                    } while (::GetTickCount64() < deadline);
+                    if (!changed)
+                        log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kChannel,
+                            L"log.recording.endpoint_state_unconfirmed", { std::wstring(id), visible ? L"1" : L"0" });
+                }
+                log::Logger::Instance().WriteKeyFormat(changed ? log::Level::Info : log::Level::Warn, kChannel,
+                    changed ? (visible ? L"log.recording.endpoint_shown" : L"log.recording.endpoint_hidden") :
+                        L"log.recording.endpoint_failed", { std::wstring(id) });
+                return changed ? Status::Ok() : Status::Failed(L"endpoint-visibility");
+            }
+        };
+
+        Status ApplyExtraEndpointVisibility(bool visible)
         {
-            const auto directory = Package().parent_path();
-            return platform::FileExists(Package()) && platform::FileExists(directory / L"vmex_recording.sys") &&
-                platform::FileExists(directory / L"vmex_recording.cat") && platform::FileExists(directory / L"vmex_recording.cer");
+            EndpointOperation operation;
+            if (!operation.locked) return Status::Failed(L"endpoint-operation-busy");
+            VisibilityActions actions;
+            std::vector<VisibilityState> changes;
+            const auto result = ChangeVisibility(actions, visible, changes);
+            if (result) return result;
+            const auto restored = RestoreVisibility(actions, changes);
+            return restored ? result : Status::Failed(result.detail + L"; " + restored.detail);
         }
 
         Status Report(std::wstring_view action, Status result)
@@ -203,156 +314,162 @@ namespace vmex::recording
             return result;
         }
 
-        Status Elevated(std::wstring_view action)
+        Status RunInstaller(bool install)
         {
-            const auto file = platform::GetExecutableDirectory() / L"vmex_cli.exe";
-            const std::wstring arguments = L"driver " + std::wstring(action);
+            bool testSigned = false;
+            const auto verified = ValidateDriverPackage(Package(), testSigned);
+            if (!verified) return Report(L"driver-validate", verified);
+            Snapshot recording;
+            const auto stopped = Request(L"off", L"", recording);
+            if (!stopped) return stopped;
+            EndpointOperation operation;
+            if (!operation.locked) return Report(L"driver-installer", Status::Failed(L"endpoint-operation-busy"));
+            VisibilityActions actions;
+            std::vector<VisibilityState> changes;
+            const auto rollback = [&](Status result) {
+                const auto restored = RestoreVisibility(actions, changes);
+                return Report(L"driver-installer", restored ? result : Status::Failed(result.detail + L"; " + restored.detail));
+            };
+            if (!install)
+            {
+                const auto shown = ChangeVisibility(actions, true, changes);
+                if (!shown) return rollback(shown);
+            }
+            const auto before = QueryDriver();
+            const auto file = Package() / L"VBCABLE_Setup_x64.exe";
+            const auto directory = Package();
             SHELLEXECUTEINFOW info{ sizeof(info) };
             info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
             info.lpVerb = L"runas";
             info.lpFile = file.c_str();
-            info.lpParameters = arguments.c_str();
-            info.nShow = SW_HIDE;
-            if (!::ShellExecuteExW(&info)) return Status::FromLastError(L"driver-elevation");
+            info.lpDirectory = directory.c_str();
+            info.nShow = SW_SHOWNORMAL;
+            if (!::ShellExecuteExW(&info)) return rollback(Status::FromLastError(L"driver-elevation"));
             const auto wait = ::WaitForSingleObject(info.hProcess, INFINITE);
-            DWORD code = kCodeFailed;
+            DWORD code = 0;
             const bool read = ::GetExitCodeProcess(info.hProcess, &code) != FALSE;
             ::CloseHandle(info.hProcess);
-            if (wait != WAIT_OBJECT_0 || !read) return Status::Failed(L"driver-installer-process");
-            return code == 0 ? Status::Ok() : Status::Failed(text::Embedded().Resolve(L"driver.operation.failed"));
+            if (wait != WAIT_OBJECT_0 || !read) return rollback(Status::Failed(L"driver-installer-process"));
+            const auto state = QueryDriver();
+            const bool applied = before.installed != state.installed && state.installed == install;
+            if (!applied) return rollback(Status::Failed(text::Embedded().Resolve(L"driver.operation.failed") +
+                L" (" + std::to_wstring(code) + L")"));
+            if (install)
+            {
+                const auto hidden = ChangeVisibility(actions, false, changes);
+                if (!hidden) return rollback(hidden);
+            }
+            return Report(install ? L"driver-install" : L"driver-uninstall", applied ?
+                Status{ kCodeOk, text::Embedded().Resolve(L"driver.restart") } :
+                Status::Failed(text::Embedded().Resolve(L"driver.operation.failed") + L" (" + std::to_wstring(code) + L")"));
         }
-
-        Status RemoveDevice(HDEVINFO devices, SP_DEVINFO_DATA& device)
-        {
-            SP_REMOVEDEVICE_PARAMS parameters{};
-            parameters.ClassInstallHeader.cbSize = sizeof(parameters.ClassInstallHeader);
-            parameters.ClassInstallHeader.InstallFunction = DIF_REMOVE;
-            parameters.Scope = DI_REMOVEDEVICE_GLOBAL;
-            if (!::SetupDiSetClassInstallParamsW(devices, &device, &parameters.ClassInstallHeader, sizeof(parameters)) ||
-                !::SetupDiCallClassInstaller(DIF_REMOVE, devices, &device)) return Status::FromLastError(L"driver-device-remove");
-            return Status::Ok();
-        }
-
-        std::wstring PublishedInf(HDEVINFO devices, SP_DEVINFO_DATA& device)
-        {
-            std::array<wchar_t, 256> key{};
-            if (!::SetupDiGetDeviceRegistryPropertyW(devices, &device, SPDRP_DRIVER, nullptr,
-                reinterpret_cast<PBYTE>(key.data()), sizeof(key) - sizeof(wchar_t), nullptr)) return {};
-            std::array<wchar_t, MAX_PATH> inf{};
-            DWORD size = sizeof(inf);
-            const auto path = L"SYSTEM\\CurrentControlSet\\Control\\Class\\" + std::wstring(key.data());
-            if (::RegGetValueW(HKEY_LOCAL_MACHINE, path.c_str(), L"InfPath", RRF_RT_REG_SZ, nullptr, inf.data(), &size) != ERROR_SUCCESS)
-                return {};
-            const std::wstring name(inf.data());
-            if (name.size() <= 7 || name.substr(0, 3) != L"oem" || name.substr(name.size() - 4) != L".inf" ||
-                !std::all_of(name.begin() + 3, name.end() - 4, [](wchar_t c) { return c >= L'0' && c <= L'9'; })) return {};
-            return name;
-        }
-    }
-
-    static Status ValidatePackage(const std::filesystem::path& directory, const Certificate& certificate, bool& testSigned)
-    {
-        testSigned = certificate.TestSigned();
-        const auto catalog = directory / L"vmex_recording.cat";
-        if (!certificate.value || ::CertVerifyTimeValidity(nullptr, certificate.value->pCertInfo) != 0 ||
-            !VerifyFile(catalog, certificate.value, testSigned) ||
-            !VerifyFile(directory / L"vmex_recording.sys", certificate.value, testSigned) ||
-            !VerifyMember(catalog, directory / L"vmex_recording.sys", certificate.value, testSigned) ||
-            !VerifyMember(catalog, directory / L"vmex_recording.inf", certificate.value, testSigned))
-            return Status::Failed(text::Embedded().Resolve(L"driver.signature.invalid"));
-        return Status::Ok();
     }
 
     Status ValidateDriverPackage(const std::filesystem::path& directory, bool& testSigned)
     {
-        Certificate certificate(directory / L"vmex_recording.cer");
-        return ValidatePackage(directory, certificate, testSigned);
+        testSigned = false;
+        if (!HasPackage(directory) ||
+            HashFile(directory / L"VBCABLE_Setup_x64.exe") != L"734C35DFA6D98F48782A451633CEB471166EC70D60482FD89A1123D0EE3C4F41" ||
+            HashFile(directory / L"VBCABLE_ControlPanel.exe") != L"F5B44706FE7BA2EED0516DEE791F826DC7A9891E997F6CE9704E2899300B14FF" ||
+            !VerifyMember(directory, L"vbaudio_cable64_win10.sys") ||
+            !VerifyMember(directory, L"vbaudio_cable64arm_win10.sys") ||
+            !VerifyMember(directory, L"vbMmeCable64_win10.inf"))
+            return Status::Failed(text::Embedded().Resolve(L"driver.signature.invalid"));
+        return Status::Ok();
     }
 
     DriverState QueryDriver()
     {
         DriverState state;
-        state.packagePresent = HasPackage();
-        Devices devices;
+        state.packagePresent = HasPackage(Package());
+        const HDEVINFO devices = ::SetupDiGetClassDevsW(&mediaClass, nullptr, nullptr, DIGCF_PRESENT);
+        if (devices == INVALID_HANDLE_VALUE) return state;
         SP_DEVINFO_DATA device{ sizeof(device) };
-        if (devices.value == INVALID_HANDLE_VALUE || !FindDevice(devices.value, device)) return state;
-        state.installed = true;
-        ULONG flags = 0, problem = 0;
-        if (::CM_Get_DevNode_Status(&flags, &problem, device.DevInst, 0) == CR_SUCCESS)
+        for (DWORD index = 0; ::SetupDiEnumDeviceInfo(devices, index, &device); ++index)
         {
-            state.started = (flags & DN_STARTED) != 0;
-            state.problem = problem;
+            std::array<wchar_t, 4096> ids{};
+            if (!::SetupDiGetDeviceRegistryPropertyW(devices, &device, SPDRP_HARDWAREID, nullptr,
+                reinterpret_cast<PBYTE>(ids.data()), sizeof(ids) - sizeof(wchar_t), nullptr)) continue;
+            bool match = false;
+            for (const auto* id = ids.data(); *id; id += ::wcslen(id) + 1)
+                match = match || ::_wcsicmp(id, L"VBAudioVACWDM") == 0 || ::_wcsicmp(id, L"ROOT\\VBAudioVACWDM") == 0;
+            if (!match) continue;
+            state.installed = true;
+            ULONG flags = 0, problem = 0;
+            if (::CM_Get_DevNode_Status(&flags, &problem, device.DevInst, 0) == CR_SUCCESS)
+            {
+                state.started = (flags & DN_STARTED) != 0;
+                state.problem = problem;
+            }
+            break;
         }
+        ::SetupDiDestroyDeviceInfoList(devices);
         return state;
     }
 
-    Status InstallDriver()
+    Status QueryRecordingReadiness(std::wstring_view monitorDevice)
     {
-        if (!HasPackage()) return Report(L"driver-install", Status::NotSupported(text::Embedded().Resolve(L"driver.package.missing")));
-        Certificate certificate(Package().parent_path() / L"vmex_recording.cer");
-        bool testSigned = false;
-        const auto verified = ValidatePackage(Package().parent_path(), certificate, testSigned);
-        if (!verified) return Report(L"driver-install", verified);
-        if (testSigned && !TestSigningEnabled())
-            return Report(L"driver-install", Status::NotSupported(text::Embedded().Resolve(L"driver.testsigning.required")));
-        if (!::IsUserAnAdmin()) return Report(L"driver-install", Elevated(L"install"));
-        Operation operation;
-        if (!operation.locked) return Status::Failed(L"driver-operation-busy");
-        CertificateImport trust;
-        if (testSigned)
+        struct Apartment final
         {
-            const auto imported = trust.Import(certificate.value);
-            if (!imported) return Report(L"driver-install", imported);
-            Report(L"driver-certificate-import", Status::Ok());
-        }
-        Snapshot recording;
-        const auto stopped = Request(L"off", L"", recording);
-        if (!stopped) return stopped;
-        Devices devices;
-        if (devices.value == INVALID_HANDLE_VALUE) return Status::FromLastError(L"driver-device-list");
-        SP_DEVINFO_DATA device{ sizeof(device) };
-        const bool exists = FindDevice(devices.value, device);
-        if (!exists)
+            HRESULT result = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            ~Apartment() { if (SUCCEEDED(result)) ::CoUninitialize(); }
+        } apartment;
+        if (FAILED(apartment.result) && apartment.result != RPC_E_CHANGED_MODE)
+            return Status::FromHResult(L"recording-readiness-com", apartment.result);
+        const auto driver = QueryDriver();
+        if (!driver.installed || !driver.started || driver.problem)
+            return Status::NotSupported(text::Embedded().Resolve(driver.installed ? L"recording.driver.notReady" : L"recording.driver.missing"));
+        std::wstring virtualId, friendly;
+        if (!audio::detail::FindVirtualEndpoint(virtualId, friendly, true) || ProbeCableVendor(virtualId) != CableVendor::Match)
+            return Status::NotSupported(text::Embedded().Resolve(L"recording.endpoint.notReady"));
+        auto enumerator = audio::detail::MakeEnumerator();
+        if (!enumerator) return Status::Failed(L"audio-enumerator");
+        std::wstring monitor(monitorDevice);
+        if (monitor.empty() && !audio::detail::GetDefaultEndpointId(eRender, monitor))
+            return Status::NotSupported(text::Embedded().Resolve(L"recording.monitor.physicalRequired"));
+        auto output = audio::detail::FindDevice(enumerator.get(), monitor);
+        audio::detail::Endpoint endpoint;
+        if (!output || !audio::detail::ReadEndpoint(output.get(), eRender, endpoint) ||
+            endpoint.state != DEVICE_STATE_ACTIVE || audio::detail::IsOurVirtualDevice(endpoint))
+            return Status::NotSupported(text::Embedded().Resolve(L"recording.monitor.physicalRequired"));
+        audio::detail::Ptr<IMMEndpoint> flow;
+        EDataFlow direction = eAll;
+        if (FAILED(output->QueryInterface(__uuidof(IMMEndpoint), flow.putv())) ||
+            FAILED(flow->GetDataFlow(&direction)) || direction != eRender)
+            return Status::NotSupported(text::Embedded().Resolve(L"recording.monitor.physicalRequired"));
+        for (const auto& id : { monitor })
         {
-            if (!::SetupDiCreateDeviceInfoW(devices.value, L"VmexRecording", &mediaClass, nullptr, nullptr, DICD_GENERATE_ID, &device) ||
-                !::SetupDiSetDeviceRegistryPropertyW(devices.value, &device, SPDRP_HARDWAREID,
-                    reinterpret_cast<const BYTE*>(hardwareId), sizeof(hardwareId)) ||
-                !::SetupDiCallClassInstaller(DIF_REGISTERDEVICE, devices.value, &device)) return Status::FromLastError(L"driver-device-register");
+            auto device = audio::detail::FindDevice(enumerator.get(), id);
+            audio::detail::Ptr<IAudioClient> client;
+            if (!device || FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, client.putv())))
+                return Status::NotSupported(text::Embedded().Resolve(L"recording.format.notReady"));
+            WAVEFORMATEX* format = nullptr;
+            const auto result = client->GetMixFormat(&format);
+            const bool valid = SUCCEEDED(result) && format && format->nSamplesPerSec && format->nBlockAlign && format->nChannels;
+            ::CoTaskMemFree(format);
+            if (!valid) return Status::NotSupported(text::Embedded().Resolve(L"recording.format.notReady"));
         }
-        BOOL reboot = FALSE;
-        if (!::UpdateDriverForPlugAndPlayDevicesW(nullptr, hardwareId, Package().c_str(), INSTALLFLAG_FORCE, &reboot))
-        {
-            auto result = Status::FromLastError(L"driver-install");
-            if (!exists)
-            {
-                const auto removed = RemoveDevice(devices.value, device);
-                if (!removed) result.detail += L"; " + removed.detail;
-            }
-            return Report(L"driver-install", result);
-        }
-        trust.committed = true;
-        return Report(L"driver-install", reboot ? Status{ kCodeOk, text::Embedded().Resolve(L"driver.restart") } : Status::Ok());
+        return Status::Ok();
     }
 
-    Status UninstallDriver()
+    Status SetRecordingEndpointEnabled(std::wstring_view id, bool enabled)
     {
-        if (!QueryDriver().installed) return Status::Ok();
-        if (!::IsUserAnAdmin()) return Report(L"driver-uninstall", Elevated(L"uninstall"));
-        Operation operation;
-        if (!operation.locked) return Status::Failed(L"driver-operation-busy");
-        Snapshot recording;
-        const auto stopped = Request(L"off", L"", recording);
-        if (!stopped) return stopped;
-        Devices devices;
-        SP_DEVINFO_DATA device{ sizeof(device) };
-        if (devices.value == INVALID_HANDLE_VALUE || !FindDevice(devices.value, device)) return Status::Ok();
-        const auto inf = PublishedInf(devices.value, device);
-        if (inf.empty()) return Report(L"driver-uninstall", Status::Failed(L"driver-package-identity"));
-        std::array<wchar_t, MAX_PATH> windows{};
-        if (!::GetWindowsDirectoryW(windows.data(), static_cast<UINT>(windows.size()))) return Status::FromLastError(L"windows-directory");
-        BOOL reboot = FALSE;
-        const auto path = std::filesystem::path(windows.data()) / L"INF" / inf;
-        if (!::DiUninstallDriverW(nullptr, path.c_str(), 0, &reboot)) return Report(L"driver-uninstall", Status::FromLastError(L"driver-uninstall"));
-        return Report(L"driver-uninstall", reboot ? Status{ kCodeOk, text::Embedded().Resolve(L"driver.restart") } : Status::Ok());
+        if (id.empty()) return Status::Ok();
+        EndpointOperation operation;
+        if (!operation.locked) return Report(L"recording-endpoint", Status::Failed(L"endpoint-operation-busy"));
+        auto enumerator = audio::detail::MakeEnumerator();
+        auto device = audio::detail::FindDevice(enumerator.get(), std::wstring(id));
+        audio::detail::Endpoint endpoint;
+        if (!device || !audio::detail::ReadEndpoint(device.get(), eRender, endpoint) ||
+            audio::detail::GetCableEndpointRole(endpoint) != audio::detail::CableEndpointRole::Playback)
+            return Report(L"recording-endpoint", Status::Failed(L"recording-endpoint-identity"));
+        VisibilityActions actions;
+        return Report(enabled ? L"recording-endpoint-enable" : L"recording-endpoint-disable", actions.SetVisible(id, enabled));
     }
+
+    Status DisableCableEndpoints() { return Report(L"endpoints-disable", ApplyExtraEndpointVisibility(false)); }
+    Status RestoreCableEndpoints() { return Report(L"endpoints-restore", ApplyExtraEndpointVisibility(true)); }
+
+    Status InstallDriver() { return RunInstaller(true); }
+    Status UninstallDriver() { return RunInstaller(false); }
 }

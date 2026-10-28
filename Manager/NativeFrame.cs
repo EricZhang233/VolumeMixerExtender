@@ -15,6 +15,7 @@ internal sealed class NativeFrame
     [DllImport("user32.dll")] private static extern bool GetWindowRect(nint window, out NativeRect bounds);
     private readonly Window window;
     private readonly Border surface;
+    private FrameworkElement? captionAccessory;
     internal bool HasTransparentCaptionArea { get; private set; }
 
     internal NativeFrame(Window window, Border surface)
@@ -27,6 +28,12 @@ internal sealed class NativeFrame
     }
 
     private void Schedule() => window.Dispatcher.BeginInvoke(new Action(Update), DispatcherPriority.Loaded);
+
+    internal void PlaceBeforeCaption(FrameworkElement element)
+    {
+        captionAccessory = element;
+        element.Margin = new Thickness(0, 0, 140, 0);
+    }
 
     private nint WindowMessage(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
     {
@@ -42,6 +49,9 @@ internal sealed class NativeFrame
         var topLeft = surface.PointFromScreen(new Point(bounds.Left + caption.Left, bounds.Top + caption.Top));
         var bottomRight = surface.PointFromScreen(new Point(bounds.Left + caption.Right, bounds.Top + caption.Bottom));
         var captionArea = new Rect(topLeft, bottomRight);
+        if (captionAccessory is not null)
+            captionAccessory.Margin = new Thickness(0, Math.Max(0, captionArea.Top),
+                Math.Max(0, surface.ActualWidth - captionArea.Left + 4), 0);
         surface.Clip = new CombinedGeometry(GeometryCombineMode.Exclude, new RectangleGeometry(new Rect(0, 0, surface.ActualWidth, surface.ActualHeight)), new RectangleGeometry(captionArea));
         HasTransparentCaptionArea = !surface.Clip.FillContains(new Point(captionArea.Left + captionArea.Width / 2, captionArea.Top + captionArea.Height / 2));
     }

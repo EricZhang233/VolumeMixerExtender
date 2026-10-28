@@ -1,7 +1,7 @@
 #include "RecordingClient.h"
 
+#include "HostPresence.h"
 #include "ManagementService.h"
-#include "InjectionContract.h"
 #include "Platform.h"
 #include "Strings.h"
 #include <windows.h>
@@ -20,25 +20,14 @@ namespace vmex::recording
             const auto started = management::StartHost();
             if (!started) return started;
         }
-        const auto host = management::Query();
-        if (!host.running)
+        if (!host::HostPresence::IsRunning())
         {
             state.known = true;
             return action == L"status" || action == L"off" ? Status::Ok() : Status::Failed(L"recording-host-stopped");
         }
-        const auto name = inject::TapPipeName(platform::GetCurrentSessionId());
-        HANDLE pipe = INVALID_HANDLE_VALUE;
-        for (int i = 0; i < 100 && pipe == INVALID_HANDLE_VALUE; ++i)
-        {
-            pipe = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
-            if (pipe == INVALID_HANDLE_VALUE) ::Sleep(10);
-        }
-        if (pipe == INVALID_HANDLE_VALUE) return Status::FromLastError(L"recording-connect");
-        struct Close final { HANDLE handle; ~Close() { ::CloseHandle(handle); } } close{ pipe };
-        DWORD pid = 0;
-        if (!host.responsive || !::GetNamedPipeServerProcessId(pipe, &pid) || pid != host.processId)
-            return Status::Failed(L"recording-host-identity");
+        auto host = management::ConnectHost();
+        if (!host.Valid()) return Status::Failed(L"recording-connect");
+        const HANDLE pipe = static_cast<HANDLE>(host.pipe);
         const auto line = strings::ToNarrow(L"RECORDING " + std::wstring(action) +
             (device.empty() ? L"" : L" " + std::wstring(device)) + L"\n");
         DWORD written = 0;

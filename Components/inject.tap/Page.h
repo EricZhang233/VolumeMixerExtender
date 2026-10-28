@@ -11,6 +11,7 @@
 #include "TextService.h"
 #include "UserSettings.h"
 #include "RecordingClient.h"
+#include "RecordingDriverService.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -34,6 +35,7 @@
 #include <winrt/Windows.UI.Xaml.Shapes.h>
 
 #include <cstdint>
+#include <cmath>
 #include <atomic>
 #include <algorithm>
 #include <functional>
@@ -169,6 +171,7 @@ namespace vmex::tap::page
         PGXC::TextBlock recordingFeedback{nullptr};
         bool recordingBusy = false;
         bool recordingSynchronizing = false;
+        bool recordingAvailable = false;
         std::shared_ptr<PageData> data;
 
         bool mounting = false;
@@ -480,6 +483,7 @@ namespace vmex::tap::page
 
         PGXC::Grid grid = Row(44);
         PGXC::TextBlock icon = Glyph(L"\xE7F5", 14);
+        icon.Width(14);
         PGXC::Grid::SetColumn(icon, 0);
         grid.Children().Append(icon);
 
@@ -588,6 +592,7 @@ namespace vmex::tap::page
         auto row = Row(44);
         row.Margin(PGX::ThicknessHelper::FromLengths(12, 0, 12, 0));
         auto icon = Glyph(L"\xE7C8", 14);
+        icon.Width(14);
         PGXC::Grid::SetColumn(icon, 0);
         row.Children().Append(icon);
         auto name = NameBlock(text::Embedded().Resolve(L"page.checkbox.recordingMode"), std::wstring());
@@ -628,11 +633,42 @@ namespace vmex::tap::page
         list.BorderThickness(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
         list.Background(nullptr);
 
+        PGXC::Grid firstRow{nullptr};
         for (const auto& device : devices)
         {
-            list.Items().Append(MakeEndpointRow(context, device));
+            auto row = MakeEndpointRow(context, device);
+            if (!firstRow) firstRow = row;
+            list.Items().Append(row);
         }
-        if (render && kRecordingModeEnabled) list.Footer(MakeRecordingRow(context));
+        if (render && kRecordingModeEnabled && context->recordingAvailable)
+        {
+            auto recordingRow = MakeRecordingRow(context);
+            list.Footer(recordingRow);
+            if (firstRow)
+            {
+                auto align = [weakList = winrt::make_weak(list), weakFirst = winrt::make_weak(firstRow),
+                              weakRecording = winrt::make_weak(recordingRow)](auto const&, auto const&)
+                {
+                    auto owner = weakList.get();
+                    auto reference = weakFirst.get();
+                    auto footer = weakRecording.get();
+                    if (!owner || !reference || !footer || !reference.Parent() || !footer.Parent() ||
+                        reference.ActualWidth() <= 0 || footer.ActualWidth() <= 0 || owner.ActualWidth() <= 0) return;
+                    const auto start = reference.TransformToVisual(owner).TransformPoint(PGF::Point{0, 0});
+                    const auto current = footer.TransformToVisual(owner).TransformPoint(PGF::Point{0, 0});
+                    auto margin = footer.Margin();
+                    const double left = margin.Left + start.X - current.X;
+                    const double right = margin.Right + footer.ActualWidth() - reference.ActualWidth() + margin.Left - left;
+                    if (std::abs(margin.Left - left) < 0.5 && std::abs(margin.Right - right) < 0.5) return;
+                    margin.Left = left;
+                    margin.Right = right;
+                    footer.Margin(margin);
+                };
+                list.Loaded(align);
+                list.SizeChanged(align);
+                firstRow.SizeChanged(align);
+            }
+        }
 
         auto initializing = std::make_shared<bool>(true);
         const auto snapshot = devices;
@@ -1726,6 +1762,7 @@ namespace vmex::tap::page
         InstallFooter(context);
         MountPage(context, 0);
         EnsureDeviceWatcher(context);
+        if (kRecordingModeEnabled) RefreshRecording(context, L"status");
 
         MountFooter(context, 0);
         LogKey(L"log.page.takeover", { context->savedContent
@@ -1895,18 +1932,25 @@ namespace vmex::tap::page
         if (context->recordingToggle) context->recordingToggle.IsEnabled(false);
         recording::Snapshot state;
         Status result;
+        bool available = false;
         try
         {
             co_await winrt::resume_background();
             result = recording::Request(action, device, state);
+            if (state.known)
+                available = recording::QueryRecordingReadiness(state.enabled || state.cleanupPending ?
+                    std::wstring_view(state.monitorDevice) : std::wstring_view()).IsOk();
         }
         catch (...) { result = Status::Failed(L"recording-request-exception"); }
         co_await winrt::resume_foreground(dispatcher);
         context->recordingBusy = false;
         if (action != L"status") context->list.IsEnabled(true);
         if (!IsInLiveTree(context->list) || Settings().page != 0) co_return;
-        bool changed = state.known && (Settings().recordingMode != (state.enabled || state.cleanupPending) ||
-            Settings().listenEndpoint != state.monitorDevice);
+        bool changed = context->recordingAvailable != available || (state.known &&
+            (Settings().recordingMode != (state.enabled || state.cleanupPending) || Settings().listenEndpoint != state.monitorDevice));
+        if (context->recordingAvailable != available)
+            LogKey(L"log.page.recordingAvailable", { available ? L"1" : L"0" });
+        context->recordingAvailable = available;
         if (state.known)
         {
             Settings().recordingMode = state.enabled || state.cleanupPending;
@@ -1943,7 +1987,7 @@ namespace vmex::tap::page
         if (context->recordingFeedback)
         {
             context->recordingFeedback.Text(result ? L"" : winrt::hstring(text::Embedded().ResolveFormat(L"recording.failed", { result.detail })));
-            context->recordingFeedback.Visibility(result ? PGX::Visibility::Collapsed : PGX::Visibility::Visible);
+            context->recordingFeedback.Visibility(result || !available ? PGX::Visibility::Collapsed : PGX::Visibility::Visible);
         }
     }
 
@@ -1951,6 +1995,7 @@ namespace vmex::tap::page
     {
         PGXC::StackPanel root;
         root.Padding(PGX::ThicknessHelper::FromLengths(kBodyInset, 0, kBodyInset, 0));
+        context->recordingToggle = nullptr;
         if (kRecordingModeEnabled)
         {
             const std::weak_ptr<Context> weak = context;

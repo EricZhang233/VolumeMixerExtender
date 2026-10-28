@@ -16,6 +16,7 @@
 #include "RecordingBackend.h"
 #include "RecordingClient.h"
 #include "RecordingDriverService.h"
+#include "AboutService.h"
 
 #include <windows.h>
 
@@ -353,6 +354,13 @@ namespace vmex
         {
             log::Logger::Instance().WriteKeyFormat(
                 log::Level::Warn, kChannel, L"log.app.monitor_failed", { monitoring.detail });
+        }
+
+        const auto endpoints = recording::DisableCableEndpoints();
+        if (!endpoints)
+        {
+            log::Logger::Instance().WriteKeyFormat(
+                log::Level::Warn, kChannel, L"log.recording.endpoints_startup_failed", { endpoints.detail });
         }
 
         return Status::Ok();
@@ -695,6 +703,12 @@ namespace vmex
             Status result;
             if (*action == L"install") result = recording::InstallDriver();
             else if (*action == L"uninstall") result = recording::UninstallDriver();
+            else if (*action == L"hide" || *action == L"show")
+            {
+                recording::Snapshot state;
+                result = recording::Request(L"off", L"", state);
+                if (result) result = *action == L"hide" ? recording::DisableCableEndpoints() : recording::RestoreCableEndpoints();
+            }
             else result = Status::InvalidArguments(text.Resolve(L"cmd.driver.action"));
             return { result ? cli::Outcome::Success : cli::Outcome::Failed, result.detail };
         };
@@ -708,9 +722,15 @@ namespace vmex
             recording::Snapshot state;
             const auto result = recording::Request(action ? *action : L"status", invocation.Option(L"device", L""), state);
             auto& text = App::Instance().Text();
+            if (result.code == kCodeInvalidArguments)
+                return { cli::Outcome::InvalidArguments, text.ResolveFormat(L"recording.failed", { result.detail }) };
             output.Field(text.Resolve(L"page.checkbox.recordingMode"), text.Resolve(!state.known ? L"recording.unknown" :
                 state.enabled ? L"cli.value.enabled" : L"cli.value.disabled"));
             if (!state.monitorDevice.empty()) output.Field(text.Resolve(L"page.label.listenOutput"), state.monitorDevice);
+            const auto ready = recording::QueryRecordingReadiness(state.enabled || state.cleanupPending ?
+                std::wstring_view(state.monitorDevice) : std::wstring_view());
+            output.Field(text.Resolve(L"recording.available"), text.Resolve(ready ? L"cli.value.yes" : L"cli.value.no"));
+            if (!ready) output.Field(text.Resolve(L"recording.unavailableReason"), ready.detail);
             if (!result) return { cli::Outcome::Failed, text.ResolveFormat(L"recording.failed", { result.detail }) };
             return { cli::Outcome::Success, {} };
         };
@@ -801,6 +821,13 @@ namespace vmex
             return cli::Result{ cli::Outcome::Success, {} };
         };
         m_impl->commands.Add(std::move(version));
+
+        auto about = MakeCommand(L"about", L"cli.group.core", L"cmd.about.summary");
+        about.handler = [](const cli::Invocation&, cli::ICliOutput& output) -> cli::Result {
+            output.Line(about::Information());
+            return cli::Result{ cli::Outcome::Success, {} };
+        };
+        m_impl->commands.Add(std::move(about));
 
         auto status = MakeCommand(L"status", L"cli.group.inject", L"cmd.status.summary");
         status.handler = [](const cli::Invocation&, cli::ICliOutput& output) -> cli::Result {

@@ -14,6 +14,24 @@ namespace vmex::management
         std::uint32_t processId = 0;
     };
 
+    struct HostLink final
+    {
+        void* pipe = nullptr;
+        std::uint32_t processId = 0;
+
+        HostLink() = default;
+        ~HostLink();
+        HostLink(HostLink&& other) noexcept;
+        HostLink& operator=(HostLink&& other) noexcept;
+        HostLink(const HostLink&) = delete;
+        HostLink& operator=(const HostLink&) = delete;
+
+        [[nodiscard]] bool Valid() const noexcept { return pipe != nullptr; }
+        void Reset() noexcept;
+    };
+
+    [[nodiscard]] HostLink ConnectHost();
+    [[nodiscard]] bool IsHostImage(const std::filesystem::path& image, const std::filesystem::path& directory);
     [[nodiscard]] Snapshot Query();
     Status StartHost();
     Status StopHost();
