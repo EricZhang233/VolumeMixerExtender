@@ -81,7 +81,7 @@ add_subdirectory(Components/inject.tap)
 if(BUILD_TESTING)
     add_executable(vmex_tests Test/CoreTests.cpp)
     target_link_libraries(vmex_tests PRIVATE vmex_core)
-    foreach(suite uninstall audio commands resources config pipe)
+    foreach(suite uninstall audio recording commands resources config pipe)
         add_test(NAME "core.${suite}" COMMAND vmex_tests "${suite}")
         set_tests_properties("core.${suite}" PROPERTIES TIMEOUT 15)
     endforeach()
@@ -152,6 +152,25 @@ vmex_add_version_resource(vmex_cli "VolumeMixerExtender command line interface" 
 
 set(VMEX_PACKAGE_NAME "${VMEX_PRODUCT_NAME}_${VMEX_VERSION}")
 set(VMEX_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/output" CACHE PATH "Release package output directory")
+option(VMEX_BUILD_RECORDING_DRIVER "Build the recording driver package" ON)
+set(VMEX_SYSVAD_SOURCE "" CACHE PATH "Optional local checkout of the pinned Microsoft driver samples")
+set(VMEX_DRIVER_PACKAGE_DIR "")
+if(VMEX_BUILD_RECORDING_DRIVER)
+    find_program(VMEX_PWSH pwsh REQUIRED)
+    add_custom_target(vmex_recording_driver
+        COMMAND "${VMEX_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/Components/recording.driver/build-driver.ps1"
+            -Configuration $<CONFIG> -Generator "${CMAKE_GENERATOR}" -SysvadSource "${VMEX_SYSVAD_SOURCE}"
+        VERBATIM)
+    set(VMEX_DRIVER_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/bin/$<CONFIG>/Driver")
+    if(BUILD_TESTING)
+        add_dependencies(vmex_tests vmex_recording_driver)
+        add_test(NAME driver.package COMMAND "${VMEX_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/Test/DriverPackageTests.ps1"
+            -Path "${VMEX_DRIVER_PACKAGE_DIR}" -Version "${VMEX_VERSION}")
+        set_tests_properties(driver.package PROPERTIES TIMEOUT 30)
+        add_test(NAME driver.trust COMMAND vmex_tests driver-trust)
+        set_tests_properties(driver.trust PROPERTIES TIMEOUT 30)
+    endif()
+endif()
 
 add_custom_target(package ALL
     COMMAND "${CMAKE_COMMAND}"
@@ -164,7 +183,11 @@ add_custom_target(package ALL
         "-DVMEX_TAP_DLL=$<TARGET_FILE:vmex_tap>"
         "-DVMEX_LAUNCHER_DLL=$<TARGET_FILE:vmex_launcher>"
         "-DVMEX_DIAGNOSTICS_DLL=${VMEX_DIAGNOSTICS_DLL}"
+        "-DVMEX_DRIVER_PACKAGE_DIR=${VMEX_DRIVER_PACKAGE_DIR}"
         "-DVMEX_CONFIG=$<CONFIG>"
         -P "${CMAKE_SOURCE_DIR}/cmake/Package.cmake"
     DEPENDS vmex vmex_cli vmex_manager vmex_launcher vmex_tap
     VERBATIM)
+if(VMEX_BUILD_RECORDING_DRIVER)
+    add_dependencies(package vmex_recording_driver)
+endif()

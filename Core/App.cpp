@@ -13,6 +13,9 @@
 #include "ManagementService.h"
 #include "UserSettings.h"
 #include "Version.h"
+#include "RecordingBackend.h"
+#include "RecordingClient.h"
+#include "RecordingDriverService.h"
 
 #include <windows.h>
 
@@ -123,6 +126,9 @@ namespace vmex
         std::unique_ptr<inject::InjectionMonitor> monitor;
         inject::Deployment deployment;
         host::HostPresence presence;
+        std::unique_ptr<recording::IBackend> recordingBackend;
+        std::unique_ptr<recording::Mode> recordingMode;
+        std::jthread recordingWatchdog;
         bool comInitialized = false;
         bool ready = false;
 
@@ -132,6 +138,7 @@ namespace vmex
         }
 
         void HandleTapCommand(const inject::TapCommand& command) override;
+        std::string HandleTapRequest(const inject::TapCommand& command) override;
         void HandleSetDefault(const inject::TapCommand& command);
         void HandleSetRedirect(const inject::TapCommand& command);
         void HandleClearRedirect();
@@ -360,6 +367,11 @@ namespace vmex
 
         StopMonitoring();
         m_impl->tapPipe.reset();
+        m_impl->recordingWatchdog.request_stop();
+        if (m_impl->recordingWatchdog.joinable()) m_impl->recordingWatchdog.join();
+        StopRecording();
+        m_impl->recordingMode.reset();
+        m_impl->recordingBackend.reset();
         m_impl->presence.Release();
         log::Logger::Instance().WriteKey(log::Level::Info, kChannel, L"log.app.serve_stopped");
     }
@@ -613,8 +625,96 @@ namespace vmex
 
     }
 
+    Status App::StopRecording()
+    {
+        return m_impl->recordingMode ? m_impl->recordingMode->Disable() : Status::Ok();
+    }
+
+    std::string App::Impl::HandleTapRequest(const inject::TapCommand& command)
+    {
+        if (command.verb != inject::TapVerb::Recording)
+        {
+            HandleTapCommand(command);
+            return {};
+        }
+        const auto initialized = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        Status result;
+        if (FAILED(initialized)) result = Status::FromHResult(L"recording-com", initialized);
+        else
+        {
+            try
+            {
+                if (!recordingMode)
+                {
+                    recordingBackend = recording::CreateWindowsBackend();
+                    recordingMode = std::make_unique<recording::Mode>(*recordingBackend);
+                    recordingWatchdog = std::jthread([this](std::stop_token stop)
+                    {
+                        const auto com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+                        if (FAILED(com)) return;
+                        while (!stop.stop_requested())
+                        {
+                            recordingMode->CheckHealth();
+                            ::Sleep(200);
+                        }
+                        ::CoUninitialize();
+                    });
+                }
+                const auto& action = command.arguments[0];
+                if (action == L"on" && command.arguments.size() == 1) result = recordingMode->Enable();
+                else if (action == L"off" && command.arguments.size() == 1) result = recordingMode->Disable();
+                else if (action == L"monitor" && command.arguments.size() == 2) result = recordingMode->ChangeMonitor(command.arguments[1]);
+                else if (action == L"status" && command.arguments.size() == 1) result = recordingMode->CheckHealth();
+                else if (action != L"status" || command.arguments.size() != 1) result = Status::InvalidArguments(L"recording-action");
+            }
+            catch (...) { result = Status::Failed(L"recording-exception"); }
+            ::CoUninitialize();
+        }
+        const auto state = recordingMode ? recordingMode->State() : recording::Snapshot{};
+        return strings::ToNarrow(std::to_wstring(result.code) + L"\t" + (state.enabled ? L"1" : L"0") +
+            L"\t" + (state.cleanupPending ? L"1" : L"0") + L"\t" + state.monitorDevice + L"\t" + result.detail + L"\n");
+    }
+
     void App::RegisterCommands()
     {
+        auto driverCommand = MakeCommand(L"driver", L"cli.group.audio", L"cmd.driver.summary");
+        driverCommand.arguments.push_back(cli::ArgumentSpec{ L"action", L"cmd.driver.action", false });
+        driverCommand.handler = [](const cli::Invocation& invocation, cli::ICliOutput& output) -> cli::Result
+        {
+            const auto* action = invocation.Positional(0);
+            auto& text = App::Instance().Text();
+            if (!action || *action == L"status")
+            {
+                const auto state = recording::QueryDriver();
+                output.Field(text.Resolve(L"driver.title"), text.Resolve(!state.installed ? L"driver.absent" :
+                    state.started ? L"driver.ready" : L"driver.notStarted"));
+                output.Field(text.Resolve(L"driver.package"), text.Resolve(state.packagePresent ? L"cli.value.yes" : L"cli.value.no"));
+                if (state.problem) output.Field(text.Resolve(L"driver.problem"), std::to_wstring(state.problem));
+                return { cli::Outcome::Success, {} };
+            }
+            Status result;
+            if (*action == L"install") result = recording::InstallDriver();
+            else if (*action == L"uninstall") result = recording::UninstallDriver();
+            else result = Status::InvalidArguments(text.Resolve(L"cmd.driver.action"));
+            return { result ? cli::Outcome::Success : cli::Outcome::Failed, result.detail };
+        };
+        m_impl->commands.Add(std::move(driverCommand));
+        auto recording = MakeCommand(L"recording", L"cli.group.audio", L"cmd.recording.summary");
+        recording.arguments.push_back(cli::ArgumentSpec{ L"action", L"cmd.recording.action", false });
+        recording.options.push_back(cli::OptionSpec{ L"device", L"id", L"cmd.recording.device", true, false });
+        recording.handler = [](const cli::Invocation& invocation, cli::ICliOutput& output) -> cli::Result
+        {
+            const auto* action = invocation.Positional(0);
+            recording::Snapshot state;
+            const auto result = recording::Request(action ? *action : L"status", invocation.Option(L"device", L""), state);
+            auto& text = App::Instance().Text();
+            output.Field(text.Resolve(L"page.checkbox.recordingMode"), text.Resolve(!state.known ? L"recording.unknown" :
+                state.enabled ? L"cli.value.enabled" : L"cli.value.disabled"));
+            if (!state.monitorDevice.empty()) output.Field(text.Resolve(L"page.label.listenOutput"), state.monitorDevice);
+            if (!result) return { cli::Outcome::Failed, text.ResolveFormat(L"recording.failed", { result.detail }) };
+            return { cli::Outcome::Success, {} };
+        };
+        m_impl->commands.Add(std::move(recording));
         for (const auto name : { L"start", L"stop", L"manager", L"panel", L"logs", L"project", L"uninstall" })
         {
             const std::wstring commandName(name);

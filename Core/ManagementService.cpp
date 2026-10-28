@@ -170,6 +170,8 @@ namespace vmex::management
     Status StopInjection()
     {
         auto& app = App::Instance();
+        const auto recording = app.StopRecording();
+        if (!recording) return recording;
         app.StopMonitoring();
         inject::State state;
         const auto queried = app.Injection().QueryState(state);

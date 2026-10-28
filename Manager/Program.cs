@@ -18,6 +18,7 @@ internal static class Core
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern void VmexManagerShutdown();
     [DllImport(Dll, CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)] private static extern void VmexManagerText(string key, StringBuilder text, int capacity);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern int VmexManagerQuery([Out] int[] values, int count);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern int VmexRecordingDriverQuery([Out] int[] values, int count);
     [DllImport(Dll, CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)] internal static extern int VmexManagerExecute(int action, int value, StringBuilder error, int capacity);
     internal static string Text(string key) { var text = new StringBuilder(4096); VmexManagerText(key, text, text.Capacity); return text.ToString(); }
 }
@@ -67,6 +68,8 @@ internal sealed class ManagerWindow : Window
 {
     private readonly TextBlock status = new(), injection = new(), feedback = new();
     private readonly Button host = new(), refresh = new();
+    private readonly TextBlock driverStatus = new();
+    private readonly Button installDriver = new(), uninstallDriver = new();
     private readonly CheckBox autostart = new(), driver = new();
     private readonly StackPanel body = new() { Margin = new Thickness(32, 24, 32, 24) };
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(2) };
@@ -100,7 +103,7 @@ internal sealed class ManagerWindow : Window
         layout.Children.Add(header);
         var ready = Label("manager.ready", 12, FontWeights.Normal, true); ready.HorizontalAlignment = HorizontalAlignment.Right; ready.VerticalAlignment = VerticalAlignment.Bottom; ready.Margin = new Thickness(0, 0, 12, 6); ready.TextWrapping = TextWrapping.NoWrap;
         Grid.SetRow(ready, 0); layout.Children.Add(ready);
-        body.Margin = new Thickness(32, 4, 32, 24);
+        body.Margin = new Thickness(32, 4, 32, 12);
         var scroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         scroll.SetResourceReference(StyleProperty, "OverlayScrollViewerStyle");
         Grid.SetRow(scroll, 1); layout.Children.Add(scroll); Content = layout;
@@ -130,6 +133,19 @@ internal sealed class ManagerWindow : Window
         autostart.Click += async (_, _) => { if (!updating) await Execute(3, autostart.IsChecked == true ? 1 : 0); };
         driver.Click += async (_, _) => { if (!updating) await Execute(4, driver.IsChecked == true ? 1 : 0); };
         body.Children.Add(Label("manager.maintenance", 14, FontWeights.SemiBold));
+        var driverCard = new StackPanel();
+        driverStatus.Text = Core.Text("manager.loading");
+        driverStatus.Margin = new Thickness(0, 0, 0, 8);
+        driverCard.Children.Add(driverStatus);
+        driverCard.Children.Add(Label("driver.hint", 12, FontWeights.Normal, true));
+        var driverActions = new StackPanel { Orientation = Orientation.Horizontal };
+        installDriver.Content = Core.Text("driver.install"); installDriver.Padding = new Thickness(16, 8, 16, 8); installDriver.Margin = new Thickness(0, 0, 10, 0);
+        uninstallDriver.Content = Core.Text("driver.uninstall"); uninstallDriver.Padding = new Thickness(16, 8, 16, 8);
+        installDriver.IsEnabled = false; uninstallDriver.IsEnabled = false;
+        installDriver.Click += async (_, _) => await Execute(10);
+        uninstallDriver.Click += async (_, _) => { if (Confirm("driver.uninstall", "driver.uninstall.confirm")) await Execute(11); };
+        driverActions.Children.Add(installDriver); driverActions.Children.Add(uninstallDriver);
+        driverCard.Children.Add(driverActions); body.Children.Add(Card(driverCard, 20));
         var links = new StackPanel { Orientation = Orientation.Horizontal };
         void AddLink(string key, int action)
         {
@@ -143,7 +159,12 @@ internal sealed class ManagerWindow : Window
         AddLink("manager.logs", 5);
         AddLink("manager.project", 6);
         body.Children.Add(Card(links, 20));
-        feedback.TextWrapping = TextWrapping.Wrap; feedback.Margin = new Thickness(0, 12, 0, 0); body.Children.Add(feedback);
+        feedback.TextWrapping = TextWrapping.Wrap; feedback.Margin = new Thickness(0, 12, 0, 0);
+        var feedbackStyle = new System.Windows.Style(typeof(TextBlock));
+        var emptyFeedback = new Trigger { Property = TextBlock.TextProperty, Value = string.Empty };
+        emptyFeedback.Setters.Add(new Setter(VisibilityProperty, Visibility.Collapsed));
+        feedbackStyle.Triggers.Add(emptyFeedback); feedback.Style = feedbackStyle;
+        body.Children.Add(feedback);
         timer.Tick += async (_, _) => { Theme.Apply(this); await Update(); };
         Closing += (_, args) => { if (busy || modal) args.Cancel = true; };
         Closed += (_, _) => timer.Stop();
@@ -163,6 +184,10 @@ internal sealed class ManagerWindow : Window
                     Present(new[] { 1, 1, 0, 0, 1, 0 });
                     if (injection.Text != Core.Text("manager.panel.preparing")) throw new InvalidOperationException("Panel readiness status mismatch");
                     Present(new[] { 1, 1, 1, 0, 1, 0 });
+                    PresentDriver(new[] { 0, 0, 0, 0 });
+                    if (installDriver.IsEnabled || uninstallDriver.IsEnabled) throw new InvalidOperationException("Missing driver package must not offer installation");
+                    PresentDriver(new[] { 1, 1, 1, 0 });
+                    if (!installDriver.IsEnabled || !uninstallDriver.IsEnabled) throw new InvalidOperationException("Driver management actions unavailable");
                     if (WindowStyle != WindowStyle.SingleBorderWindow || !WindowChrome.GetWindowChrome(this).UseAeroCaptionButtons || Title != Core.Text("manager.title")) throw new InvalidOperationException("System window chrome unavailable");
                     updating = true; driver.IsChecked = true; updating = false;
                     Theme.Apply(this, false); UpdateLayout(); Preview("light");
@@ -238,6 +263,19 @@ internal sealed class ManagerWindow : Window
         var values = new int[6];
         if (await Task.Run(() => Core.VmexManagerQuery(values, values.Length)) != 0) throw new InvalidOperationException(Core.Text("manager.unresponsive"));
         Present(values);
+        var driverValues = new int[4];
+        if (await Task.Run(() => Core.VmexRecordingDriverQuery(driverValues, driverValues.Length)) != 0) throw new InvalidOperationException(Core.Text("driver.query.failed"));
+        PresentDriver(driverValues);
+    }
+
+    private void PresentDriver(int[] values)
+    {
+        var state = Core.Text(values[0] == 0 ? "driver.absent" : values[1] != 0 ? "driver.ready" : "driver.notStarted");
+        driverStatus.Text = Core.Text("driver.title") + " · " + state;
+        if (values[3] != 0) driverStatus.Text += " · " + Core.Text("driver.problem") + " " + values[3];
+        if (values[2] == 0) driverStatus.Text += " · " + Core.Text("driver.package.missing");
+        installDriver.IsEnabled = values[2] != 0;
+        uninstallDriver.IsEnabled = values[0] != 0;
     }
 
     private void Present(int[] values)
@@ -259,7 +297,7 @@ internal sealed class ManagerWindow : Window
             var error = new StringBuilder(4096);
             var result = await Task.Run(() => Core.VmexManagerExecute(action, value, error, error.Capacity));
             if (result != 0) { Error(error.ToString()); await ReadState(); return; }
-            feedback.Text = "";
+            feedback.Text = error.ToString();
             if (action is 2 or 7)
             {
                 if (action == 7) MessageBox.Show(this, Core.Text("manager.uninstall.done"), Title, MessageBoxButton.OK, MessageBoxImage.Information);

@@ -83,13 +83,14 @@ namespace vmex::audio
         public:
             AudioSessionHandle(std::wstring deviceId, std::wstring instanceId, std::uint32_t processId,
                                bool systemSounds, detail::Ptr<ISimpleAudioVolume> volume,
-                               detail::Ptr<IAudioMeterInformation> meter)
+                               detail::Ptr<IAudioMeterInformation> meter, SessionFollowMode followMode)
                 : m_deviceId(std::move(deviceId))
                 , m_instanceId(std::move(instanceId))
                 , m_processId(processId)
                 , m_systemSounds(systemSounds)
                 , m_volume(std::move(volume))
                 , m_meter(std::move(meter))
+                , m_followMode(followMode)
             {
             }
 
@@ -99,6 +100,8 @@ namespace vmex::audio
 
             Status Rebind(std::wstring_view deviceId, std::wstring_view instanceId) override
             {
+                if (m_followMode == SessionFollowMode::Endpoint && deviceId != m_deviceId)
+                    return Status::InvalidArguments(L"session-endpoint-locked");
                 if (deviceId.empty() || instanceId.empty())
                 {
                     return Status::InvalidArguments(L"Rebind: deviceId and instanceId are both required");
@@ -177,7 +180,8 @@ namespace vmex::audio
             [[nodiscard]] bool Reacquire()
             {
                 detail::SessionTarget target;
-                if (!detail::ResolveAppSessionTarget(m_instanceId, m_processId, m_systemSounds, m_deviceId, target))
+                if (!detail::ResolveAppSessionTarget(m_instanceId, m_processId, m_systemSounds, m_deviceId, target,
+                    m_followMode == SessionFollowMode::Endpoint))
                 {
                     return false;
                 }
@@ -195,6 +199,7 @@ namespace vmex::audio
             bool m_systemSounds = false;
             detail::Ptr<ISimpleAudioVolume> m_volume;
             detail::Ptr<IAudioMeterInformation> m_meter;
+            SessionFollowMode m_followMode;
         };
 
         class WasapiAudioDeviceManager final : public IAudioDeviceManager
@@ -233,6 +238,16 @@ namespace vmex::audio
                 return Status::Ok();
             }
 
+            Status EnumerateRoutingDevices(bool recordingMode, std::vector<DeviceInfo>& devices) override
+            {
+                devices.clear();
+                std::vector<detail::Endpoint> endpoints;
+                if (!detail::EnumEndpoints(eRender, endpoints, recordingMode))
+                    return Status::Failed(L"routing-devices");
+                for (const auto& endpoint : endpoints) devices.push_back(ToDeviceInfo(endpoint));
+                return Status::Ok();
+            }
+
             Status FindVirtualDevice(DeviceInfo& device) override
             {
                 device = {};
@@ -262,7 +277,7 @@ namespace vmex::audio
 
                 device.id = id;
                 std::vector<detail::Endpoint> endpoints;
-                if (detail::EnumEndpoints(ToFlow(flow), endpoints))
+                if (detail::EnumEndpoints(ToFlow(flow), endpoints, true))
                 {
                     for (const auto& endpoint : endpoints)
                     {
@@ -341,12 +356,12 @@ namespace vmex::audio
             }
 
             Status EnumerateAppSessions(const std::map<std::wstring, std::wstring>& preferredDevices,
-                                        std::vector<AppSessionInfo>& sessions) override
+                                        std::vector<AppSessionInfo>& sessions, std::wstring_view deviceId) override
             {
                 sessions.clear();
 
                 std::vector<detail::Endpoint> endpoints;
-                if (!detail::EnumEndpoints(eRender, endpoints))
+                if (!detail::EnumEndpoints(eRender, endpoints, true))
                 {
                     return Status::Failed(L"EnumAudioEndpoints failed (no device enumerator?)");
                 }
@@ -358,11 +373,13 @@ namespace vmex::audio
                 std::vector<AudioSessionState> states;
                 for (const auto& endpoint : endpoints)
                 {
+                    if (!deviceId.empty() && endpoint.id != deviceId) continue;
                     std::vector<detail::Session> found;
                     if (!detail::EnumSessionsOnce(endpoint.id, found)) continue;
 
                     for (const auto& session : found)
                     {
+                        if (session.state == AudioSessionStateExpired) continue;
                         candidates.push_back(ToAppSessionInfo(session, endpoint));
                         states.push_back(session.state);
                     }
@@ -404,7 +421,7 @@ namespace vmex::audio
             }
 
             Status OpenSession(std::wstring_view deviceId, std::wstring_view instanceId,
-                               std::unique_ptr<IAudioSessionHandle>& handle) override
+                               std::unique_ptr<IAudioSessionHandle>& handle, SessionFollowMode followMode) override
             {
                 handle.reset();
                 if (deviceId.empty() || instanceId.empty())
@@ -438,7 +455,7 @@ namespace vmex::audio
 
                 handle = std::make_unique<AudioSessionHandle>(
                     std::wstring(deviceId), std::wstring(instanceId), processId, systemSounds, std::move(volume),
-                    detail::ResolveSessionMeter(std::wstring(deviceId), std::wstring(instanceId)));
+                    detail::ResolveSessionMeter(std::wstring(deviceId), std::wstring(instanceId)), followMode);
                 return Status::Ok();
             }
 

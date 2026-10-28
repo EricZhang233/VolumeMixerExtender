@@ -61,7 +61,7 @@
 | :--- | :--- |
 | Operating system | Windows 11 26H2 (Build 26300) or later, x64 |
 | Runtime dependencies | No extra runtime for the host or CLI; the WPF manager uses Windows 11’s built-in .NET Framework 4.8 without bundling a runtime |
-| Administrator rights | Not required — everything runs per-user (only `HKCU` and your user folders are written) |
+| Administrator rights | Not needed for normal operation; recording-driver installation and removal elevate separately |
 | Installation | Not required — extract the archive and run |
 
 ### Three steps
@@ -107,6 +107,10 @@
 *   **Stereo levels**: two peak bars sit above and below the slider track, using a lighter system accent colour while the volume track uses a darker shade of the same colour.
 
 ### Independent manager
+
+Recording mode appears as the last row in the output-device list, with a native toggle. It switches the default output to virtual device V and mirrors audio to physical monitor R. The application mixer controls V directly, so application volume and mute affect both recording and monitoring; R's master volume only affects monitoring. V is hidden from the top device list and becomes available in application routing menus while recording mode is enabled.
+
+Recording mode requires the virtual audio driver in the bundled `Driver/` folder. The manager provides installation and removal buttons, verifies signatures and imports certificates. These operations require administrator privileges; follow the on-screen instructions to prepare the system for the first installation. Physical-machine audio validation remains pending.
 
 Click the footer gear or run `vmex_manager.exe` to open the WPF manager. The settings page has been removed from the audio panel. Opening the manager automatically starts the host and provides an Open audio panel button; closing it leaves no manager process or tray icon. The host and sign-in auto-start retain their original entry point and use Core directly. Opening it again activates the existing window.
 
@@ -176,7 +180,7 @@ flowchart TB
 *   **The page is the payload**: the interface is rendered by a module injected into the system shell, following the system light/dark theme and accent colour — no extra window and no tray presence.
 *   **Actions go through a local pipe**: write operations from the page are handed to the host over a named pipe, so the page itself never holds system handles for long.
 *   **Facts, not mirrors**: default devices and redirections are read straight from the current system state, with no local copy that could drift out of sync.
-*   **Security boundary**: it runs at the same integrity level as the system shell, requests no administrator rights and modifies no system files.
+*   **Security boundary**: normal operation uses the system shell's integrity level and does not patch system components. Driver installation and removal request administrator privileges separately.
 
 ---
 
@@ -199,7 +203,7 @@ Click the footer gear to open the manager, then select "Exit": panel integration
 <details>
 <summary><b>Does it need installing, and does it write to the registry?</b></summary>
 
-No installation is required — extract and run. Enabling "Start with Windows" creates a shortcut in the Startup folder. User settings (for example "Show driver name") are stored under `HKCU\Software\EricSoft\VolumeMixerExtender`; logs and cached icons are stored under `%TEMP%\eric\VolumeMixerExtender`. The program loads its injection components from the extracted directory and hooks into the system shell. It modifies no system files and needs no administrator rights.
+Normal features work after extraction. Enabling "Start with Windows" creates a shortcut in the Startup folder. User settings (for example "Show driver name") are stored under `HKCU\Software\EricSoft\VolumeMixerExtender`; logs and cached icons are stored under `%TEMP%\eric\VolumeMixerExtender`. The program loads its injection components from the extracted directory and hooks into the system shell. Recording mode requires a separately installed driver; driver installation and removal request administrator privileges.
 </details>
 
 <details>

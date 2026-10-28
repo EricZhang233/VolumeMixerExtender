@@ -21,13 +21,20 @@ file(COPY "${VMEX_MANAGER_EXECUTABLE}" DESTINATION "${vmex_stage}")
 file(COPY "${VMEX_TAP_DLL}" DESTINATION "${vmex_stage}")
 file(COPY "${VMEX_LAUNCHER_DLL}" DESTINATION "${vmex_stage}")
 file(COPY "${VMEX_DIAGNOSTICS_DLL}" DESTINATION "${vmex_stage}")
+set(vmex_members vmex.exe vmex_cli.exe vmex_core.dll vmex_manager.exe vmex_tap.dll vmex_launcher.dll xamldiagnostics.dll)
+if(VMEX_DRIVER_PACKAGE_DIR)
+    file(MAKE_DIRECTORY "${vmex_stage}/Driver")
+    foreach(name vmex_recording.sys vmex_recording.inf vmex_recording.cat vmex_recording.cer)
+        file(COPY "${VMEX_DRIVER_PACKAGE_DIR}/${name}" DESTINATION "${vmex_stage}/Driver")
+        list(APPEND vmex_members "Driver/${name}")
+    endforeach()
+endif()
 
 file(REMOVE "${VMEX_PACKAGE_DIR}/${VMEX_PACKAGE_NAME}.zip")
 
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E tar cf "${VMEX_PACKAGE_DIR}/${VMEX_PACKAGE_NAME}.zip"
-        --format=zip vmex.exe vmex_cli.exe vmex_core.dll vmex_manager.exe
-        vmex_tap.dll vmex_launcher.dll xamldiagnostics.dll
+        --format=zip ${vmex_members}
     WORKING_DIRECTORY "${vmex_stage}"
     RESULT_VARIABLE vmex_tar_result)
 

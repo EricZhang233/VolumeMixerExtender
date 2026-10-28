@@ -14,6 +14,7 @@ add_library(vmex_core SHARED
     App.cpp
     AppIcons.cpp
     AudioDeviceManager.cpp
+    AudioMirror.cpp
     AutostartEntry.cpp
     CliTypes.cpp
     CommandRegistry.cpp
@@ -28,6 +29,10 @@ add_library(vmex_core SHARED
     ManagementService.cpp
     ManagementExports.cpp
     MaintenanceWorkflow.cpp
+    RecordingMode.cpp
+    RecordingBackend.cpp
+    RecordingClient.cpp
+    RecordingDriverService.cpp
     PayloadDeployment.cpp
     PayloadResources.cpp
     Platform.cpp
@@ -58,6 +63,11 @@ target_link_libraries(vmex_core PUBLIC
     oleaut32
     mmdevapi
     shell32
+    setupapi
+    cfgmgr32
+    crypt32
+    wintrust
+    newdev
     uuid
     version
     windowscodecs

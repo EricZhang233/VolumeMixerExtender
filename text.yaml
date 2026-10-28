@@ -110,7 +110,7 @@ skill.title: VolumeMixerExtender 接入文档
 skill.section.purpose: 用途
 skill.purpose.text: 通过命令行完整驱动快速设置音量面板的注入入口与自定义声音页面, 不依赖图形界面。
 skill.section.workflow: 工作流
-skill.workflow.text: 使用 start 启动后台程序、status 查询状态、stop 退出；manager 打开独立管理器；show-driver-name 与 autostart 接受 on/off；clear-redirect 清除全部应用重定向与音量偏好；uninstall --yes 清除自启、配置、缓存及应用音频偏好并保留程序文件。host 仍可在当前终端常驻。
+skill.workflow.text: 使用 start 启动后台程序、status 查询状态、stop 退出；manager 打开独立管理器；show-driver-name 与 autostart 接受 on/off；recording on/off/status 切换或查询录制模式，recording monitor --device=<id> 更换监听设备；录制时混音区直接控制虚拟输出 V，应用音量与静音同时影响录制和监听；driver status/install/uninstall 查询或管理虚拟音频驱动，安装和卸载需要管理员权限；clear-redirect 清除全部应用重定向与音量偏好；uninstall --yes 清除自启、配置、缓存及应用音频偏好并保留程序文件，驱动卸载使用 driver uninstall。host 仍可在当前终端常驻。
 skill.section.commands: 命令清单
 skill.section.exitcodes: 退出码
 skill.exitcode.text: 0 成功; 1 参数错误; 2 尚未实现; 3 运行失败
@@ -275,6 +275,33 @@ page.label.defaultOutput: 默认输出设备
 page.label.listenOutput: 监听输出设备
 page.label.defaultInput: 默认输入设备
 page.checkbox.recordingMode: 录制模式
+log.recording.result: 录制模式操作 {0}，结果 {1}，详情 {2}
+log.recording.dropped: 监听缓冲溢出，丢弃 {0} 帧
+cmd.recording.summary: 查询或切换录制模式，通过虚拟输出录制并监听到实体设备
+cmd.recording.action: on、off、status 或 monitor（默认 status）
+cmd.recording.device: monitor 操作的监听输出设备标识
+recording.failed: 录制模式操作失败：{0}
+recording.unknown: 状态未知
+recording.driver.missing: 未安装录制模式驱动，请在管理器中安装。
+recording.driver.notReady: 录制模式驱动尚未就绪，请检查管理器中的驱动状态。
+cmd.driver.summary: 查询、安装或卸载录制模式的虚拟音频驱动
+cmd.driver.action: status、install 或 uninstall（默认 status）
+driver.title: 录制模式驱动
+driver.install: 安装驱动
+driver.uninstall: 卸载驱动
+driver.absent: 未安装
+driver.ready: 已就绪
+driver.notStarted: 已安装，尚未运行
+driver.package: 驱动包完整
+driver.package.missing: 缺少完整驱动包
+driver.problem: 设备问题代码
+driver.query.failed: 无法查询录制模式驱动状态
+driver.operation.failed: 驱动操作未成功，请查看日志并检查驱动签名。
+driver.restart: 驱动操作已完成，需要重启 Windows 后生效。
+driver.hint: 安装时验证驱动签名，并导入随包的自签证书（如有）。自签驱动仅用于 Windows 测试签名环境；安装和卸载需要管理员权限。
+driver.signature.invalid: 驱动签名、证书或目录校验失败，已停止安装。
+driver.testsigning.required: 当前是自签测试驱动。请先在测试机手动启用 Windows 测试签名并重启；如受安全启动策略限制，需要先处理该限制。管理器不会修改启动策略。
+driver.uninstall.confirm: 将先退出录制模式，再卸载虚拟音频驱动。是否继续？
 page.toggle.autostart: 开机启动
 page.toggle.showDriverName: 显示驱动名
 page.button.uninstall: 从系统卸载

@@ -219,7 +219,7 @@ inline bool GetDefaultEndpointId(EDataFlow flow, std::wstring& out)
     return !out.empty();
 }
 
-inline bool EnumEndpointsOnce(EDataFlow flow, std::vector<Endpoint>& out)
+inline bool EnumEndpointsOnce(EDataFlow flow, std::vector<Endpoint>& out, bool includeVirtual = false)
 {
     out.clear();
     auto e = MakeEnumerator();
@@ -235,7 +235,7 @@ inline bool EnumEndpointsOnce(EDataFlow flow, std::vector<Endpoint>& out)
         if (FAILED(coll->Item(i, dev.put())) || !dev) continue;
         Endpoint ep;
         if (!ReadEndpoint(dev.get(), flow, ep)) continue;
-        if (IsOurVirtualDevice(ep)) continue;
+        if (!includeVirtual && IsOurVirtualDevice(ep)) continue;
         out.push_back(std::move(ep));
     }
 
@@ -246,11 +246,11 @@ inline bool EnumEndpointsOnce(EDataFlow flow, std::vector<Endpoint>& out)
     return true;
 }
 
-inline bool EnumEndpoints(EDataFlow flow, std::vector<Endpoint>& out)
+inline bool EnumEndpoints(EDataFlow flow, std::vector<Endpoint>& out, bool includeVirtual = false)
 {
-    if (EnumEndpointsOnce(flow, out) && !out.empty()) return true;
+    if (EnumEndpointsOnce(flow, out, includeVirtual) && !out.empty()) return true;
     ::Sleep(30);
-    return EnumEndpointsOnce(flow, out);
+    return EnumEndpointsOnce(flow, out, includeVirtual);
 }
 
 inline bool FindVirtualEndpoint(std::wstring& id, std::wstring& friendly)
@@ -616,13 +616,13 @@ struct SessionTarget
 };
 
 inline bool ResolveAppSessionTarget(const std::wstring& sessionId, DWORD processId, bool systemSounds,
-                                    const std::wstring& preferredDeviceId, SessionTarget& out)
+                                    const std::wstring& preferredDeviceId, SessionTarget& out, bool endpointOnly = false)
 {
     out = SessionTarget{};
     if (sessionId.empty() && processId == 0 && !systemSounds) return false;
 
     std::vector<Endpoint> endpoints;
-    if (!EnumEndpoints(eRender, endpoints)) return false;
+    if (!EnumEndpoints(eRender, endpoints, true)) return false;
 
     std::wstring defaultId;
     GetDefaultEndpointId(eRender, defaultId);
@@ -633,6 +633,7 @@ inline bool ResolveAppSessionTarget(const std::wstring& sessionId, DWORD process
 
     for (const auto& endpoint : endpoints)
     {
+        if (endpointOnly && endpoint.id != preferredDeviceId) continue;
         std::vector<Session> sessions;
         if (!EnumSessionsOnce(endpoint.id, sessions)) continue;
 

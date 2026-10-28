@@ -144,6 +144,12 @@ namespace vmex::audio
         bool systemSounds = false;
     };
 
+    enum class SessionFollowMode
+    {
+        Application,
+        Endpoint
+    };
+
     class IAudioSessionHandle
     {
     public:

@@ -1,0 +1,334 @@
+diff --git a/audio/sysvad/EndpointsCommon/MiniportAudioEngineNode.cpp b/audio/sysvad/EndpointsCommon/MiniportAudioEngineNode.cpp
+index 8c3979f..c434a20 100644
+--- a/audio/sysvad/EndpointsCommon/MiniportAudioEngineNode.cpp
++++ b/audio/sysvad/EndpointsCommon/MiniportAudioEngineNode.cpp
+@@ -703,7 +703,8 @@ NTSTATUS CMiniportWaveRT::SetDeviceChannelMute(_In_  ULONG _ulNodeId, _In_ UINT3
+     DPF_ENTER(("[CMiniportWaveRT::SetEndpointChannelMute]"));
+     IF_TRUE_ACTION_JUMP(_ulNodeId != KSNODE_WAVE_AUDIO_ENGINE, ntStatus = STATUS_INVALID_DEVICE_REQUEST, Exit);
+ 
+-    ntStatus = SetChannelMute(_uiChannel, _bMute);
++    UNREFERENCED_PARAMETER(_bMute);
++    ntStatus = SetChannelMute(_uiChannel, FALSE);
+ 
+ Exit:
+     return ntStatus;
+@@ -766,6 +767,7 @@ NTSTATUS CMiniportWaveRT::GetVolumeChannelCount(_Out_  UINT32 *_pulChannelCount)
+ 
+     DPF_ENTER(("[CMiniportWaveRT::GetVolumeChannelCount]"));
+ 
++#if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND) || defined(SYSVAD_A2DP_SIDEBAND)
+     if (IsSidebandDevice() && m_pSidebandDevice->IsVolumeSupported(m_DeviceType))
+     {
+         ULONG propSize = 0;
+@@ -775,6 +777,7 @@ NTSTATUS CMiniportWaveRT::GetVolumeChannelCount(_Out_  UINT32 *_pulChannelCount)
+         *_pulChannelCount = pMembers->MembersCount;
+     }
+     else
++#endif
+     {
+         *_pulChannelCount = m_DeviceMaxChannels;
+     }
+@@ -789,6 +792,7 @@ NTSTATUS CMiniportWaveRT::GetVolumeSteppings(_Out_writes_bytes_(_ui32DataSize) P
+     ASSERT (_pKsPropStepLong);
+     DPF_ENTER(("[CMiniportWaveRT::GetVolumeSteppings]"));
+ 
++#if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND) || defined(SYSVAD_A2DP_SIDEBAND)
+     if (IsSidebandDevice() && m_pSidebandDevice->IsVolumeSupported(m_DeviceType))
+     {
+         // For Sideband Devices copy values from the Sideband DDI property descriptor
+@@ -814,6 +818,7 @@ NTSTATUS CMiniportWaveRT::GetVolumeSteppings(_Out_writes_bytes_(_ui32DataSize) P
+         }
+     }
+     else
++#endif
+     {
+         ASSERT(ulChannelCount <= m_DeviceMaxChannels);
+         if (ulChannelCount > m_DeviceMaxChannels)
+@@ -849,14 +854,17 @@ NTSTATUS CMiniportWaveRT::GetChannelVolume(_In_  UINT32 _uiChannel, _Out_ LONG *
+     PAGED_CODE ();
+     ASSERT (_pVolume);
+     DPF_ENTER(("[CMiniportWaveRT::GetChannelVolume]"));
++    if (_uiChannel != ALL_CHANNELS_ID && _uiChannel >= m_DeviceMaxChannels) return STATUS_INVALID_PARAMETER;
+ 
+     NTSTATUS status = STATUS_SUCCESS;
+ 
++#if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND) || defined(SYSVAD_A2DP_SIDEBAND)
+     if (IsSidebandDevice() && m_pSidebandDevice->IsVolumeSupported(m_DeviceType))
+     {
+         status = m_pSidebandDevice->GetVolume(m_DeviceType, _uiChannel, _pVolume);
+     }
+     else
++#endif
+     {
+         if (_uiChannel == ALL_CHANNELS_ID)
+         {
+@@ -876,12 +884,15 @@ NTSTATUS CMiniportWaveRT::SetChannelVolume(_In_  UINT32 _uiChannel, _In_  LONG _
+ {
+     PAGED_CODE ();
+     DPF_ENTER(("[CMiniportWaveRT::SetChannelVolume]"));
++    if (_uiChannel != ALL_CHANNELS_ID && _uiChannel >= m_DeviceMaxChannels) return STATUS_INVALID_PARAMETER;
+ 
++#if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND) || defined(SYSVAD_A2DP_SIDEBAND)
+     if (IsSidebandDevice() && m_pSidebandDevice->IsVolumeSupported(m_DeviceType))
+     {
+         return m_pSidebandDevice->SetVolume(m_DeviceType, _uiChannel, _Volume);
+     }
+     else
++#endif
+     {
+         // Normalize volume only for non-sideband devices.
+         // Volume levels are governed by Sideband provider
+@@ -979,6 +990,7 @@ NTSTATUS CMiniportWaveRT::GetMuteChannelCount(_Out_  UINT32 *_pulChannelCount)
+ 
+     DPF_ENTER(("[CMiniportWaveRT::GetMuteChannelCount]"));
+ 
++#if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND) || defined(SYSVAD_A2DP_SIDEBAND)
+     if (IsSidebandDevice() && m_pSidebandDevice->IsMuteSupported(m_DeviceType))
+     {
+         ULONG propSize = 0;
+@@ -988,6 +1000,7 @@ NTSTATUS CMiniportWaveRT::GetMuteChannelCount(_Out_  UINT32 *_pulChannelCount)
+         *_pulChannelCount = pMembers->MembersCount;
+     }
+     else
++#endif
+     {
+         *_pulChannelCount = m_DeviceMaxChannels;
+     }
+@@ -1002,6 +1015,7 @@ NTSTATUS CMiniportWaveRT::GetMuteSteppings(_Out_writes_bytes_(_ui32DataSize)  PK
+     ASSERT (_pKsPropStepLong);
+     DPF_ENTER(("[CMiniportWaveRT::GetMuteSteppings]"));
+ 
++#if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND) || defined(SYSVAD_A2DP_SIDEBAND)
+     if (IsSidebandDevice() && m_pSidebandDevice->IsMuteSupported(m_DeviceType))
+     {
+         // For Sideband Devices copy values from the Sideband DDI property descriptor
+@@ -1028,6 +1042,7 @@ NTSTATUS CMiniportWaveRT::GetMuteSteppings(_Out_writes_bytes_(_ui32DataSize)  PK
+ 
+     }
+     else
++#endif
+     {
+         ASSERT(ulChannelCount <= m_DeviceMaxChannels);
+ 
+@@ -1051,12 +1066,15 @@ NTSTATUS CMiniportWaveRT::GetChannelMute(_In_  UINT32 _uiChannel, _Out_  BOOL *_
+     PAGED_CODE ();
+     ASSERT (_pbMute);
+     DPF_ENTER(("[CMiniportWaveRT::GetChannelMute]"));
++    if (_uiChannel != ALL_CHANNELS_ID && _uiChannel >= m_DeviceMaxChannels) return STATUS_INVALID_PARAMETER;
+ 
++#if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND) || defined(SYSVAD_A2DP_SIDEBAND)
+     if (IsSidebandDevice() && m_pSidebandDevice->IsMuteSupported(m_DeviceType))
+     {
+         *_pbMute = m_pSidebandDevice->GetMute(m_DeviceType, _uiChannel);
+     }
+     else
++#endif
+     {
+         if (_uiChannel == ALL_CHANNELS_ID)
+         {
+@@ -1076,11 +1094,14 @@ NTSTATUS CMiniportWaveRT::SetChannelMute(_In_  UINT32 _uiChannel, _In_  BOOL _bM
+ {
+     PAGED_CODE ();
+     DPF_ENTER(("[CMiniportWaveRT::SetChannelMute]"));
++    if (_uiChannel != ALL_CHANNELS_ID && _uiChannel >= m_DeviceMaxChannels) return STATUS_INVALID_PARAMETER;
+ 
++#if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND) || defined(SYSVAD_A2DP_SIDEBAND)
+     if (IsSidebandDevice() && m_pSidebandDevice->IsMuteSupported(m_DeviceType))
+     {
+         return m_pSidebandDevice->SetMute(m_DeviceType, _uiChannel, _bMute);
+     }
++#endif
+ 
+     // Will reach here only if not handled through Sideband
+     if (_uiChannel == ALL_CHANNELS_ID)
+diff --git a/audio/sysvad/EndpointsCommon/mintopo.cpp b/audio/sysvad/EndpointsCommon/mintopo.cpp
+index 9fb2cc2..6642419 100644
+--- a/audio/sysvad/EndpointsCommon/mintopo.cpp
++++ b/audio/sysvad/EndpointsCommon/mintopo.cpp
+@@ -106,6 +106,7 @@ Return Value:
+     PAGED_CODE();
+ 
+     DPF_ENTER(("[CMiniportTopology::~CMiniportTopology]"));
++    VmexRecordingDetach(this);
+ 
+ #if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND) || defined (SYSVAD_A2DP_SIDEBAND)
+     if (IsSidebandDevice())
+@@ -319,6 +320,7 @@ Return Value:
+ #endif  // defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND) || defined(SYSVAD_A2DP_SIDEBAND)
+ 
+ Done:
++    if (NT_SUCCESS(ntStatus) && m_DeviceType == eSpeakerDevice) VmexRecordingAttach(this);
+     return ntStatus;
+ } // Init
+ 
+diff --git a/audio/sysvad/EndpointsCommon/speakertopo.cpp b/audio/sysvad/EndpointsCommon/speakertopo.cpp
+index 002b117..7c64635 100644
+--- a/audio/sysvad/EndpointsCommon/speakertopo.cpp
++++ b/audio/sysvad/EndpointsCommon/speakertopo.cpp
+@@ -55,6 +55,7 @@ Return Value:
+     //
+     NTSTATUS            ntStatus = STATUS_INVALID_DEVICE_REQUEST;
+     PCMiniportTopology  pMiniport = (PCMiniportTopology)PropertyRequest->MajorTarget;
++    SpeakerJackDescBridge.IsConnected = VmexRecordingConnected();
+ 
+     if (IsEqualGUIDAligned(*PropertyRequest->PropertyItem->Set, KSPROPSETID_Jack))
+     {
+@@ -72,7 +73,7 @@ Return Value:
+                 PropertyRequest,
+                 ARRAYSIZE(SpeakerJackDescriptions),
+                 SpeakerJackDescriptions,
+-                0 // jack capabilities
++                JACKDESC2_PRESENCE_DETECT_CAPABILITY
+                 );
+         }
+         else if (PropertyRequest->PropertyItem->Id == KSPROPERTY_JACK_DESCRIPTION3)
+diff --git a/audio/sysvad/EndpointsCommon/speakertoptable.h b/audio/sysvad/EndpointsCommon/speakertoptable.h
+index ea3890f..cce745d 100644
+--- a/audio/sysvad/EndpointsCommon/speakertoptable.h
++++ b/audio/sysvad/EndpointsCommon/speakertoptable.h
+@@ -93,7 +93,7 @@ KSJACK_DESCRIPTION SpeakerJackDescBridge =
+     eGeoLocFront,
+     eGenLocPrimaryBox,
+     ePortConnIntegratedDevice,
+-    TRUE
++    FALSE
+ };
+ 
+ // Only return a KSJACK_DESCRIPTION for the physical bridge pin.
+@@ -163,7 +163,12 @@ PCPROPERTY_ITEM PropertiesSpeakerTopoFilter[] =
+     }
+ };
+ 
+-DEFINE_PCAUTOMATION_TABLE_PROP(AutomationSpeakerTopoFilter, PropertiesSpeakerTopoFilter);
++static PCEVENT_ITEM VmexSpeakerJackEvents[] =
++{
++    { &KSEVENTSETID_PinCapsChange, KSEVENT_PINCAPS_JACKINFOCHANGE,
++      KSEVENT_TYPE_ENABLE | KSEVENT_TYPE_BASICSUPPORT, CMiniportTopology_EventHandler_JackState }
++};
++DEFINE_PCAUTOMATION_TABLE_PROP_EVENT(AutomationSpeakerTopoFilter, PropertiesSpeakerTopoFilter, VmexSpeakerJackEvents);
+ 
+ //=============================================================================
+ static
+diff --git a/audio/sysvad/EndpointsCommon/speakerwavtable.h b/audio/sysvad/EndpointsCommon/speakerwavtable.h
+index 6fb058a..5240d9f 100644
+--- a/audio/sysvad/EndpointsCommon/speakerwavtable.h
++++ b/audio/sysvad/EndpointsCommon/speakerwavtable.h
+@@ -51,8 +51,8 @@ Abstract:
+ // Max # of pin instances.
+ //
+ #define SPEAKER_MAX_INPUT_SYSTEM_STREAMS            6
+-#define SPEAKER_MAX_INPUT_OFFLOAD_STREAMS           MAX_INPUT_OFFLOAD_STREAMS
+-#define SPEAKER_MAX_OUTPUT_LOOPBACK_STREAMS         MAX_OUTPUT_LOOPBACK_STREAMS
++#define SPEAKER_MAX_INPUT_OFFLOAD_STREAMS           0
++#define SPEAKER_MAX_OUTPUT_LOOPBACK_STREAMS         0
+ 
+ //=============================================================================
+ static 
+diff --git a/audio/sysvad/TabletAudioSample/minipairs.h b/audio/sysvad/TabletAudioSample/minipairs.h
+index 0d00f5a..9c896cf 100644
+--- a/audio/sysvad/TabletAudioSample/minipairs.h
++++ b/audio/sysvad/TabletAudioSample/minipairs.h
+@@ -160,6 +160,8 @@ PHYSICALCONNECTIONTABLE SpeakerTopologyPhysicalConnections[] =
+     }
+ };
+ 
++#include "Endpoint.h"
++
+ static
+ ENDPOINT_MINIPAIR SpeakerMiniports =
+ {
+@@ -167,23 +169,23 @@ ENDPOINT_MINIPAIR SpeakerMiniports =
+     L"TopologySpeaker",                                     // make sure this or the template name matches with KSNAME_TopologySpeaker in the inf's [Strings] section 
+     NULL,                                                   // optional template name
+     CreateMiniportTopologySYSVAD,
+-    &SpeakerTopoMiniportFilterDescriptor,
++    &VmexTopologyFilter,
+     0, NULL,                                                // Interface properties
+     L"WaveSpeaker",                                         // make sure this or the template name matches with KSNAME_WaveSpeaker in the inf's [Strings] section
+     NULL,                                                   // optional template name
+     CreateMiniportWaveRTSYSVAD,
+-    &SpeakerWaveMiniportFilterDescriptor,
++    &VmexWaveFilter,
+     ARRAYSIZE(SysvadWaveFilterInterfacePropertiesRender),   // Interface properties
+     SysvadWaveFilterInterfacePropertiesRender,
+     SPEAKER_DEVICE_MAX_CHANNELS,
+-    SpeakerPinDeviceFormatsAndModes,
+-    SIZEOF_ARRAY(SpeakerPinDeviceFormatsAndModes),
+-    SpeakerTopologyPhysicalConnections,
+-    SIZEOF_ARRAY(SpeakerTopologyPhysicalConnections),
+-    ENDPOINT_OFFLOAD_SUPPORTED,
+-    SpeakerModulesWaveFilter, 
+-    SIZEOF_ARRAY(SpeakerModulesWaveFilter),
+-    &SpeakerModuleNotificationDeviceId,
++    VmexPinFormats,
++    SIZEOF_ARRAY(VmexPinFormats),
++    VmexPhysicalConnections,
++    SIZEOF_ARRAY(VmexPhysicalConnections),
++    ENDPOINT_NO_FLAGS,
++    nullptr,
++    0,
++    nullptr,
+ };
+ 
+ /*********************************************************************
+@@ -510,9 +512,6 @@ static
+ PENDPOINT_MINIPAIR  g_RenderEndpoints[] = 
+ {
+     &SpeakerMiniports,
+-    &SpeakerHpMiniports,
+-    &HdmiMiniports,
+-    &SpdifMiniports,
+ };
+ 
+ #define g_cRenderEndpoints  (SIZEOF_ARRAY(g_RenderEndpoints))
+@@ -524,13 +523,10 @@ PENDPOINT_MINIPAIR  g_RenderEndpoints[] =
+ static
+ PENDPOINT_MINIPAIR  g_CaptureEndpoints[] = 
+ {
+-    &MicInMiniports,
+-    &MicArray1Miniports,
+-    &MicArray2Miniports,
+-    &MicArray3Miniports,
++    nullptr,
+ };
+ 
+-#define g_cCaptureEndpoints (SIZEOF_ARRAY(g_CaptureEndpoints))
++#define g_cCaptureEndpoints 0
+ 
+ //=============================================================================
+ //
+diff --git a/audio/sysvad/adapter.cpp b/audio/sysvad/adapter.cpp
+index 0f44c59..dcc9501 100644
+--- a/audio/sysvad/adapter.cpp
++++ b/audio/sysvad/adapter.cpp
+@@ -588,6 +588,9 @@ Return Value:
+     //
+     gPCDriverUnloadRoutine = DriverObject->DriverUnload;
+     DriverObject->DriverUnload = DriverUnload;
++    g_DoNotCreateDataFiles = 1;
++    ntStatus = VmexRecordingInitialize(DriverObject);
++    if (!NT_SUCCESS(ntStatus)) goto Done;
+ 
+     //
+     // All done.
+@@ -1227,6 +1230,7 @@ Return Value:
+     case IRP_MN_REMOVE_DEVICE:
+     case IRP_MN_SURPRISE_REMOVAL:
+     case IRP_MN_STOP_DEVICE:
++        VmexRecordingRemove();
+         ext = static_cast<PortClassDeviceContext*>(_DeviceObject->DeviceExtension);
+ 
+         if (ext->m_pCommon != NULL)
+diff --git a/audio/sysvad/sysvad.h b/audio/sysvad/sysvad.h
+index a3cc555..2485271 100644
+--- a/audio/sysvad/sysvad.h
++++ b/audio/sysvad/sysvad.h
+@@ -79,7 +79,7 @@ DEFINE_GUIDSTRUCT("5B722BF8-F0AB-47ee-B9C8-8D61D31375A1", PID_SYSVAD);
+ // Default volume settings.
+ #define VOLUME_STEPPING_DELTA       0x8000
+ #define VOLUME_SIGNED_MAXIMUM       0x00000000
+-#define VOLUME_SIGNED_MINIMUM       (-96 * 0x10000)
++#define VOLUME_SIGNED_MINIMUM       0
+ 
+ // Default peak meter settings
+ #define PEAKMETER_STEPPING_DELTA    0x1000

@@ -10,6 +10,7 @@
 #include "Strings.h"
 #include "TextService.h"
 #include "UserSettings.h"
+#include "RecordingClient.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -122,6 +123,7 @@ namespace vmex::tap::page
     struct PageData final
     {
         std::vector<audio::DeviceInfo> render;
+        std::vector<audio::DeviceInfo> routingRender;
         std::vector<audio::DeviceInfo> capture;
         std::vector<audio::AppSessionInfo> apps;
         std::vector<std::unique_ptr<audio::IAudioSessionHandle>> handles;
@@ -162,6 +164,11 @@ namespace vmex::tap::page
         std::vector<std::shared_ptr<AppRowBinding>> rows;
         PGX::DispatcherTimer settleTimer{nullptr};
         PGX::DispatcherTimer deviceTimer{nullptr};
+        PGX::DispatcherTimer recordingTimer{nullptr};
+        PGXC::ToggleSwitch recordingToggle{nullptr};
+        PGXC::TextBlock recordingFeedback{nullptr};
+        bool recordingBusy = false;
+        bool recordingSynchronizing = false;
         std::shared_ptr<PageData> data;
 
         bool mounting = false;
@@ -188,7 +195,7 @@ namespace vmex::tap::page
     }
 
     inline constexpr double kBodyInset = 8.0;
-    inline constexpr bool kRecordingModeEnabled = false;
+    inline constexpr bool kRecordingModeEnabled = true;
 
     inline PGXC::TextBlock SectionLabel(winrt::hstring const& value)
     {
@@ -452,6 +459,7 @@ namespace vmex::tap::page
     }
 
     inline void SendSetDefault(bool render, const std::wstring& deviceId);
+    winrt::fire_and_forget RefreshRecording(ContextPtr context, std::wstring action, std::wstring device = {});
     inline void MountPage(ContextPtr const& context, int page);
     inline void LoadData(ContextPtr const& context);
     inline void SyncAppTargets(ContextPtr const& context);
@@ -575,6 +583,40 @@ namespace vmex::tap::page
 
     inline void SendSetDefault(bool render, const std::wstring& deviceId);
 
+    inline PGXC::Grid MakeRecordingRow(ContextPtr const& context)
+    {
+        auto row = Row(44);
+        row.Margin(PGX::ThicknessHelper::FromLengths(12, 0, 12, 0));
+        auto icon = Glyph(L"\xE7C8", 14);
+        PGXC::Grid::SetColumn(icon, 0);
+        row.Children().Append(icon);
+        auto name = NameBlock(text::Embedded().Resolve(L"page.checkbox.recordingMode"), std::wstring());
+        PGXC::Grid::SetColumn(name, 1);
+        row.Children().Append(name);
+        PGXC::Grid controls;
+        controls.Width(150);
+        PGXC::ToggleSwitch toggle;
+        toggle.MinWidth(0);
+        toggle.OnContent(nullptr);
+        toggle.OffContent(nullptr);
+        toggle.HorizontalAlignment(PGX::HorizontalAlignment::Right);
+        toggle.VerticalAlignment(PGX::VerticalAlignment::Center);
+        toggle.IsOn(Settings().recordingMode);
+        toggle.IsEnabled(!context->recordingBusy);
+        PGXAU::AutomationProperties::SetName(toggle, winrt::hstring(text::Embedded().Resolve(L"page.checkbox.recordingMode")));
+        context->recordingToggle = toggle;
+        const std::weak_ptr<Context> weak = context;
+        toggle.Toggled([weak, toggle](auto const&, auto const&)
+        {
+            if (const auto live = weak.lock(); live && !live->recordingBusy && !live->recordingSynchronizing)
+                RefreshRecording(live, toggle.IsOn() ? L"on" : L"off");
+        });
+        controls.Children().Append(toggle);
+        PGXC::Grid::SetColumn(controls, 2);
+        row.Children().Append(controls);
+        return row;
+    }
+
     inline PGXC::ListView MakeEndpointList(ContextPtr const& context,
                                             const std::vector<audio::DeviceInfo>& devices,
                                             bool render)
@@ -590,6 +632,7 @@ namespace vmex::tap::page
         {
             list.Items().Append(MakeEndpointRow(context, device));
         }
+        if (render && kRecordingModeEnabled) list.Footer(MakeRecordingRow(context));
 
         auto initializing = std::make_shared<bool>(true);
         const auto snapshot = devices;
@@ -603,6 +646,11 @@ namespace vmex::tap::page
             if (index < 0 || static_cast<std::size_t>(index) >= snapshot.size()) return;
 
             const std::wstring deviceId = snapshot[static_cast<std::size_t>(index)].id;
+            if (render && Settings().recordingMode)
+            {
+                RefreshRecording(context, L"monitor", deviceId);
+                return;
+            }
             SendSetDefault(render, deviceId);
             auto& current = render ? context->data->render : context->data->capture;
             for (auto& item : current) item.isDefault = item.id == deviceId;
@@ -626,7 +674,8 @@ namespace vmex::tap::page
     inline PGXC::StackPanel BuildVolumeLayer(ContextPtr const& context)
     {
         PGXC::StackPanel layer;
-        layer.Children().Append(SectionLabel(winrt::hstring(text::Embedded().Resolve(L"page.section.volume"))));
+        layer.Children().Append(SectionLabel(winrt::hstring(text::Embedded().Resolve(
+            Settings().recordingMode ? L"page.label.listenOutput" : L"page.section.volume"))));
 
         layer.Children().Append(MakeEndpointList(context, context->data->render, true));
 
@@ -804,7 +853,7 @@ namespace vmex::tap::page
             return std::wstring();
         }
 
-        for (const auto& device : context->data->render)
+        for (const auto& device : context->data->routingRender)
         {
             if (device.id == selected)
             {
@@ -889,9 +938,9 @@ namespace vmex::tap::page
             combo.SelectedIndex(0);
         }
 
-        for (std::size_t i = 0; i < context->data->render.size(); ++i)
+        for (std::size_t i = 0; i < context->data->routingRender.size(); ++i)
         {
-            const auto& device = context->data->render[i];
+            const auto& device = context->data->routingRender[i];
             PGXC::ComboBoxItem item;
             item.Content(winrt::box_value(winrt::hstring(audio::DisplayDeviceName(device, Settings().showDriverName))));
             item.Tag(winrt::box_value(winrt::hstring(device.id)));
@@ -903,7 +952,7 @@ namespace vmex::tap::page
             }
         }
 
-        const std::vector<audio::DeviceInfo> snapshot = context->data->render;
+        const std::vector<audio::DeviceInfo> snapshot = context->data->routingRender;
         const std::uint32_t processId = session.processId;
         const std::wstring appKey = session.appKey;
         combo.DropDownOpened([appKey](PGF::IInspectable const&, PGF::IInspectable const&)
@@ -1290,7 +1339,7 @@ namespace vmex::tap::page
             std::wstring persisted;
             if (context->endpointPolicy->GetAppDefaultDevice(
                     app.processId, audio::DataFlow::Render, audio::DeviceRole::Multimedia, persisted).IsOk() &&
-                !persisted.empty() && persisted != data.defaultRender)
+                !persisted.empty() && (Settings().recordingMode || persisted != data.defaultRender))
             {
                 context->redirects[app.appKey] = std::move(persisted);
             }
@@ -1308,6 +1357,7 @@ namespace vmex::tap::page
         if (!context->manager) return;
 
         context->manager->EnumerateDevices(audio::DataFlow::Render, audio::DeviceState::Active, data.render);
+        context->manager->EnumerateRoutingDevices(Settings().recordingMode, data.routingRender);
         context->manager->EnumerateDevices(audio::DataFlow::Capture, audio::DeviceState::Active, data.capture);
 
         audio::DeviceInfo device;
@@ -1322,19 +1372,29 @@ namespace vmex::tap::page
 
         data.appsEndpoint = data.defaultRender;
         if (data.appsEndpoint.empty() && !data.render.empty()) data.appsEndpoint = data.render.front().id;
+        if (Settings().recordingMode)
+        {
+            audio::DeviceInfo virtualDevice;
+            data.appsEndpoint = context->manager->FindVirtualDevice(virtualDevice).IsOk() ? virtualDevice.id : std::wstring();
+        }
 
         data.apps.clear();
         data.handles.clear();
 
-        context->manager->EnumerateAppSessions(context->redirects, data.apps);
-        SeedRedirects(context);
-        context->manager->EnumerateAppSessions(context->redirects, data.apps);
+        if (!Settings().recordingMode || !data.appsEndpoint.empty())
+        {
+            const auto scope = Settings().recordingMode ? std::wstring_view(data.appsEndpoint) : std::wstring_view();
+            context->manager->EnumerateAppSessions(context->redirects, data.apps, scope);
+            SeedRedirects(context);
+            context->manager->EnumerateAppSessions(context->redirects, data.apps, scope);
+        }
 
         data.handles.reserve(data.apps.size());
         for (const auto& app : data.apps)
         {
             std::unique_ptr<audio::IAudioSessionHandle> handle;
-            if (context->manager->OpenSession(app.deviceId, app.instanceId, handle).IsOk())
+            if (context->manager->OpenSession(app.deviceId, app.instanceId, handle,
+                Settings().recordingMode ? audio::SessionFollowMode::Endpoint : audio::SessionFollowMode::Application).IsOk())
             {
                 data.handles.push_back(std::move(handle));
             }
@@ -1361,7 +1421,9 @@ namespace vmex::tap::page
         if (!IsInLiveTree(context->list)) return;
 
         std::vector<audio::AppSessionInfo> live;
-        if (!context->manager->EnumerateAppSessions(context->redirects, live).IsOk()) return;
+        if (Settings().recordingMode && context->data->appsEndpoint.empty()) return;
+        if (!context->manager->EnumerateAppSessions(context->redirects, live,
+            Settings().recordingMode ? std::wstring_view(context->data->appsEndpoint) : std::wstring_view()).IsOk()) return;
 
         for (const auto& binding : context->rows)
         {
@@ -1824,11 +1886,94 @@ namespace vmex::tap::page
         });
     }
 
+    inline winrt::fire_and_forget RefreshRecording(ContextPtr context, std::wstring action, std::wstring device)
+    {
+        if (context->recordingBusy || !context->list) co_return;
+        context->recordingBusy = true;
+        if (action != L"status") context->list.IsEnabled(false);
+        const auto dispatcher = context->list.Dispatcher();
+        if (context->recordingToggle) context->recordingToggle.IsEnabled(false);
+        recording::Snapshot state;
+        Status result;
+        try
+        {
+            co_await winrt::resume_background();
+            result = recording::Request(action, device, state);
+        }
+        catch (...) { result = Status::Failed(L"recording-request-exception"); }
+        co_await winrt::resume_foreground(dispatcher);
+        context->recordingBusy = false;
+        if (action != L"status") context->list.IsEnabled(true);
+        if (!IsInLiveTree(context->list) || Settings().page != 0) co_return;
+        bool changed = state.known && (Settings().recordingMode != (state.enabled || state.cleanupPending) ||
+            Settings().listenEndpoint != state.monitorDevice);
+        if (state.known)
+        {
+            Settings().recordingMode = state.enabled || state.cleanupPending;
+            Settings().listenEndpoint = state.monitorDevice;
+        }
+        if (!changed && state.known && state.enabled && context->manager && context->data &&
+            !context->data->appsEndpoint.empty())
+        {
+            std::vector<audio::AppSessionInfo> live;
+            if (context->manager->EnumerateAppSessions(context->redirects, live, context->data->appsEndpoint).IsOk())
+            {
+                changed = live.size() != context->data->apps.size();
+                for (const auto& session : live)
+                {
+                    if (std::none_of(context->data->apps.begin(), context->data->apps.end(), [&](const auto& old)
+                        { return old.instanceId == session.instanceId && old.deviceId == session.deviceId; }))
+                    {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            if (changed && std::any_of(context->rows.begin(), context->rows.end(), [](const auto& row)
+                { return row->dragging->load(std::memory_order_acquire); })) changed = false;
+        }
+        if (changed) MountPage(context, 0);
+        if (context->recordingToggle)
+        {
+            context->recordingSynchronizing = true;
+            context->recordingToggle.IsOn(Settings().recordingMode);
+            context->recordingSynchronizing = false;
+            context->recordingToggle.IsEnabled(true);
+        }
+        if (context->recordingFeedback)
+        {
+            context->recordingFeedback.Text(result ? L"" : winrt::hstring(text::Embedded().ResolveFormat(L"recording.failed", { result.detail })));
+            context->recordingFeedback.Visibility(result ? PGX::Visibility::Collapsed : PGX::Visibility::Visible);
+        }
+    }
+
     inline PGXC::StackPanel BuildCustomPage(ContextPtr const& context)
     {
         PGXC::StackPanel root;
         root.Padding(PGX::ThicknessHelper::FromLengths(kBodyInset, 0, kBodyInset, 0));
-        Settings().recordingMode = false;
+        if (kRecordingModeEnabled)
+        {
+            const std::weak_ptr<Context> weak = context;
+            PGXC::TextBlock feedback;
+            feedback.TextWrapping(PGX::TextWrapping::Wrap);
+            feedback.FontSize(12);
+            feedback.Visibility(PGX::Visibility::Collapsed);
+            context->recordingFeedback = feedback;
+            root.Children().Append(feedback);
+            if (!context->recordingTimer)
+            {
+                context->recordingTimer = PGX::DispatcherTimer();
+                context->recordingTimer.Interval(std::chrono::seconds(2));
+                context->recordingTimer.Tick([weak](auto const&, auto const&)
+                {
+                    if (const auto live = weak.lock(); live && Settings().page == 0 && IsInLiveTree(live->list))
+                        RefreshRecording(live, L"status");
+                });
+                context->recordingTimer.Start();
+            }
+            if (Settings().recordingMode)
+                for (auto& endpoint : context->data->render) endpoint.isDefault = endpoint.id == Settings().listenEndpoint;
+        }
         root.Children().Append(BuildVolumeLayer(context));
         root.Children().Append(BuildAppLayer(context));
         return root;

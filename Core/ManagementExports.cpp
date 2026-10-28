@@ -1,6 +1,7 @@
 #include "App.h"
 #include "ManagementService.h"
 #include "TextService.h"
+#include "RecordingDriverService.h"
 #include <windows.h>
 #include <objbase.h>
 #include <algorithm>
@@ -79,6 +80,8 @@ extern "C" __declspec(dllexport) int VmexManagerExecute(int action, int value, w
         case 7: result = vmex::management::Uninstall(); break;
         case 8: result = vmex::management::OpenPanel(); break;
         case 9: result = vmex::management::RegisterStartMenu(); break;
+        case 10: result = vmex::recording::InstallDriver(); break;
+        case 11: result = vmex::recording::UninstallDriver(); break;
         default: result = vmex::Status::InvalidArguments(L"management-action"); break;
         }
     }
@@ -86,4 +89,17 @@ extern "C" __declspec(dllexport) int VmexManagerExecute(int action, int value, w
     if (SUCCEEDED(com)) ::CoUninitialize();
     Copy(result.detail, error, capacity);
     return result.code;
+}
+
+extern "C" __declspec(dllexport) int VmexRecordingDriverQuery(int* values, int count) noexcept
+{
+    if (!values || count != 4) return vmex::kCodeInvalidArguments;
+    try
+    {
+        const auto state = vmex::recording::QueryDriver();
+        const int data[] = { state.installed, state.started, state.packagePresent, static_cast<int>(state.problem) };
+        std::copy_n(data, 4, values);
+        return vmex::kCodeOk;
+    }
+    catch (...) { return vmex::kCodeFailed; }
 }

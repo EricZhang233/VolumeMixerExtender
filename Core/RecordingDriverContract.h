@@ -1,0 +1,14 @@
+#pragma once
+
+inline constexpr GUID VMEX_RECORDING_INTERFACE =
+    { 0x237d9361, 0x92e7, 0x46a8, { 0xb4, 0x2c, 0x94, 0x5f, 0xdd, 0x2e, 0x83, 0x11 } };
+inline constexpr ULONG VMEX_RECORDING_VERSION = 1;
+inline constexpr ULONG VMEX_RECORDING_DEVICE_TYPE = 0x8000;
+inline constexpr ULONG VMEX_RECORDING_QUERY = CTL_CODE(VMEX_RECORDING_DEVICE_TYPE, 0x800, METHOD_BUFFERED, FILE_READ_ACCESS);
+inline constexpr ULONG VMEX_RECORDING_CONNECT = CTL_CODE(VMEX_RECORDING_DEVICE_TYPE, 0x801, METHOD_BUFFERED, FILE_WRITE_ACCESS);
+
+struct VmexRecordingRequest final
+{
+    ULONG version;
+    ULONG connected;
+};
