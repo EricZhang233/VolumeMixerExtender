@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$Tag,
-    [ValidateSet('vs17-x64', 'vs18-x64')][string]$Preset = 'vs17-x64',
+    [ValidateSet('vs17-x64', 'vs18-x64')][string]$Preset = 'vs18-x64',
     [string]$PackageDirectory
 )
 $ErrorActionPreference = 'Stop'

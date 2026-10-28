@@ -23,7 +23,7 @@ permissions:
 jobs:
   build:
     if: startsWith(inputs.tag, 'v')
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     timeout-minutes: 30
     outputs:
       version: ${{ steps.package.outputs.version }}
@@ -42,7 +42,7 @@ jobs:
         shell: pwsh
         env:
           RELEASE_TAG: ${{ inputs.tag }}
-        run: ./.github/scripts/build-release.ps1 -Tag $env:RELEASE_TAG
+        run: ./.github/scripts/build-release.ps1 -Tag $env:RELEASE_TAG -Preset vs18-x64
       - name: Store freshly built package
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:

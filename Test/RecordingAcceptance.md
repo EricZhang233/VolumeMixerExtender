@@ -10,7 +10,7 @@ cmake --build obj/vs18-x64 --config Debug --target vmex_tests vmex_manager_ui_te
 ctest --test-dir obj/vs18-x64 -C Debug --output-on-failure --output-junit functional-check.xml
 ```
 
-CI 使用 vs17-x64 预设，执行同一 CTest 测试集。新增 core.guard 已纳入默认测试集。
+CI 使用 windows-2025-vs2026 运行器与 vs18-x64 预设，执行同一 CTest 测试集。新增 core.guard 已纳入默认测试集。
 
 | 测试 | 覆盖内容 | 不能代替的验收 |
 | --- | --- | --- |

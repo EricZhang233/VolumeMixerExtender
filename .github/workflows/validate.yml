@@ -15,7 +15,7 @@ permissions:
   contents: read
 jobs:
   windows:
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -27,20 +27,20 @@ jobs:
           dotnet-version: 10.0.x
       - name: Configure tagged sources
         shell: pwsh
-        run: cmake --preset vs17-x64 -DBUILD_TESTING=ON
+        run: cmake --preset vs18-x64 -DBUILD_TESTING=ON
       - name: Build native self tests
         shell: pwsh
-        run: cmake --build obj/vs17-x64 --config Debug --target vmex_tests vmex_manager_ui_tests
+        run: cmake --build obj/vs18-x64 --config Debug --target vmex_tests vmex_manager_ui_tests
       - name: Run Core and management self tests
         shell: pwsh
-        run: ctest --test-dir obj/vs17-x64 -C Debug --output-on-failure --output-junit test-results.xml
+        run: ctest --test-dir obj/vs18-x64 -C Debug --output-on-failure --output-junit test-results.xml
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: machine-test-reports-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            obj/vs17-x64/test-results.xml
-            obj/vs17-x64/Testing/Temporary/
+            obj/vs18-x64/test-results.xml
+            obj/vs18-x64/Testing/Temporary/
           if-no-files-found: warn
           retention-days: 14
