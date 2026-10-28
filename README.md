@@ -258,7 +258,7 @@ flowchart TB
 
 ### 构建与自测
 
-需要 Visual Studio C++ 工具链、Windows SDK、CMake、PowerShell 7 与 .NET 10 SDK。首次构建下载固定 SHA-256 的 VB-CABLE 官方 Pack45，缓存于 obj/driver-deps/vbcable，只把 Windows 11 x64 所需的原版文件解压到产物的 Driver/VBCABLE；不再构建或分发自研测试驱动。管理器编译为 .NET Framework 4.8，使用 Windows 11 自带的运行时，发布不携带 .NET 或 Windows App SDK。`vmex_cli.exe about` 显示与管理器相同的关于信息，`recording` 和 `driver` 的完整用法见 `-help` 与 `skill`。
+需要 Visual Studio C++ 工具链、Windows SDK、CMake、PowerShell 7 与 .NET 10 SDK。global.json 将构建 SDK 约束为 .NET 10.0 正式版；CI 使用 Visual Studio 2026。首次构建从微软官方 NuGet 获取固定版本 Windows SDK 中的 x64 XAML 诊断组件，校验 SHA-256、微软签名与架构，缓存于 obj/sdk-deps；无需依赖本机额外安装的 XAML 诊断工具。构建同时下载固定 SHA-256 的 VB-CABLE 官方 Pack45，缓存于 obj/driver-deps/vbcable，只把 Windows 11 x64 所需的原版文件解压到产物的 Driver/VBCABLE；不再构建或分发自研测试驱动。管理器编译为 .NET Framework 4.8，使用 Windows 11 自带的运行时，发布不携带 .NET 或 Windows App SDK。`vmex_cli.exe about` 显示与管理器相同的关于信息，`recording` 和 `driver` 的完整用法见 `-help` 与 `skill`。
 
 ```powershell
 cmake --preset vs18-x64 -DBUILD_TESTING=ON

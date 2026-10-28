@@ -90,18 +90,22 @@ endif()
 
 set(VMEX_DIAGNOSTICS_DLL "" CACHE FILEPATH "Path to xamldiagnostics.dll to ship")
 if(NOT VMEX_DIAGNOSTICS_DLL)
-    file(GLOB VMEX_DIAGNOSTICS_CANDIDATES
-        "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/XamlDiagnostics/xamldiagnostics.dll"
-        "C:/Program Files (x86)/Windows Kits/10/bin/x64/XamlDiagnostics/xamldiagnostics.dll"
-        "C:/Program Files/Windows Kits/10/bin/*/x64/XamlDiagnostics/xamldiagnostics.dll"
-        "C:/Program Files/Windows Kits/10/bin/x64/XamlDiagnostics/xamldiagnostics.dll")
-    list(SORT VMEX_DIAGNOSTICS_CANDIDATES ORDER DESCENDING)
-    if(VMEX_DIAGNOSTICS_CANDIDATES)
-        list(GET VMEX_DIAGNOSTICS_CANDIDATES 0 VMEX_DIAGNOSTICS_DLL)
-    endif()
+    include("${CMAKE_SOURCE_DIR}/cmake/PrepareDiagnostics.cmake")
 endif()
 if(NOT EXISTS "${VMEX_DIAGNOSTICS_DLL}")
     message(FATAL_ERROR "xamldiagnostics.dll was not found; set VMEX_DIAGNOSTICS_DLL to its path")
+endif()
+
+find_program(VMEX_PWSH pwsh REQUIRED)
+execute_process(COMMAND "${VMEX_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/Test/DiagnosticsPackageTests.ps1"
+    -Path "${VMEX_DIAGNOSTICS_DLL}" RESULT_VARIABLE vmex_diagnostics_result)
+if(NOT vmex_diagnostics_result EQUAL 0)
+    message(FATAL_ERROR "XAML diagnostics dependency verification failed")
+endif()
+if(BUILD_TESTING)
+    add_test(NAME diagnostics.package COMMAND "${VMEX_PWSH}" -NoProfile -File "${CMAKE_SOURCE_DIR}/Test/DiagnosticsPackageTests.ps1"
+        -Path "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/xamldiagnostics.dll")
+    set_tests_properties(diagnostics.package PROPERTIES TIMEOUT 30)
 endif()
 
 add_executable(vmex WIN32
@@ -115,12 +119,13 @@ add_executable(vmex_cli
     "${CMAKE_SOURCE_DIR}/app.manifest"
 )
 
-foreach(vmex_shell IN ITEMS vmex vmex_cli)
-    add_custom_command(TARGET ${vmex_shell} POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${VMEX_DIAGNOSTICS_DLL}" "$<TARGET_FILE_DIR:${vmex_shell}>"
-        VERBATIM)
-endforeach()
+add_custom_target(vmex_diagnostics
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${VMEX_DIAGNOSTICS_DLL}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/xamldiagnostics.dll"
+    VERBATIM)
+add_dependencies(vmex vmex_diagnostics)
+add_dependencies(vmex_cli vmex_diagnostics)
 
 find_program(VMEX_DOTNET dotnet REQUIRED)
 set(VMEX_MANAGER_EXECUTABLE "${CMAKE_SOURCE_DIR}/bin/$<CONFIG>/vmex_manager.exe")

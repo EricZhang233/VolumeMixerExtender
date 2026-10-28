@@ -20,6 +20,7 @@ CI 使用 windows-2025-vs2026 运行器与 vs18-x64 预设，执行同一 CTest 
 | core.audio / core.uninstall | 音量重置与卸载失败处理 | 实体设备音量、默认麦克风行为 |
 | core.commands / core.resources / core.config / core.pipe | 参数、资源、配置、管道回复与退出 | 注入系统面板后的实际交互 |
 | manager.wpf | 管理器状态呈现、窗口与关于布局、ABI、滚动行为 | 实机 DPI、系统标题栏及真实安装操作 |
+| diagnostics.package | 微软 XAML 诊断组件签名与 x64 架构，构建时固定来源与 SHA-256 | 注入系统面板后的实际交互 |
 | driver.package / driver.trust | 精简后的 9 文件清单、微软 CAT 与 SYS/INF 成员、安装器/控制面板哈希、缺失与篡改拒绝 | 实体机内核加载、安装器取消和重启后的状态 |
 
 可选的真实应用策略存储检查：
@@ -33,7 +34,9 @@ CI 使用 windows-2025-vs2026 运行器与 vs18-x64 预设，执行同一 CTest 
 Release 构建检查使用现有发布脚本，Tag 参数须与 Version.h 一致；PackageDirectory 必须为空或不存在：
 
 ```powershell
-./.github/scripts/build-release.ps1 -Tag v1.0.2 -Preset vs18-x64 -PackageDirectory ./output/functional-check
+$versionHeader = Get-Content ./Version.h -Raw
+if ($versionHeader -notmatch 'VMEX_VERSION_STRING\s+"([0-9.]+)"') { throw 'Missing version' }
+./.github/scripts/build-release.ps1 -Tag "v$($Matches[1])" -Preset vs18-x64 -PackageDirectory ./output/functional-check
 ```
 
 脚本检查包成员、版本、与本次构建的逐文件哈希，以及官方驱动目录签名。它不安装驱动，不发布 Release。升级版本后同步替换命令中的 Tag。
@@ -67,11 +70,11 @@ Windows 11 26H2 x64；正常安全设置；至少两台实体输出 R1/R2、一�
 
 每轮结束后核对 Windows 默认输出、默认麦克风、三个虚拟端点状态、A/B/C 的下一次启动路由，并保留本轮宿主、CLI 和 recording-guard 日志。仅有函数返回成功或测试夹具通过，不构成真实出声验收。
 
-## 本轮检查结果（2026-10-29）
+## 早期功能检查记录（2026-10-29）
 
-当前工作区已完成 Debug 构建与 11 项 CTest 检查，全部通过；报告位于 obj/vs18-x64/functional-check.xml。
+当时工作区已完成 Debug 构建与 11 项 CTest 检查，全部通过；报告位于 obj/vs18-x64/functional-check.xml。
 
-最新源码的 Release 构建、压缩包成员及版本/哈希检查、官方驱动签名校验通过。验收包位于 output/functional-check-final/VolumeMixerExtender_1.0.2.zip；SHA256 为 338B6270D3EBD941C22146CD096CE043062BE251A9547A7E29F48BD1266B5B16。
+当时源码的 Release 构建、压缩包成员及版本/哈希检查、官方驱动签名校验通过。开发期验收包位于 output/functional-check-final/VolumeMixerExtender_1.0.2.zip；SHA256 为 338B6270D3EBD941C22146CD096CE043062BE251A9547A7E29F48BD1266B5B16。此包不代表后续提交或当前版本的构建结果。
 
 修复安装器先占端点锁再请求宿主关闭录制造成的跨进程冲突；保护进程改为对整个恢复序列执行有限重试，保留有序清理和失败结果。
 

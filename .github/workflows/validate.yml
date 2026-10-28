@@ -42,5 +42,6 @@ jobs:
           path: |
             obj/vs18-x64/test-results.xml
             obj/vs18-x64/Testing/Temporary/
+            obj/vs18-x64/CMakeFiles/CMakeConfigureLog.yaml
           if-no-files-found: warn
           retention-days: 14

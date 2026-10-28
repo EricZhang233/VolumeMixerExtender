@@ -57,6 +57,7 @@ try {
         }
     }
 } finally { $archive.Dispose() }
+& "$PSScriptRoot/../../Test/DiagnosticsPackageTests.ps1" -Path 'bin/Release/xamldiagnostics.dll'
 & "$PSScriptRoot/../../Test/DriverPackageTests.ps1" -Path 'bin/Release/Driver/VBCABLE'
 $digest = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash
 Write-Output "Built $packageName SHA256=$digest"
