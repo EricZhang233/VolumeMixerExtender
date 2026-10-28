@@ -115,11 +115,7 @@ namespace vmex::audio
                                     volumes = false;
                                     continue;
                                 }
-                                for (auto& session : sessions)
-                                {
-                                    if (!session.systemSounds && !detail::SetSessionVolume(session, endpoint.id, 1.0f))
-                                        volumes = false;
-                                }
+                                if (!detail::ResetSessionVolumes(endpoint.id, sessions)) volumes = false;
                             }
                         }
                         return volumes ? Status::Ok() : Status::Failed(L"reset-session-volumes");

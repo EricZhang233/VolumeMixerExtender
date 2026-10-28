@@ -138,6 +138,7 @@ namespace vmex::tap::page
         std::wstring appKey;
         PGXC::Slider slider{nullptr};
         PGXC::Button mute{nullptr};
+        unsigned statePollTicks = 0;
     };
 
     struct Context;
@@ -287,7 +288,8 @@ namespace vmex::tap::page
             }
         }
 
-        return PGUI::ColorHelper::FromArgb(0xFF, 0x4C, 0xC2, 0xFF);
+        static thread_local winrt::Windows::UI::ViewManagement::UISettings ui;
+        return ui.GetColorValue(winrt::Windows::UI::ViewManagement::UIColorType::Accent);
     }
 
     [[nodiscard]] inline PGXM::SolidColorBrush AccentBrush()
@@ -297,11 +299,22 @@ namespace vmex::tap::page
 
     [[nodiscard]] inline PGXM::SolidColorBrush DimAccentBrush()
     {
-        const auto color = AccentColor();
-        return PGXM::SolidColorBrush(PGUI::ColorHelper::FromArgb(
-            color.A, static_cast<std::uint8_t>(color.R * 0.58f),
-            static_cast<std::uint8_t>(color.G * 0.58f),
-            static_cast<std::uint8_t>(color.B * 0.58f)));
+        static thread_local winrt::Windows::UI::ViewManagement::UISettings ui;
+        static thread_local winrt::Windows::UI::ViewManagement::AccessibilitySettings accessibility;
+        auto color = AccentColor();
+        if (accessibility.HighContrast())
+        {
+            color = ui.UIElementColor(winrt::Windows::UI::ViewManagement::UIElementType::Highlight);
+        }
+        else
+        {
+            color.R = static_cast<std::uint8_t>(color.R * 0.5f);
+            color.G = static_cast<std::uint8_t>(color.G * 0.5f);
+            color.B = static_cast<std::uint8_t>(color.B * 0.5f);
+        }
+        static thread_local PGXM::SolidColorBrush brush(color);
+        if (brush.Color() != color) brush.Color(color);
+        return brush;
     }
 
 
@@ -341,8 +354,34 @@ namespace vmex::tap::page
         slider.Width(150);
         slider.MinHeight(0);
         slider.VerticalAlignment(PGX::VerticalAlignment::Center);
-        slider.Foreground(DimAccentBrush());
+        const auto track = DimAccentBrush();
+        slider.Foreground(track);
+        for (auto key : { L"SliderTrackValueFill", L"SliderTrackValueFillPointerOver", L"SliderTrackValueFillPressed",
+                          L"SliderThumbBackground", L"SliderThumbBackgroundPointerOver", L"SliderThumbBackgroundPressed" })
+        {
+            slider.Resources().Insert(winrt::box_value(key), track);
+        }
         return slider;
+    }
+
+    inline void ObserveSliderDrag(PGXC::Slider const& slider, std::shared_ptr<std::atomic_bool> const& dragging,
+                                  std::function<void()> refreshAfterDrag)
+    {
+        slider.AddHandler(PGX::UIElement::PointerPressedEvent(), winrt::box_value(PGXIN::PointerEventHandler(
+            [dragging](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
+            {
+                dragging->store(true, std::memory_order_release);
+            })), true);
+        const auto finished = winrt::box_value(PGXIN::PointerEventHandler(
+            [refreshAfterDrag](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
+            {
+                refreshAfterDrag();
+            }));
+        for (const auto& event : { PGX::UIElement::PointerReleasedEvent(), PGX::UIElement::PointerCaptureLostEvent(),
+                                   PGX::UIElement::PointerCanceledEvent() })
+        {
+            slider.AddHandler(event, finished, true);
+        }
     }
 
     struct StereoMeter final
@@ -356,9 +395,17 @@ namespace vmex::tap::page
     {
         static thread_local winrt::Windows::UI::ViewManagement::UISettings ui;
         static thread_local winrt::Windows::UI::ViewManagement::AccessibilitySettings accessibility;
-        const auto color = accessibility.HighContrast() ?
-            ui.UIElementColor(winrt::Windows::UI::ViewManagement::UIElementType::Hotlight) :
-            ui.GetColorValue(winrt::Windows::UI::ViewManagement::UIColorType::Foreground);
+        auto color = AccentColor();
+        if (accessibility.HighContrast())
+        {
+            color = ui.UIElementColor(winrt::Windows::UI::ViewManagement::UIElementType::Hotlight);
+        }
+        else
+        {
+            color.R = static_cast<std::uint8_t>(color.R + (255 - color.R) * 0.5f);
+            color.G = static_cast<std::uint8_t>(color.G + (255 - color.G) * 0.5f);
+            color.B = static_cast<std::uint8_t>(color.B + (255 - color.B) * 0.5f);
+        }
         static thread_local PGXM::SolidColorBrush brush(color);
         if (brush.Color() != color) brush.Color(color);
         return brush;
@@ -385,8 +432,8 @@ namespace vmex::tap::page
         const auto accent = MeterBrush();
         meter.left.Fill(accent);
         meter.right.Fill(accent);
-        meter.left.Margin(PGX::ThicknessHelper::FromLengths(0, -2, 0, 0));
-        meter.right.Margin(PGX::ThicknessHelper::FromLengths(0, 1, 0, 0));
+        meter.left.Margin(PGX::ThicknessHelper::FromLengths(6, -3, 6, 0));
+        meter.right.Margin(PGX::ThicknessHelper::FromLengths(6, 3, 6, 0));
         return meter;
     }
 
@@ -394,6 +441,8 @@ namespace vmex::tap::page
                                   float leftPeak, float rightPeak)
     {
         const double trackWidth = std::max(0.0, slider.ActualWidth() - 12.0);
+        const auto track = DimAccentBrush();
+        if (slider.Foreground() != track) slider.Foreground(track);
         const auto brush = MeterBrush();
         meter.left.Fill(brush);
         meter.right.Fill(brush);
@@ -462,10 +511,6 @@ namespace vmex::tap::page
                 weakContext->manager->SetVolume(deviceId, static_cast<float>(s.Value() / 100.0));
             }
         });
-        slider.PointerPressed([dragging](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
-        {
-            dragging->store(true, std::memory_order_release);
-        });
         auto refreshAfterDrag = [weakContext, deviceId, slider, dragging, synchronizing]()
         {
             dragging->store(false, std::memory_order_release);
@@ -475,14 +520,7 @@ namespace vmex::tap::page
             slider.Value(current.level * 100.0);
             synchronizing->store(false, std::memory_order_release);
         };
-        slider.PointerReleased([refreshAfterDrag](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
-        {
-            refreshAfterDrag();
-        });
-        slider.PointerCaptureLost([refreshAfterDrag](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
-        {
-            refreshAfterDrag();
-        });
+        ObserveSliderDrag(slider, dragging, refreshAfterDrag);
         StereoMeter meter = MakeStereoMeter();
         meter.layer.Children().Append(slider);
         meter.layer.Children().Append(meter.left);
@@ -632,12 +670,14 @@ namespace vmex::tap::page
 
     inline bool SendPipeLine(const std::string& line) { return TapPageSendPipe(line.c_str()) != 0; }
 
-    inline void SendOrLog(const std::string& line, std::wstring_view verb)
+    inline bool SendOrLog(const std::string& line, std::wstring_view verb)
     {
         if (!SendPipeLine(line))
         {
             LogKey(L"log.page.commandDropped", { std::wstring(verb) });
+            return false;
         }
+        return true;
     }
 
     inline void SendSetRedirect(std::uint32_t processId, const std::wstring& deviceId)
@@ -986,10 +1026,6 @@ namespace vmex::tap::page
                 }
             });
 
-            slider.PointerPressed([binding](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
-            {
-                binding->dragging->store(true, std::memory_order_release);
-            });
             auto refreshAfterDrag = [binding]()
             {
                 binding->dragging->store(false, std::memory_order_release);
@@ -1003,14 +1039,7 @@ namespace vmex::tap::page
                 binding->slider.Value(level * 100.0);
                 binding->synchronizing->store(false, std::memory_order_release);
             };
-            slider.PointerReleased([refreshAfterDrag](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
-            {
-                refreshAfterDrag();
-            });
-            slider.PointerCaptureLost([refreshAfterDrag](PGF::IInspectable const&, PGXIN::PointerRoutedEventArgs const&)
-            {
-                refreshAfterDrag();
-            });
+            ObserveSliderDrag(slider, binding->dragging, refreshAfterDrag);
         }
         else
         {
@@ -1027,6 +1056,19 @@ namespace vmex::tap::page
         meterTimer.Tick([binding, meter, slider](PGF::IInspectable const&, PGF::IInspectable const&)
         {
             if (!binding->handle) return;
+
+            if (++binding->statePollTicks % 4 == 0 && !binding->dragging->load(std::memory_order_acquire))
+            {
+                float level = 0.0f;
+                bool muted = false;
+                if (binding->handle->GetState(level, muted).IsOk())
+                {
+                    binding->synchronizing->store(true, std::memory_order_release);
+                    slider.Value(level * 100.0);
+                    SetMuteGlyph(binding->mute, muted);
+                    binding->synchronizing->store(false, std::memory_order_release);
+                }
+            }
 
             float left = 0.0f;
             float right = 0.0f;
@@ -1138,7 +1180,7 @@ namespace vmex::tap::page
         SendOrLog(std::string("SETDEFAULT ") + (render ? "render " : "capture ") + Narrow(deviceId) + "\n", L"SETDEFAULT");
     }
 
-    inline void SendClearRedirects() { SendOrLog("CLEARREDIRECT\n", L"CLEARREDIRECT"); }
+    inline bool SendClearRedirects() { return SendOrLog("CLEARREDIRECT\n", L"CLEARREDIRECT"); }
 
 
     inline PGXC::StackPanel BuildCustomPage(ContextPtr const& context);
@@ -1219,9 +1261,8 @@ namespace vmex::tap::page
         {
             if (Settings().page == 0)
             {
-                SendClearRedirects();
-                weakContext->redirects.clear();
-                MountPage(weakContext, 0);
+                if (!SendClearRedirects()) return;
+                ScheduleSettleSync(weakContext);
                 LogKey(L"log.page.clearRedirects");
             }
         });
@@ -1357,6 +1398,14 @@ namespace vmex::tap::page
     inline void SyncSettle(ContextPtr const& context)
     {
         if (context->settleTimer) context->settleTimer.Stop();
+        if (Settings().page != 0 || !IsInLiveTree(context->list)) return;
+        const auto previous = context->redirects;
+        SeedRedirects(context);
+        if (previous != context->redirects)
+        {
+            MountPage(context, 0);
+            return;
+        }
         SyncAppTargets(context);
     }
 

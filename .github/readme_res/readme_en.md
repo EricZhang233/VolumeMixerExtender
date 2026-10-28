@@ -104,7 +104,7 @@
 *   **The destination is always visible**: a redirected app shows a "→ endpoint" line under its name, so you can see at a glance which device it is currently using.
 *   **System sounds stay out**: the `System sounds` row offers no redirection.
 *   **One-click clear**: the left footer slot, "Clear redirection", returns all apps to the default device, clears the current user's saved application volume preferences and restores current application sessions to 100%. System master and endpoint volumes stay unchanged. Preferences set with other tools are also cleared.
-*   **Stereo levels**: two peak bars sit above and below the slider track, using a foreground colour that follows the light or dark theme independently of the accent-coloured track.
+*   **Stereo levels**: two peak bars sit above and below the slider track, using a lighter system accent colour while the volume track uses a darker shade of the same colour.
 
 ### Independent manager
 
@@ -140,7 +140,7 @@ vmex_cli.exe -help     # every command and argument
 vmex_cli.exe skill     # the integration document for scripts and AI agents
 ```
 
-This version supports payload extraction, injection and status queries, the host (`start` / `stop` / `host`), the manager (`manager`), opening the panel (`panel`), logs (`logs`), the project page (`project`), driver-name display (`show-driver-name on|off`), endpoint enumeration (`devices`), default-device switching (`default`), application redirection and clearing (`redirect` / `clear-redirect`), auto-start (`autostart`) and uninstall cleanup (`uninstall --yes`). The full list and its arguments live in `-help`, which is updated together with the program.
+This version supports injection and status queries, the host (`start` / `stop` / `host`), the manager (`manager`), opening the panel (`panel`), logs (`logs`), the project page (`project`), driver-name display (`show-driver-name on|off`), endpoint enumeration (`devices`), default-device switching (`default`), application redirection and clearing (`redirect` / `clear-redirect`), auto-start (`autostart`) and uninstall cleanup (`uninstall --yes`). The full list and its arguments live in `-help`, which is updated together with the program.
 
 ---
 
@@ -171,7 +171,7 @@ flowchart TB
     SVC --> OS["Windows audio APIs · registry · Startup folder"]
 ```
 
-*   **Implementation**: a C++20 Core and C# WPF manager, built through CMake; the archive contains `vmex.exe`, `vmex_cli.exe`, `vmex_manager.exe`, `vmex_core.dll`. The host and CLI do not depend on WPF; injected payloads are embedded and extracted on demand.
+*   **Implementation**: a C++20 Core and C# WPF manager, built through CMake; the archive contains `vmex.exe`, `vmex_cli.exe`, `vmex_manager.exe`, `vmex_core.dll`, `vmex_tap.dll`, `vmex_launcher.dll` and `xamldiagnostics.dll`. Extract all files into the same directory. The host and CLI do not depend on WPF.
 *   **One Core**: the background host and the command line share the business layer, so features stay aligned and logging is unified.
 *   **The page is the payload**: the interface is rendered by a module injected into the system shell, following the system light/dark theme and accent colour — no extra window and no tray presence.
 *   **Actions go through a local pipe**: write operations from the page are handed to the host over a named pipe, so the page itself never holds system handles for long.
@@ -199,7 +199,7 @@ Click the footer gear to open the manager, then select "Exit": panel integration
 <details>
 <summary><b>Does it need installing, and does it write to the registry?</b></summary>
 
-No installation is required — extract and run. The only places it does write are: creating a shortcut in the Startup folder when "Start with Windows" is enabled; storing user settings (for example "Show driver name") under `HKCU\Software\EricSoft\VolumeMixerExtender`; and extracting its own payloads to a temporary folder and hooking into the system shell. It modifies no system files and needs no administrator rights.
+No installation is required — extract and run. Enabling "Start with Windows" creates a shortcut in the Startup folder. User settings (for example "Show driver name") are stored under `HKCU\Software\EricSoft\VolumeMixerExtender`; logs and cached icons are stored under `%TEMP%\eric\VolumeMixerExtender`. The program loads its injection components from the extracted directory and hooks into the system shell. It modifies no system files and needs no administrator rights.
 </details>
 
 <details>

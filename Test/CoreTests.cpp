@@ -4,6 +4,7 @@
 #include "TapPipeServer.h"
 #include "TextService.h"
 #include "Platform.h"
+#include "AudioInterop.h"
 
 #include <windows.h>
 #include <atomic>
@@ -96,8 +97,75 @@ namespace
                 !success.configPresent && !success.cachePresent && !success.logsOpen, "Uninstall must clean all state");
     }
 
+    void AudioSessionReset()
+    {
+        struct Volume final : ISimpleAudioVolume
+        {
+            float level = 0.23f;
+            BOOL muted = TRUE;
+            bool reject = false;
+            bool ignore = false;
+            bool unreadable = false;
+            HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void** object) override { *object = nullptr; return E_NOINTERFACE; }
+            ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+            ULONG STDMETHODCALLTYPE Release() override { return 1; }
+            HRESULT STDMETHODCALLTYPE SetMasterVolume(float value, LPCGUID) override { if (reject) return E_FAIL; if (!ignore) level = value; return S_OK; }
+            HRESULT STDMETHODCALLTYPE GetMasterVolume(float* value) override { if (unreadable) return E_FAIL; *value = level; return S_OK; }
+            HRESULT STDMETHODCALLTYPE SetMute(BOOL value, LPCGUID) override { muted = value; return S_OK; }
+            HRESULT STDMETHODCALLTYPE GetMute(BOOL* value) override { *value = muted; return S_OK; }
+        } app, system, inactive, expired;
+        std::vector<vmex::audio::detail::Session> sessions(4);
+        Volume* controls[] = { &app, &system, &inactive, &expired };
+        for (std::size_t i = 0; i < sessions.size(); ++i)
+        {
+            *sessions[i].vol.put() = controls[i];
+            sessions[i].state = AudioSessionStateActive;
+        }
+        sessions[1].systemSounds = true;
+        sessions[2].state = AudioSessionStateInactive;
+        sessions[3].state = AudioSessionStateExpired;
+        Require(vmex::audio::detail::ResetSessionVolumes(L"", sessions), "Session volume reset failed");
+        Require(app.level == 1.0f && system.level == 1.0f && inactive.level == 1.0f,
+                "Reset must include ordinary, system sounds and inactive sessions");
+        Require(expired.level == 0.23f && app.muted && system.muted, "Reset must preserve mute and skip expired sessions");
+        app.reject = true; system.level = 0.4f;
+        Require(!vmex::audio::detail::ResetSessionVolumes(L"", sessions), "A failed volume reset must be reported");
+        Require(system.level == 1.0f, "One failed session must not prevent other volume resets");
+        app.reject = false; app.ignore = true; app.level = 0.23f; system.level = 0.4f;
+        Require(!vmex::audio::detail::ResetSessionVolumes(L"", sessions), "An unchanged volume must not report success");
+        Require(system.level == 1.0f, "Readback mismatch must not prevent other volume resets");
+        app.ignore = false; app.unreadable = true; system.level = 0.4f;
+        Require(!vmex::audio::detail::ResetSessionVolumes(L"", sessions), "An unreadable volume must not report success");
+        Require(system.level == 1.0f, "Readback failure must not prevent other volume resets");
+    }
+
+    void AudioLiveReset()
+    {
+        using namespace vmex::audio::detail;
+        Require(SUCCEEDED(::CoInitializeEx(nullptr, COINIT_MULTITHREADED)), "Audio COM initialization failed");
+        {
+            auto enumerator = MakeEnumerator();
+            Ptr<IMMDevice> device;
+            Require(enumerator && SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, device.put())), "No audio endpoint for live test");
+            auto manager = SessionManager(device.get());
+            Require(static_cast<bool>(manager), "Audio session manager unavailable");
+            GUID sessionId{};
+            Require(SUCCEEDED(::CoCreateGuid(&sessionId)), "Test session identifier unavailable");
+            std::vector<Session> sessions(1);
+            auto& session = sessions.front();
+            Require(SUCCEEDED(manager->GetSimpleAudioVolume(&sessionId, 0, session.vol.put())), "Test volume interface unavailable");
+            Require(SUCCEEDED(session.vol->SetMasterVolume(0.23f, nullptr)), "Test volume adjustment failed");
+            session.state = AudioSessionStateInactive;
+            Require(ResetSessionVolumes(L"", sessions), "Live session reset failed");
+            float actual = 0.0f;
+            Require(SUCCEEDED(session.vol->GetMasterVolume(&actual)) && actual >= 0.9999f, "Live session did not return to full volume");
+        }
+        ::CoUninitialize();
+    }
+
     void AudioFailures()
     {
+        AudioSessionReset();
         struct Probe final : vmex::maintenance::IAudioResetActions
         {
             int failMask = 0;
@@ -223,6 +291,7 @@ int main(int argc, char** argv)
         const std::string suite(argv[1]);
         if (suite == "uninstall") UninstallFailures();
         else if (suite == "audio") AudioFailures();
+        else if (suite == "audio-live") AudioLiveReset();
         else if (suite == "commands") Commands();
         else if (suite == "resources") Resources();
         else if (suite == "config") Config();

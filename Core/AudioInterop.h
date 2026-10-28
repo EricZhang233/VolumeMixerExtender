@@ -681,6 +681,20 @@ inline bool SetSessionMute(Session& s, const std::wstring& devId, bool mute)
     return s.vol && SUCCEEDED(s.vol->SetMute(want, nullptr));
 }
 
+inline bool ResetSessionVolumes(const std::wstring& devId, std::vector<Session>& sessions)
+{
+    bool complete = true;
+    for (auto& session : sessions)
+    {
+        if (session.state == AudioSessionStateExpired) continue;
+        float actual = 0.0f;
+        if (!SetSessionVolume(session, devId, 1.0f) ||
+            FAILED(session.vol->GetMasterVolume(&actual)) || actual < 0.9999f)
+            complete = false;
+    }
+    return complete;
+}
+
 inline Ptr<IAudioPolicyConfigFactory21H2> MakePolicyFactory()
 {
     using RoGetActivationFactoryFn = HRESULT(WINAPI*)(HSTRING, REFIID, void**);

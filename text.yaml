@@ -114,8 +114,8 @@ skill.workflow.text: 使用 start 启动后台程序、status 查询状态、sto
 skill.section.commands: 命令清单
 skill.section.exitcodes: 退出码
 skill.exitcode.text: 0 成功; 1 参数错误; 2 尚未实现; 3 运行失败
-cmd.payload.summary: 列出内置注入载荷
-cmd.payload.opt.extract: 释放载荷到指定目录
+cmd.payload.summary: 列出随附注入载荷
+cmd.payload.opt.extract: 复制载荷到指定目录
 cmd.help.summary: 显示帮助
 cmd.help.arg.command: 要查看的命令名
 cmd.version.summary: 显示版本号
@@ -199,8 +199,6 @@ log.inject.tap_pending: TAP 未在超时内就绪 pid={0} (看 launcher/tap 日�
 log.monitor.started: 注入监视启动, 轮询间隔={0} ms
 log.monitor.stopped: 注入监视停止
 log.payload.deployed: 注入载荷已部署: {0}
-log.payload.cleanup_skipped: 旧载荷目录仍被占用，跳过清理: {0}
-log.payload.directory_failed: 载荷目录创建失败: {0}
 log.icons.extracted: 应用图标已提取 {0} -> {1}
 log.icons.missing: 应用没有可用图标: {0}
 log.icons.encode_failed: 应用图标编码失败 {0}: {1}
@@ -352,7 +350,7 @@ log.launcher.endpoint_success: 注入成功 endpoint={0} ({1})
 log.launcher.arguments_rejected: {0} 拒绝参数 endpoint={1} ({2})
 log.launcher.endpoint_probe: 探测 endpoint={0} ({1})
 log.launcher.endpoint_exhausted: 端点探测耗尽 ({0})
-log.payload.missing: 缺少内置载荷: {0}
-log.payload.extracted: 已释放 {0} -> {1} ({2} bytes)
+log.payload.missing: 缺少注入载荷: {0}
+log.payload.extracted: 已复制 {0} -> {1} ({2} bytes)
 log.config.encoding: 配置编码为 [{0}], 期望 [utf-16le-bom]; 保存前非 ASCII 值可能不可靠
 cli.init_failed: 初始化失败：

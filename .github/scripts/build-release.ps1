@@ -25,7 +25,8 @@ $packagePath = (Resolve-Path (Join-Path $packageRoot $packageName)).Path
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::OpenRead($packagePath)
 try {
-    $expected = @('vmex.exe', 'vmex_cli.exe', 'vmex_core.dll', 'vmex_manager.exe')
+    $expected = @('vmex.exe', 'vmex_cli.exe', 'vmex_core.dll', 'vmex_manager.exe',
+        'vmex_tap.dll', 'vmex_launcher.dll', 'xamldiagnostics.dll')
     foreach ($entry in $archive.Entries) {
         if ($entry.FullName -cnotin $expected) {
             throw "Unexpected package member $($entry.FullName)."
@@ -36,7 +37,7 @@ try {
         $entry = @($archive.Entries | Where-Object { $_.FullName -ceq $name })
         if ($entry.Count -ne 1 -or $entry[0].Length -eq 0) { throw "Missing or empty package member $name." }
         $built = Get-Item "bin/Release/$name"
-        if ($built.VersionInfo.ProductVersion -cne $version) { throw "Version mismatch in $name." }
+        if ($name -cne 'xamldiagnostics.dll' -and $built.VersionInfo.ProductVersion -cne $version) { throw "Version mismatch in $name." }
         $memberStream = $entry[0].Open()
         $builtStream = $built.OpenRead()
         $algorithm = [Security.Cryptography.SHA256]::Create()

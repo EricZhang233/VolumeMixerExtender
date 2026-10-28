@@ -104,7 +104,7 @@
 *   **去向常显**：已重定向的应用在名称下方显示一行「→ 端点名」，一眼看清它此刻走的是哪台设备。
 *   **系统声音不参与**：`系统声音` 行不提供重定向。
 *   **一键清除**：底栏左格「清除重定向」把全部应用恢复为默认设备，同时清除当前用户保存的应用音量偏好，将当前应用会话音量恢复到 100%；系统主音量与设备总音量不变。其他工具设置的应用偏好也会清除。
-*   **双声道电平**：音量滑轨内嵌上下两条峰值电平，使用随明暗主题变化的前景色，与强调色滑轨分开显示。
+*   **双声道电平**：音量滑轨内嵌上下两条峰值电平，响度计使用提亮的系统主题色，音量条使用压暗的同一主题色。
 
 ### 独立管理器
 
@@ -140,7 +140,7 @@ vmex_cli.exe -help     # 完整命令与参数说明
 vmex_cli.exe skill     # 面向脚本与 AI Agent 的接入文档
 ```
 
-当前版本可以在命令行完成：载荷释放、注入与状态查询、后台进程（`start` / `stop` / `host`）、管理器（`manager`）、打开面板（`panel`）、日志目录（`logs`）、项目主页（`project`）、驱动名显示（`show-driver-name on|off`）、端点枚举（`devices`）、默认设备切换（`default`）、逐应用重定向与清除（`redirect` / `clear-redirect`）、开机自启（`autostart`）及卸载清理（`uninstall --yes`）。完整清单与参数以 `-help` 为准，它随程序一起更新。
+当前版本可以在命令行完成：注入与状态查询、后台进程（`start` / `stop` / `host`）、管理器（`manager`）、打开面板（`panel`）、日志目录（`logs`）、项目主页（`project`）、驱动名显示（`show-driver-name on|off`）、端点枚举（`devices`）、默认设备切换（`default`）、逐应用重定向与清除（`redirect` / `clear-redirect`）、开机自启（`autostart`）及卸载清理（`uninstall --yes`）。完整清单与参数以 `-help` 为准，它随程序一起更新。
 
 ---
 
@@ -171,7 +171,7 @@ flowchart TB
     SVC --> OS["Windows 音频 API · 注册表 · 启动文件夹"]
 ```
 
-*   **实现**：C++20 Core + C# WPF 管理器，由 CMake 统一构建；发布包含 `vmex.exe`、`vmex_cli.exe`、`vmex_manager.exe`、`vmex_core.dll`。主进程和 CLI 不依赖 WPF；注入载荷内置、运行期按需释放。
+*   **实现**：C++20 Core + C# WPF 管理器，由 CMake 统一构建；发布包含 `vmex.exe`、`vmex_cli.exe`、`vmex_manager.exe`、`vmex_core.dll`、`vmex_tap.dll`、`vmex_launcher.dll` 和 `xamldiagnostics.dll`，请完整解压到同一目录。主进程和 CLI 不依赖 WPF。
 *   **单一 Core 原则**：后台宿主与命令行共用业务层，功能天然对齐，日志统一记录。
 *   **页面即载荷**：界面由注入到系统外壳内的模块渲染，跟随系统浅色/深色主题与强调色，不额外开窗、不驻留托盘。
 *   **动作走本机管道**：页面上的写操作经命名管道交给宿主执行，页面自身不长期持有系统句柄。
@@ -199,7 +199,7 @@ flowchart TB
 <details>
 <summary><b>需要安装吗？会写注册表吗？</b></summary>
 
-不需要安装，解压即用。确实会写的地方只有：开启「开机启动」时在「启动」文件夹创建快捷方式；用户设置（例如「显示驱动名」）写入 `HKCU\Software\EricSoft\VolumeMixerExtender`；为完成接管把自身载荷释放到临时目录并接入系统外壳。它不修改任何系统文件，也不需要管理员权限。
+不需要安装，解压即用。开启「开机启动」会在「启动」文件夹创建快捷方式；用户设置（例如「显示驱动名」）写入 `HKCU\Software\EricSoft\VolumeMixerExtender`；日志与图标缓存写入 `%TEMP%\eric\VolumeMixerExtender`。程序从解压目录加载注入组件，接入系统外壳，不修改系统文件，也不需要管理员权限。
 </details>
 
 <details>
