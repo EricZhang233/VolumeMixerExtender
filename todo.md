@@ -19,9 +19,9 @@
 ## 已完成
 
 - [X]  CMake + CMakePresets（VS18 / VS2022-BuildTools 两条生成器），产物落 `bin/<config>`，中间落 `obj/`
-- [X]  目录按 EricGameLauncher 编排：根 = 主程序壳（`Program.cpp`/`CliService.*`）+ `Core/`（业务）+ `Components/`（嵌入载荷）
+- [X]  目录按 EricGameLauncher 编排：根 = 主程序壳（`Program.cpp`/`CliService.*`）+ `Core/`（业务）+ `Components/`（注入组件）
 - [X]  `git status` 确认 `Components/` 只放载荷：`inject.launcher` / `inject.tap`
-- [X]  注入载荷构建期嵌入 `vmex.exe` 的 RCDATA 资源，`vmex payload` / `vmex payload --extract=` 已验通（launcher 52224 / tap 46080 字节）
+- [X]  注入组件随发布包分发，从程序目录加载；`vmex_cli payload` 查询组件，`vmex_cli payload --extract=` 复制组件到指定目录。
 - [X]  版本号单一来源 `Version.h` → 驱动 `project(VERSION)`、三个二进制的 VERSIONINFO、CLI 版本输出
 - [X]  `text.yaml` 构建期嵌入二进制；`-help` 与 `skill` 由命令注册表自动生成，无第二来源
 - [X]  ⛔ **不再有 `SKILL.md`**：发布包包含 `vmex.exe` 与 `vmex_cli.exe`，接入文档完全内置于程序（`vmex_cli skill`）。
@@ -247,14 +247,8 @@
 - [X]  载荷 DLL 自身的日志文本已走 text.yaml（`text::Embedded()` + `LogKey`）
   —— ✅ 已落地：`Tap.cpp` / `Page.h` 的日志全部改成文本键（`log.tap.*` / `log.page.*`）
 - [X]  **注入已落地（2026-10-04）** —— `Core/InjectionService` 从桩换成真实实现，`vmex.exe` 常驻时自动监视并注入
-  —— `Core/PayloadDeployment`：按 **载荷内容哈希 + 尺寸** 生成版本目录 `<缓存根>\payload-<hash16>-<launcherSize>-<tapSize>`，
-  释放 `vmex_launcher.dll` / `vmex_tap.dll` 并写 `vmex_tap.ini`（UTF-16LE+BOM，复用 `ConfigService`）
-  ⇒ 重建后自动换新目录，不会与 ShellHost 里已加载的旧 DLL 抢文件
-  —— ⛔ **2026-10-04 修掉一个真 bug**：原来目录名只用**尺寸**，而"尺寸一致就跳过释放"的省写盘逻辑会让
-  **同尺寸重建复用旧 DLL**（本轮 tap 恰好两次都是 `2611712` 字节）⇒ 注入的是上一版、日志却一路正常
-  ⇒ 目录名加入 `payload::PayloadContentHash()`（FNV-1a，数据本就在内存里，零额外 IO）；实测部署产物与 `bin\Debug` 哈希一致
-  —— ✅ 旧载荷目录清理：部署完成后清理缓存根下不再使用的 `payload-*` 目录；
-  被 ShellHost 占用的目录记录日志并跳过，不影响当前注入
+  —— `Core/PayloadDeployment`：从程序目录定位并检查 `vmex_launcher.dll`、`vmex_tap.dll`、`xamldiagnostics.dll` 和 `vmex_core.dll`。
+  —— 替换已加载的组件前须停止后台程序并结束注入，避免文件占用。
   —— `Core/InjectionService`：`ShellHost.exe` 定位（本会话 + `ProcessIdToSessionId` 校验）、
   远程 `LoadLibraryW`（**远程 kernel32 基址 + 本地 RVA**，⛔ 不用本进程地址）、等 TAP 模块出现（100 ms 轮询）
   —— `Core/InjectionMonitor`：1000 ms 轮询，`tapLoaded` 就不再动手；ShellHost 换进程会自动重新注入
@@ -340,7 +334,7 @@
   下拉选「默认设备」= 清除且有可见反馈、`#system` 行不给重定向（pid=0 非法）
   —— ✅ **2026-10-04 补上蓝图里缺的"重定向端点显示"**：应用行名称下方常显一行「→ 端点名」（有重定向时才有）
   —— ℹ️ 逐像素对齐未单独出报告；几何验收见 `docs/verified-after-injection/13-footer-mount.md`
-  —— 载荷目录（含日志/配置）建议用 `%TEMP%\<某个目录>`；⛔ 别放 ShellHost 自己目录（不可写）
+  —— 注入组件从程序目录加载；日志与缓存使用 `%TEMP%\eric\VolumeMixerExtender`。
   —— ℹ️ 面板 band=4 ⇒ `EnumWindows` / `FindWindow` / UIA `RootElement` 都看不到，只能前台窗口截图
   —— ⚠️ UIA 还得先钻到 `FrameworkId == "XAML"` 的**子 HWND**，否则 `Descendants` 一个都找不到
   —— ✅ 底栏三格已挂上，几何验收见 `docs/verified-after-injection/13-footer-mount.md`
