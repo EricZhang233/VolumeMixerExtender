@@ -102,7 +102,7 @@ namespace vmex::audio
                         for (const auto flow : { eRender, eCapture })
                         {
                             std::vector<detail::Endpoint> endpoints;
-                            if (!detail::EnumEndpointsOnce(flow, endpoints))
+                            if (!detail::EnumEndpointsOnce(flow, endpoints, true))
                             {
                                 volumes = false;
                                 continue;

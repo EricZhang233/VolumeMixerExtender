@@ -16,7 +16,7 @@ $packageRoot = [IO.Path]::GetFullPath($PackageDirectory)
 if ((Test-Path -LiteralPath $packageRoot) -and (Get-ChildItem -LiteralPath $packageRoot -Force | Select-Object -First 1)) {
     throw 'Release package directory must be empty; existing archives cannot be reused.'
 }
-cmake --preset $Preset -DBUILD_TESTING=OFF "-DVMEX_PACKAGE_DIR=$packageRoot"
+cmake --preset $Preset -DBUILD_TESTING=OFF -DVMEX_BUILD_RECORDING_DRIVER=ON "-DVMEX_PACKAGE_DIR=$packageRoot"
 if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
 cmake --build "obj/$Preset" --config Release --target package
 if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
@@ -27,7 +27,11 @@ $archive = [IO.Compression.ZipFile]::OpenRead($packagePath)
 try {
     $expected = @('vmex.exe', 'vmex_cli.exe', 'vmex_core.dll', 'vmex_manager.exe',
         'vmex_tap.dll', 'vmex_launcher.dll', 'xamldiagnostics.dll')
+    $cableFiles = Get-ChildItem -LiteralPath 'bin/Release/Driver/VBCABLE' -File
+    if ($cableFiles.Count -lt 5) { throw 'Original VB-CABLE package is missing.' }
+    $expected += @($cableFiles | ForEach-Object { 'Driver/VBCABLE/' + $_.Name })
     foreach ($entry in $archive.Entries) {
+        if ($entry.FullName -cin @('Driver/', 'Driver/VBCABLE/')) { continue }
         if ($entry.FullName -cnotin $expected) {
             throw "Unexpected package member $($entry.FullName)."
         }
@@ -37,7 +41,8 @@ try {
         $entry = @($archive.Entries | Where-Object { $_.FullName -ceq $name })
         if ($entry.Count -ne 1 -or $entry[0].Length -eq 0) { throw "Missing or empty package member $name." }
         $built = Get-Item "bin/Release/$name"
-        if ($name -cne 'xamldiagnostics.dll' -and $built.VersionInfo.ProductVersion -cne $version) { throw "Version mismatch in $name." }
+        if (($name.EndsWith('.exe') -or $name.EndsWith('.dll')) -and
+            -not $name.StartsWith('Driver/') -and $name -cne 'xamldiagnostics.dll' -and $built.VersionInfo.ProductVersion -cne $version) { throw "Version mismatch in $name." }
         $memberStream = $entry[0].Open()
         $builtStream = $built.OpenRead()
         $algorithm = [Security.Cryptography.SHA256]::Create()
@@ -52,6 +57,7 @@ try {
         }
     }
 } finally { $archive.Dispose() }
+& "$PSScriptRoot/../../Test/DriverPackageTests.ps1" -Path 'bin/Release/Driver/VBCABLE'
 $digest = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash
 Write-Output "Built $packageName SHA256=$digest"
 if ($env:GITHUB_OUTPUT) {

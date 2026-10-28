@@ -11,6 +11,7 @@ namespace vmex::inject
         SetRedirect,
         ClearRedirect,
         Manager,
+        Recording,
         Exit
     };
 

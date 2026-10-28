@@ -11,6 +11,7 @@ namespace vmex::audio
 
         virtual Status EnumerateDevices(DataFlow flow, DeviceState state, std::vector<DeviceInfo>& devices) = 0;
         virtual Status FindVirtualDevice(DeviceInfo& device) = 0;
+        virtual Status EnumerateRoutingDevices(bool recordingMode, std::vector<DeviceInfo>& devices) = 0;
         virtual Status GetDefaultDevice(DataFlow flow, DeviceRole role, DeviceInfo& device) = 0;
         virtual Status GetVolume(std::wstring_view deviceId, EndpointVolume& volume) = 0;
         virtual Status SetVolume(std::wstring_view deviceId, float level) = 0;
@@ -18,9 +19,10 @@ namespace vmex::audio
         virtual Status GetPeak(std::wstring_view deviceId, float& left, float& right) = 0;
         virtual Status EnumerateSessions(std::wstring_view deviceId, std::vector<SessionInfo>& sessions) = 0;
         virtual Status EnumerateAppSessions(const std::map<std::wstring, std::wstring>& preferredDevices,
-                                            std::vector<AppSessionInfo>& sessions) = 0;
+                                            std::vector<AppSessionInfo>& sessions, std::wstring_view deviceId = {}) = 0;
         virtual Status OpenSession(std::wstring_view deviceId, std::wstring_view instanceId,
-                                   std::unique_ptr<IAudioSessionHandle>& handle) = 0;
+                                   std::unique_ptr<IAudioSessionHandle>& handle,
+                                   SessionFollowMode followMode = SessionFollowMode::Application) = 0;
     };
 
     [[nodiscard]] std::unique_ptr<IAudioDeviceManager> CreateAudioDeviceManager();

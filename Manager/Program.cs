@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -8,6 +9,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using System.Windows.Shell;
+using System.Windows.Documents;
 
 namespace Vmex.Manager;
 
@@ -17,9 +19,12 @@ internal static class Core
     [DllImport(Dll, CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)] internal static extern int VmexManagerInitialize(StringBuilder error, int capacity);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern void VmexManagerShutdown();
     [DllImport(Dll, CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)] private static extern void VmexManagerText(string key, StringBuilder text, int capacity);
+    [DllImport(Dll, CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)] private static extern void VmexManagerAbout(StringBuilder text, int capacity);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern int VmexManagerQuery([Out] int[] values, int count);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern int VmexRecordingDriverQuery([Out] int[] values, int count);
     [DllImport(Dll, CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)] internal static extern int VmexManagerExecute(int action, int value, StringBuilder error, int capacity);
     internal static string Text(string key) { var text = new StringBuilder(4096); VmexManagerText(key, text, text.Capacity); return text.ToString(); }
+    internal static string About() { var text = new StringBuilder(16384); VmexManagerAbout(text, text.Capacity); return text.ToString(); }
 }
 
 internal static class Program
@@ -67,8 +72,10 @@ internal sealed class ManagerWindow : Window
 {
     private readonly TextBlock status = new(), injection = new(), feedback = new();
     private readonly Button host = new(), refresh = new();
+    private readonly TextBlock driverStatus = new();
+    private readonly Button installDriver = new(), uninstallDriver = new();
     private readonly CheckBox autostart = new(), driver = new();
-    private readonly StackPanel body = new() { Margin = new Thickness(32, 24, 32, 24) };
+    private readonly StackPanel body = new();
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(2) };
     private bool busy, updating, running, modal;
     private readonly bool test;
@@ -76,10 +83,10 @@ internal sealed class ManagerWindow : Window
     internal ManagerWindow(bool selfTest)
     {
         test = selfTest;
-        Title = Core.Text("manager.title"); Width = 620; Height = 710;
+        Title = Core.Text("manager.title"); Width = 600; Height = 610;
         WindowStyle = WindowStyle.SingleBorderWindow;
         ResizeMode = ResizeMode.NoResize;
-        WindowChrome.SetWindowChrome(this, new WindowChrome { CaptionHeight = 72, ResizeBorderThickness = SystemParameters.WindowResizeBorderThickness, GlassFrameThickness = new Thickness(0, 72, 0, 0), UseAeroCaptionButtons = true });
+        WindowChrome.SetWindowChrome(this, new WindowChrome { CaptionHeight = 64, ResizeBorderThickness = SystemParameters.WindowResizeBorderThickness, GlassFrameThickness = new Thickness(0, 64, 0, 0), UseAeroCaptionButtons = true });
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = Brushes.Transparent;
         SetResourceReference(ForegroundProperty, "TextBrush");
@@ -90,23 +97,35 @@ internal sealed class ManagerWindow : Window
         UseLayoutRounding = true; SnapsToDevicePixels = true;
         TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
         TextOptions.SetTextRenderingMode(this, TextRenderingMode.Auto);
-        var layout = new Grid(); layout.RowDefinitions.Add(new() { Height = new GridLength(72) }); layout.RowDefinitions.Add(new());
+        var layout = new Grid(); layout.RowDefinitions.Add(new() { Height = new GridLength(64) }); layout.RowDefinitions.Add(new());
         var surface = new Border { IsHitTestVisible = false };
         surface.SetResourceReference(Border.BackgroundProperty, "WindowBrush");
         Grid.SetRowSpan(surface, 2); layout.Children.Add(surface);
         var frame = new NativeFrame(this, surface);
-        var header = new Grid { Margin = new Thickness(32, 0, 160, 0) };
-        var heading = Label("manager.title", 23, FontWeights.Normal); heading.Margin = new Thickness(0); heading.VerticalAlignment = VerticalAlignment.Center; header.Children.Add(heading);
+        var about = new Button
+        {
+            Content = new TextBlock { Text = "\uE946", FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 16 },
+            Width = 40, Height = 32, Padding = new Thickness(0), BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent, HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top, ToolTip = Core.Text("about.title")
+        };
+        System.Windows.Automation.AutomationProperties.SetName(about, Core.Text("about.title"));
+        WindowChrome.SetIsHitTestVisibleInChrome(about, true);
+        frame.PlaceBeforeCaption(about);
+        about.Click += (_, _) => ShowAbout();
+        var header = new Grid { Margin = new Thickness(24, 0, 160, 0) };
+        var heading = Label("manager.title", 22, FontWeights.Normal); heading.Margin = new Thickness(0); heading.VerticalAlignment = VerticalAlignment.Center; header.Children.Add(heading);
         layout.Children.Add(header);
         var ready = Label("manager.ready", 12, FontWeights.Normal, true); ready.HorizontalAlignment = HorizontalAlignment.Right; ready.VerticalAlignment = VerticalAlignment.Bottom; ready.Margin = new Thickness(0, 0, 12, 6); ready.TextWrapping = TextWrapping.NoWrap;
         Grid.SetRow(ready, 0); layout.Children.Add(ready);
-        body.Margin = new Thickness(32, 4, 32, 24);
+        layout.Children.Add(about);
+        body.Margin = new Thickness(24, 4, 24, 12);
         var scroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         scroll.SetResourceReference(StyleProperty, "OverlayScrollViewerStyle");
         Grid.SetRow(scroll, 1); layout.Children.Add(scroll); Content = layout;
         var runtime = new Grid(); runtime.ColumnDefinitions.Add(new()); runtime.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        status.FontSize = 21; status.FontWeight = FontWeights.Normal; status.Margin = new Thickness(0, 0, 0, 6);
+        status.FontSize = 20; status.FontWeight = FontWeights.Normal; status.Margin = new Thickness(0, 0, 0, 4);
         status.Text = Core.Text("manager.loading"); texts.Children.Add(status);
         injection.Opacity = .65; injection.Margin = new Thickness(0, 0, 0, 4); texts.Children.Add(injection);
         var hint = Label("manager.panel.hint", 12, FontWeights.Normal, true); hint.Margin = new Thickness(0); texts.Children.Add(hint);
@@ -123,13 +142,35 @@ internal sealed class ManagerWindow : Window
         var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         row.Children.Add(refresh); row.Children.Add(host); Grid.SetRow(row, 1); buttons.Children.Add(row);
         Grid.SetColumn(buttons, 1); runtime.Children.Add(buttons);
-        body.Children.Add(Card(runtime, 24));
+        body.Children.Add(Card(runtime, 18));
         body.Children.Add(Label("manager.settings", 14, FontWeights.SemiBold));
         body.Children.Add(Setting("\uE7E8", "page.toggle.autostart", "manager.autostart.hint", autostart));
         body.Children.Add(Setting("\uE7F4", "page.toggle.showDriverName", "manager.driver.hint", driver));
         autostart.Click += async (_, _) => { if (!updating) await Execute(3, autostart.IsChecked == true ? 1 : 0); };
         driver.Click += async (_, _) => { if (!updating) await Execute(4, driver.IsChecked == true ? 1 : 0); };
         body.Children.Add(Label("manager.maintenance", 14, FontWeights.SemiBold));
+        var driverCard = new StackPanel();
+        var driverRow = new Grid();
+        driverRow.ColumnDefinitions.Add(new());
+        driverRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        driverStatus.Text = Core.Text("manager.loading");
+        driverStatus.TextWrapping = TextWrapping.Wrap;
+        driverStatus.VerticalAlignment = VerticalAlignment.Center;
+        driverStatus.Margin = new Thickness(0, 0, 16, 0);
+        driverRow.Children.Add(driverStatus);
+        var driverActions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        installDriver.Content = Core.Text("driver.install"); installDriver.Padding = new Thickness(16, 8, 16, 8);
+        uninstallDriver.Content = Core.Text("driver.uninstall"); uninstallDriver.Padding = new Thickness(16, 8, 16, 8);
+        installDriver.IsEnabled = false; uninstallDriver.IsEnabled = false;
+        installDriver.Visibility = Visibility.Collapsed; uninstallDriver.Visibility = Visibility.Collapsed;
+        installDriver.Click += async (_, _) => await Execute(10);
+        uninstallDriver.Click += async (_, _) => { if (Confirm("driver.uninstall", "driver.uninstall.confirm")) await Execute(11); };
+        driverActions.Children.Add(installDriver); driverActions.Children.Add(uninstallDriver);
+        Grid.SetColumn(driverActions, 1); driverRow.Children.Add(driverActions);
+        driverCard.Children.Add(driverRow);
+        var driverHint = Label("driver.hint", 12, FontWeights.Normal, true);
+        driverHint.Margin = new Thickness(0, 8, 0, 0);
+        driverCard.Children.Add(driverHint); body.Children.Add(Card(driverCard, 16));
         var links = new StackPanel { Orientation = Orientation.Horizontal };
         void AddLink(string key, int action)
         {
@@ -142,8 +183,13 @@ internal sealed class ManagerWindow : Window
         links.Children.Add(uninstall);
         AddLink("manager.logs", 5);
         AddLink("manager.project", 6);
-        body.Children.Add(Card(links, 20));
-        feedback.TextWrapping = TextWrapping.Wrap; feedback.Margin = new Thickness(0, 12, 0, 0); body.Children.Add(feedback);
+        body.Children.Add(Card(links, 14));
+        feedback.TextWrapping = TextWrapping.Wrap; feedback.Margin = new Thickness(0, 12, 0, 0);
+        var feedbackStyle = new System.Windows.Style(typeof(TextBlock));
+        var emptyFeedback = new Trigger { Property = TextBlock.TextProperty, Value = string.Empty };
+        emptyFeedback.Setters.Add(new Setter(VisibilityProperty, Visibility.Collapsed));
+        feedbackStyle.Triggers.Add(emptyFeedback); feedback.Style = feedbackStyle;
+        body.Children.Add(feedback);
         timer.Tick += async (_, _) => { Theme.Apply(this); await Update(); };
         Closing += (_, args) => { if (busy || modal) args.Cancel = true; };
         Closed += (_, _) => timer.Stop();
@@ -163,13 +209,20 @@ internal sealed class ManagerWindow : Window
                     Present(new[] { 1, 1, 0, 0, 1, 0 });
                     if (injection.Text != Core.Text("manager.panel.preparing")) throw new InvalidOperationException("Panel readiness status mismatch");
                     Present(new[] { 1, 1, 1, 0, 1, 0 });
+                    PresentDriver(new[] { 0, 0, 0, 0 });
+                    if (installDriver.IsEnabled || uninstallDriver.IsEnabled) throw new InvalidOperationException("Missing driver package must not offer installation");
+                    PresentDriver(new[] { 1, 1, 1, 0 });
+                    if (installDriver.Visibility != Visibility.Collapsed || !uninstallDriver.IsEnabled || uninstallDriver.Visibility != Visibility.Visible) throw new InvalidOperationException("Installed driver must only offer removal");
+                    PresentDriver(new[] { 0, 0, 1, 0 });
+                    if (!installDriver.IsEnabled || installDriver.Visibility != Visibility.Visible || uninstallDriver.Visibility != Visibility.Collapsed) throw new InvalidOperationException("Absent driver must only offer installation");
                     if (WindowStyle != WindowStyle.SingleBorderWindow || !WindowChrome.GetWindowChrome(this).UseAeroCaptionButtons || Title != Core.Text("manager.title")) throw new InvalidOperationException("System window chrome unavailable");
+                    if (!WindowChrome.GetIsHitTestVisibleInChrome(about) || Core.About().Contains("VMEX_VERSION_STRING") || !Core.About().Contains("VB-CABLE")) throw new InvalidOperationException("About information or caption hit testing unavailable");
                     updating = true; driver.IsChecked = true; updating = false;
                     Theme.Apply(this, false); UpdateLayout(); Preview("light");
                     Theme.Apply(this, true); UpdateLayout(); Preview("dark"); Theme.Apply(this);
-                    if (ActualWidth < 600 || status.Text.Length == 0 || host.Template is null || autostart.Template is null) throw new InvalidOperationException("WPF layout or resources unavailable");
+                    if (ActualWidth < 580 || status.Text.Length == 0 || host.Template is null || autostart.Template is null) throw new InvalidOperationException("WPF layout or resources unavailable");
                     double contentWidth = body.ActualWidth;
-                    Height = 600; UpdateLayout();
+                    Height = 440; UpdateLayout();
                     await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
                     var scrollbar = (ScrollBar)scroll.Template.FindName("PART_VerticalScrollBar", scroll);
                     if (scrollbar.Visibility != Visibility.Visible || Math.Abs(body.ActualWidth - contentWidth) > 1 || Math.Abs(scroll.ViewportWidth - scroll.ActualWidth) > 1) throw new InvalidOperationException("Overlay scrollbar must not reduce content width");
@@ -177,6 +230,12 @@ internal sealed class ManagerWindow : Window
                     await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
                     if (scroll.VerticalOffset <= 0 || Math.Abs(scrollbar.Value - scroll.VerticalOffset) > 1) throw new InvalidOperationException("Overlay scrollbar is not synchronized");
                     if (!frame.HasTransparentCaptionArea) throw new InvalidOperationException("Native caption buttons are covered by the client background");
+                    var aboutWindow = CreateAbout();
+                    aboutWindow.Show(); await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                    if (aboutWindow.Content is not DockPanel aboutContent || aboutContent.Children.Count != 2) throw new InvalidOperationException("About layout unavailable");
+                    Theme.Apply(aboutWindow, false); aboutWindow.UpdateLayout(); Preview(aboutWindow, "about-light");
+                    Theme.Apply(aboutWindow, true); aboutWindow.UpdateLayout(); Preview(aboutWindow, "about-dark");
+                    aboutWindow.Close();
                     Height = 830; scroll.ScrollToTop(); UpdateLayout();
                     updating = true; driver.IsChecked = true; driver.IsChecked = false; updating = false;
                     Application.Current.Shutdown(0);
@@ -188,14 +247,19 @@ internal sealed class ManagerWindow : Window
     }
 
     private static TextBlock Label(string key, double size, FontWeight weight, bool secondary = false) => new()
-    { Text = Core.Text(key), FontSize = size, FontWeight = weight, TextWrapping = TextWrapping.Wrap, Opacity = secondary ? .65 : 1, Margin = new Thickness(0, 0, 0, 8) };
+    { Text = Core.Text(key), FontSize = size, FontWeight = weight, TextWrapping = TextWrapping.Wrap, Opacity = secondary ? .65 : 1, Margin = new Thickness(0, 0, 0, 4) };
 
     private void Preview(string theme)
     {
-        var image = new RenderTargetBitmap((int)ActualWidth, (int)ActualHeight, 96, 96, PixelFormats.Pbgra32);
-        image.Render(this);
+        Preview(this, "manager-" + theme);
+    }
+
+    private static void Preview(Window window, string name)
+    {
+        var image = new RenderTargetBitmap((int)window.ActualWidth, (int)window.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+        image.Render(window);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image));
-        using var stream = System.IO.File.Create(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"manager-preview-{theme}.png"));
+        using var stream = System.IO.File.Create(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"{name.Replace("manager-", "manager-preview-")}.png"));
         encoder.Save(stream);
     }
 
@@ -210,10 +274,11 @@ internal sealed class ManagerWindow : Window
     private static Border Setting(string glyph, string title, string hint, CheckBox toggle)
     {
         var row = new Grid(); row.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); row.ColumnDefinitions.Add(new()); row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        var icon = new TextBlock { Text = glyph, FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 22, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 20, 0) }; row.Children.Add(icon);
-        var labels = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 20, 0) }; labels.Children.Add(Label(title, 14, FontWeights.Normal)); labels.Children.Add(Label(hint, 12, FontWeights.Normal, true)); Grid.SetColumn(labels, 1); row.Children.Add(labels);
+        var icon = new TextBlock { Text = glyph, FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 22, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 16, 0) }; row.Children.Add(icon);
+        var labels = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 16, 0) }; labels.Children.Add(Label(title, 14, FontWeights.Normal));
+        var description = Label(hint, 12, FontWeights.Normal, true); description.Margin = new Thickness(0); labels.Children.Add(description); Grid.SetColumn(labels, 1); row.Children.Add(labels);
         toggle.VerticalAlignment = VerticalAlignment.Center; toggle.SetResourceReference(StyleProperty, "ToggleSwitchCheckBoxStyle"); System.Windows.Automation.AutomationProperties.SetName(toggle, Core.Text(title)); Grid.SetColumn(toggle, 2); row.Children.Add(toggle);
-        return Card(row, 20);
+        return Card(row, 14);
     }
 
     private bool Confirm(string title, string message)
@@ -238,6 +303,21 @@ internal sealed class ManagerWindow : Window
         var values = new int[6];
         if (await Task.Run(() => Core.VmexManagerQuery(values, values.Length)) != 0) throw new InvalidOperationException(Core.Text("manager.unresponsive"));
         Present(values);
+        var driverValues = new int[4];
+        if (await Task.Run(() => Core.VmexRecordingDriverQuery(driverValues, driverValues.Length)) != 0) throw new InvalidOperationException(Core.Text("driver.query.failed"));
+        PresentDriver(driverValues);
+    }
+
+    private void PresentDriver(int[] values)
+    {
+        var state = Core.Text(values[0] == 0 ? "driver.absent" : values[1] != 0 ? "driver.ready" : "driver.notStarted");
+        driverStatus.Text = Core.Text("driver.title") + " · " + state;
+        if (values[3] != 0) driverStatus.Text += " · " + Core.Text("driver.problem") + " " + values[3];
+        if (values[2] == 0) driverStatus.Text += " · " + Core.Text("driver.package.missing");
+        installDriver.Visibility = values[0] == 0 ? Visibility.Visible : Visibility.Collapsed;
+        uninstallDriver.Visibility = values[0] != 0 ? Visibility.Visible : Visibility.Collapsed;
+        installDriver.IsEnabled = values[0] == 0 && values[2] != 0;
+        uninstallDriver.IsEnabled = values[0] != 0 && values[2] != 0;
     }
 
     private void Present(int[] values)
@@ -250,6 +330,65 @@ internal sealed class ManagerWindow : Window
 
     private void Error(string message) => feedback.Text = Core.Text("manager.failed").Replace("{0}", message);
 
+    private Window CreateAbout()
+    {
+        var window = new Window
+        {
+            Owner = this, Title = Core.Text("about.title"), Width = 560, Height = 600,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.CanResize,
+            MinWidth = 420, MinHeight = 360, ShowInTaskbar = false
+        };
+        window.SetResourceReference(BackgroundProperty, "WindowBrush");
+        window.SetResourceReference(ForegroundProperty, "TextBrush");
+        window.SetResourceReference(FontFamilyProperty, SystemFonts.MessageFontFamilyKey);
+        var content = new DockPanel { Margin = new Thickness(24) };
+        var footer = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
+        Hyperlink CreateLink(string label, string url)
+        {
+            var link = new Hyperlink(new Run(label)) { NavigateUri = new Uri(url) };
+            link.SetResourceReference(TextElement.ForegroundProperty, "AccentBrush");
+            link.RequestNavigate += (_, args) =>
+            {
+                try { Process.Start(new ProcessStartInfo(args.Uri.AbsoluteUri) { UseShellExecute = true }); args.Handled = true; }
+                catch (Exception error) { MessageBox.Show(window, Core.Text("manager.failed").Replace("{0}", error.Message), window.Title); }
+            };
+            return link;
+        }
+        var line = new TextBlock { Margin = new Thickness(0, 4, 0, 4) };
+        line.Inlines.Add(CreateLink(Core.Text("about.link.project"), Core.Text("about.link.project.url")));
+        footer.Children.Add(line);
+        DockPanel.SetDock(footer, Dock.Bottom); content.Children.Add(footer);
+        var paragraph = new Paragraph { Margin = new Thickness(0) };
+        var body = Core.About();
+        var position = 0;
+        foreach (Match match in Regex.Matches(body, @"https://[^\s]+"))
+        {
+            paragraph.Inlines.Add(new Run(body.Substring(position, match.Index - position)));
+            paragraph.Inlines.Add(CreateLink(match.Value, match.Value));
+            position = match.Index + match.Length;
+        }
+        paragraph.Inlines.Add(new Run(body.Substring(position)));
+        var information = new RichTextBox
+        {
+            Document = new FlowDocument(paragraph) { PagePadding = new Thickness(0) },
+            IsReadOnly = true, IsDocumentEnabled = true,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent, Padding = new Thickness(0), FontSize = 14
+        };
+        information.SetResourceReference(ForegroundProperty, "TextBrush");
+        content.Children.Add(information); window.Content = content;
+        window.SourceInitialized += (_, _) => Theme.Apply(window);
+        return window;
+    }
+
+    private void ShowAbout()
+    {
+        if (busy || modal) return;
+        modal = true;
+        try { CreateAbout().ShowDialog(); }
+        finally { modal = false; }
+    }
+
     private async Task Execute(int action, int value = 0)
     {
         if (busy || modal || test) return;
@@ -259,7 +398,7 @@ internal sealed class ManagerWindow : Window
             var error = new StringBuilder(4096);
             var result = await Task.Run(() => Core.VmexManagerExecute(action, value, error, error.Capacity));
             if (result != 0) { Error(error.ToString()); await ReadState(); return; }
-            feedback.Text = "";
+            feedback.Text = error.ToString();
             if (action is 2 or 7)
             {
                 if (action == 7) MessageBox.Show(this, Core.Text("manager.uninstall.done"), Title, MessageBoxButton.OK, MessageBoxImage.Information);

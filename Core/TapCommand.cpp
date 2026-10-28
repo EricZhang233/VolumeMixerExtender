@@ -14,6 +14,7 @@ namespace vmex::inject
             if (name == "CLEARREDIRECT") return TapVerb::ClearRedirect;
             if (name == "EXIT") return TapVerb::Exit;
             if (name == "MANAGER") return TapVerb::Manager;
+            if (name == "RECORDING") return TapVerb::Recording;
             return std::nullopt;
         }
 
@@ -31,6 +32,7 @@ namespace vmex::inject
             case TapVerb::ClearRedirect: return count == 0;
             case TapVerb::Exit: return count == 0;
             case TapVerb::Manager: return count == 0;
+            case TapVerb::Recording: return count == 1 || count == 2;
             default: return true;
             }
         }
@@ -46,6 +48,7 @@ namespace vmex::inject
         case TapVerb::ClearRedirect: return L"CLEARREDIRECT";
         case TapVerb::Exit: return L"EXIT";
         case TapVerb::Manager: return L"MANAGER";
+        case TapVerb::Recording: return L"RECORDING";
         default: return L"UNKNOWN";
         }
     }

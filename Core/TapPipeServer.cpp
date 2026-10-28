@@ -109,7 +109,7 @@ namespace vmex::inject
         {
             const HANDLE pipe = ::CreateNamedPipeW(
                 m_pipeName.c_str(),
-                PIPE_ACCESS_INBOUND,
+                PIPE_ACCESS_DUPLEX,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 1,
                 4096,
@@ -154,7 +154,7 @@ namespace vmex::inject
             {
                 std::string accumulated;
                 std::array<char, kReadBufferSize> buffer{};
-                const ULONGLONG deadline = ::GetTickCount64() + 2000;
+                ULONGLONG deadline = ::GetTickCount64() + 2000;
                 bool authorized = false;
                 while (m_running.load() && ::GetTickCount64() < deadline)
                 {
@@ -190,7 +190,16 @@ namespace vmex::inject
                         }
                         if (!line.empty())
                         {
-                            Dispatch(line);
+                            const auto response = Dispatch(line);
+                            if (!response.empty())
+                            {
+                                DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+                                if (!::SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr)) break;
+                                DWORD written = 0;
+                                if (!::WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr) ||
+                                    written != response.size()) break;
+                                deadline = ::GetTickCount64() + 2000;
+                            }
                         }
                     }
 
@@ -200,7 +209,6 @@ namespace vmex::inject
                     }
                 }
 
-                ::FlushFileBuffers(pipe);
                 ::DisconnectNamedPipe(pipe);
             }
 
@@ -208,7 +216,7 @@ namespace vmex::inject
         }
     }
 
-    void TapPipeServer::Dispatch(std::string_view line)
+    std::string TapPipeServer::Dispatch(std::string_view line)
     {
         const auto command = ParseTapCommand(line);
         if (!command.has_value())
@@ -218,7 +226,7 @@ namespace vmex::inject
                 kChannel,
                 L"log.pipe.unknown",
                 { strings::ToWide(line) });
-            return;
+            return {};
         }
 
         log::Logger::Instance().WriteKeyFormat(
@@ -234,16 +242,17 @@ namespace vmex::inject
                 kChannel,
                 L"log.pipe.invalid",
                 { strings::ToWide(line) });
-            return;
+            return {};
         }
 
         try
         {
-            m_handler.HandleTapCommand(*command);
+            return m_handler.HandleTapRequest(*command);
         }
         catch (...)
         {
             log::Logger::Instance().WriteKey(log::Level::Error, kChannel, L"log.pipe.handler_threw");
         }
+        return {};
     }
 }

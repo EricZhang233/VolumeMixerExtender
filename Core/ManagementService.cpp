@@ -10,6 +10,7 @@
 #include "Platform.h"
 #include "UninstallService.h"
 #include "UserSettings.h"
+#include "RecordingDriverService.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -52,10 +53,10 @@ namespace vmex::management
             return result;
         }
 
-        HANDLE Connect()
+        HANDLE Connect(DWORD access = GENERIC_WRITE)
         {
             const auto name = inject::TapPipeName(platform::GetCurrentSessionId());
-            return ::CreateFileW(name.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+            return ::CreateFileW(name.c_str(), access, 0, nullptr, OPEN_EXISTING,
                                  SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
         }
 
@@ -70,10 +71,7 @@ namespace vmex::management
             DWORD size = static_cast<DWORD>(path.size());
             if (!::QueryFullProcessImageNameW(process.value, 0, path.data(), &size)) return false;
             const std::filesystem::path image(std::wstring(path.data(), size));
-            const auto expected = platform::GetExecutableDirectory();
-            return _wcsicmp(image.parent_path().c_str(), expected.c_str()) == 0 &&
-                (_wcsicmp(image.filename().c_str(), L"vmex.exe") == 0 ||
-                 _wcsicmp(image.filename().c_str(), L"vmex_cli.exe") == 0);
+            return IsHostImage(image, platform::GetExecutableDirectory());
         }
 
         Status StopUnlocked()
@@ -149,6 +147,14 @@ namespace vmex::management
         }
     }
 
+    bool IsHostImage(const std::filesystem::path& image, const std::filesystem::path& directory)
+    {
+        const auto normalized = image.lexically_normal();
+        return _wcsicmp(normalized.parent_path().c_str(), directory.lexically_normal().c_str()) == 0 &&
+            (_wcsicmp(normalized.filename().c_str(), L"vmex.exe") == 0 ||
+             _wcsicmp(normalized.filename().c_str(), L"vmex_cli.exe") == 0);
+    }
+
     Snapshot Query()
     {
         Snapshot result;
@@ -160,16 +166,73 @@ namespace vmex::management
             result.responsive = true;
             result.processId = pid;
         }
-        inject::State state;
-        if (App::Instance().Injection().QueryState(state)) result.injected = state.tapLoaded;
+        if (App::Instance().IsReady())
+        {
+            inject::State state;
+            if (App::Instance().Injection().QueryState(state)) result.injected = state.tapLoaded;
+        }
         result.autostart = autostart::AutostartEntry::IsEnabled();
         result.showDriverName = settings::ReadBool(settings::kShowDriverName, true);
         return result;
     }
 
+    HostLink::~HostLink() { Reset(); }
+
+    void HostLink::Reset() noexcept
+    {
+        if (pipe)
+        {
+            ::CloseHandle(static_cast<HANDLE>(pipe));
+            pipe = nullptr;
+        }
+        processId = 0;
+    }
+
+    HostLink::HostLink(HostLink&& other) noexcept
+        : pipe(other.pipe)
+        , processId(other.processId)
+    {
+        other.pipe = nullptr;
+        other.processId = 0;
+    }
+
+    HostLink& HostLink::operator=(HostLink&& other) noexcept
+    {
+        if (this != &other)
+        {
+            Reset();
+            pipe = other.pipe;
+            processId = other.processId;
+            other.pipe = nullptr;
+            other.processId = 0;
+        }
+        return *this;
+    }
+
+    HostLink ConnectHost()
+    {
+        HostLink link;
+        for (int attempt = 0; attempt < 100; ++attempt)
+        {
+            const HANDLE pipe = Connect(GENERIC_READ | GENERIC_WRITE);
+            DWORD pid = 0;
+            if (pipe != INVALID_HANDLE_VALUE && Identify(pipe, pid))
+            {
+                link.pipe = pipe;
+                link.processId = pid;
+                return link;
+            }
+            if (pipe != INVALID_HANDLE_VALUE) ::CloseHandle(pipe);
+            ::Sleep(10);
+        }
+        return link;
+    }
+
     Status StopInjection()
     {
         auto& app = App::Instance();
+        const auto recording = app.StopRecording();
+        if (!recording) return recording;
         app.StopMonitoring();
         inject::State state;
         const auto queried = app.Injection().QueryState(state);
@@ -178,12 +241,15 @@ namespace vmex::management
         const auto result = uninstall::TerminateShellHost(state.target.processId);
         return result.ok ? Status::Ok() : Status::Failed(result.detail);
     }
-
     Status StartHost()
     {
         Operation operation;
         if (!operation.Locked()) return Status::Failed(L"management-busy");
-        if (host::HostPresence::IsRunning()) return Status::Ok();
+        if (host::HostPresence::IsRunning())
+        {
+            auto link = ConnectHost();
+            return Report(L"start", link.Valid() ? Status::Ok() : Status::Failed(L"host-identity"));
+        }
         const auto launched = Launch(L"vmex.exe");
         if (!launched) return Report(L"start", launched);
         for (int attempt = 0; attempt < 100; ++attempt)
@@ -260,6 +326,8 @@ namespace vmex::management
             Status StopHost() override { return Report(L"uninstall-stop", StopUnlocked()); }
             Status ResetAudioPreferences() override
             {
+                const auto restored = recording::RestoreCableEndpoints();
+                if (!restored) return Report(L"uninstall-endpoints", restored);
                 return Report(L"uninstall-audio", App::Instance().EndpointPolicy().ClearAppDefaultDevices());
             }
             Status RemoveSettings() override

@@ -110,7 +110,7 @@ skill.title: VolumeMixerExtender 接入文档
 skill.section.purpose: 用途
 skill.purpose.text: 通过命令行完整驱动快速设置音量面板的注入入口与自定义声音页面, 不依赖图形界面。
 skill.section.workflow: 工作流
-skill.workflow.text: 使用 start 启动后台程序、status 查询状态、stop 退出；manager 打开独立管理器；show-driver-name 与 autostart 接受 on/off；clear-redirect 清除全部应用重定向与音量偏好；uninstall --yes 清除自启、配置、缓存及应用音频偏好并保留程序文件。host 仍可在当前终端常驻。
+skill.workflow.text: 使用 start 启动后台程序、status 查询状态、stop 退出；manager 打开管理器，about 显示版本与许可；show-driver-name 与 autostart 接受 on/off；recording on/off/status 切换或查询录制模式，recording monitor --device=<id> 更换监听设备。待机时三个 VB-CABLE 端点均禁用，开关按配置完整性显示，包含已禁用的 CABLE Input；开启录制仅临时启用 CABLE Input，监听就绪后切换默认输出；关闭时恢复原默认设备、清除指向 V 的应用重定向、停止监听，最后禁用 CABLE Input，失败保留待清理状态；V 仅录制时出现在重定向列表。driver status/install/uninstall 查询或打开官方安装器，安装卸载需要管理员权限并按提示重启；driver hide 退出录制并禁用三个端点，driver show 退出录制并恢复本程序有记录的禁用操作，用于诊断。clear-redirect 清除全部应用重定向与音量偏好；uninstall --yes 清除自启、配置、缓存及应用音频偏好并保留程序文件，驱动卸载使用 driver uninstall。host 可在当前终端常驻。
 skill.section.commands: 命令清单
 skill.section.exitcodes: 退出码
 skill.exitcode.text: 0 成功; 1 参数错误; 2 尚未实现; 3 运行失败
@@ -275,6 +275,60 @@ page.label.defaultOutput: 默认输出设备
 page.label.listenOutput: 监听输出设备
 page.label.defaultInput: 默认输入设备
 page.checkbox.recordingMode: 录制模式
+log.recording.result: 录制模式操作 {0}，结果 {1}，详情 {2}
+log.recording.dropped: 监听缓冲溢出，丢弃 {0} 帧
+cmd.recording.summary: 查询或切换录制模式，通过虚拟输出录制并监听到实体设备
+cmd.recording.action: on、off、status 或 monitor（默认 status）
+cmd.recording.device: monitor 操作的监听输出设备标识
+recording.failed: 录制模式操作失败：{0}
+recording.unknown: 状态未知
+recording.available: 录制入口可用
+recording.unavailableReason: 不可用原因
+recording.endpoint.notReady: CABLE Input 不可用或无法确认其硬件归属，请检查 VB-CABLE 配置。
+recording.format.notReady: 无法打开音频端点或读取混音格式，请检查音频服务和设备配置。
+recording.driver.missing: 未安装 VB-CABLE，请在管理器中打开官方安装器完成安装。
+recording.driver.notReady: VB-CABLE 的 CABLE Input 尚未就绪，请检查驱动状态并在安装后重启 Windows。
+recording.monitor.physicalRequired: 请先将实体输出设备设为默认，再开启录制模式。
+log.recording.routingCleared: 已清除指向录制虚拟端点的应用重定向：{0}
+log.recording.endpoint_hidden: 已禁用 VB-CABLE 端点：{0}
+log.recording.endpoint_shown: 已启用 VB-CABLE 端点：{0}
+log.recording.endpoint_failed: 隐藏或恢复 VB-CABLE 端点失败：{0}
+log.recording.endpoint_state_unconfirmed: VB-CABLE 端点操作返回后仍未确认目标状态：{0}，期望可见 {1}
+log.recording.endpoint_vendor_mismatch: 端点硬件 ID 不属于 VB-CABLE，已跳过：{0}
+log.recording.endpoint_vendor_unknown: 无法确认端点硬件 ID，已跳过：{0}
+log.recording.endpoints_failed: 枚举音频端点失败，跳过 VB-CABLE 端点处理
+log.recording.endpoints_startup_failed: 启动时隐藏多余的 VB-CABLE 端点失败：{0}
+cmd.driver.summary: 查询、安装或卸载驱动；hide 退出录制并禁用三个虚拟端点，show 退出录制并恢复有记录的禁用操作
+cmd.driver.action: status、install、uninstall、hide 或 show（默认 status）
+driver.title: 录制模式驱动 · VB-CABLE
+driver.install: 打开安装器
+driver.uninstall: 打开卸载器
+driver.absent: 未安装
+driver.ready: 已就绪
+driver.notStarted: 已安装，尚未运行
+driver.package: 驱动包完整
+driver.package.missing: 缺少完整驱动包
+driver.problem: 设备问题代码
+driver.query.failed: 无法查询录制模式驱动状态
+driver.operation.failed: 尚未确认驱动状态已改变。请在 VB-CABLE 官方安装器中完成对应操作并按提示重启 Windows。
+driver.restart: 驱动操作已完成，需要重启 Windows 后生效。
+driver.hint: 录制模式需要 VB-CABLE，安装或卸载后请重启 Windows。
+driver.endpoints.hint: 待机时三个虚拟端点均禁用；开启录制仅临时启用 CABLE Input，关闭后再次禁用。录制开关按配置完整性显示，待机禁用不影响显示。driver show 用于退出录制并恢复有记录的禁用操作。
+driver.signature.invalid: 驱动签名、证书或目录校验失败，已停止安装。
+driver.uninstall.confirm: 将先退出录制模式，再打开 VB-CABLE 官方安装器，请点击 Remove Driver。VB-CABLE 是共享设备，卸载也会影响使用它的其他程序；完成后请重启 Windows。是否继续？
+about.title: 关于
+about.version: 版本 {0}
+about.developer: 开发者：EricZhang233\nC++20 核心与 XAML 音量面板；C# / WPF 管理器。
+about.project: 项目主页：https://github.com/EricZhang233/VolumeMixerExtender
+about.license: 本项目许可证：GNU GPL v3。第三方组件遵循各自许可，不因随包分发而改为 GPL。
+about.thirdParty: 第三方组件与参考项目
+about.vbcable: VB-CABLE 标准版 · VB-Audio Software\nCopyright V.Burel 2010–2024，保留所有权利。\n来源：https://www.vb-cable.com/\n许可：https://vb-audio.com/Services/licensing.htm
+about.eartrumpet: EarTrumpet · File-New-Project\n逐应用音量与输出重定向的交互参考。\nhttps://github.com/File-New-Project/EarTrumpet
+about.microsoft: Microsoft Windows XAML 诊断接口与 C++/WinRT\n用于系统面板接入与 XAML 渲染；随包 xamldiagnostics.dll 属于 Microsoft Windows SDK 组件，权利归 Microsoft，适用其原有许可。
+about.link.project: 项目主页
+about.link.project.url: https://github.com/EricZhang233/VolumeMixerExtender
+cmd.about.summary: 显示版本、开发信息、第三方组件来源与许可
+log.about.opened: 已读取关于与第三方许可信息
 page.toggle.autostart: 开机启动
 page.toggle.showDriverName: 显示驱动名
 page.button.uninstall: 从系统卸载
@@ -325,6 +379,7 @@ log.page.dispatchFailed: 底栏重试派发失败 -> 放弃挂载
 log.page.footerSizeChanged: 底栏 SizeChanged -> {0}x{1}
 log.page.footerFirstLayout: 底栏 LayoutUpdated 首次触发
 log.page.recordingMode: 录制模式 -> {0}
+log.page.recordingAvailable: 录制模式入口可用性 -> {0}
 log.page.redirect: 应用重定向 pid={0} device={1}
 log.page.autostart: 开机启动 -> {0}（{1}）
 log.page.autostartFailed: 开机启动：{0} 失败 —— {1}

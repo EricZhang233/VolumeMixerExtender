@@ -53,6 +53,7 @@ namespace vmex
         Status InjectNow(inject::State& state);
         Status StartMonitoring();
         void StopMonitoring();
+        Status StopRecording();
         [[nodiscard]] bool IsMonitoring() const noexcept;
         [[nodiscard]] inject::State InjectionState() const;
 

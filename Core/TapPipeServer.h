@@ -14,6 +14,11 @@ namespace vmex::inject
         virtual ~ITapCommandHandler() = default;
 
         virtual void HandleTapCommand(const TapCommand& command) = 0;
+        virtual std::string HandleTapRequest(const TapCommand& command)
+        {
+            HandleTapCommand(command);
+            return {};
+        }
     };
 
     class TapPipeServer final
@@ -35,7 +40,7 @@ namespace vmex::inject
 
     private:
         void Loop();
-        void Dispatch(std::string_view line);
+        std::string Dispatch(std::string_view line);
 
         std::wstring m_pipeName;
         ITapCommandHandler& m_handler;
