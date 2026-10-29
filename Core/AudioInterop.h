@@ -9,6 +9,7 @@
 #include <audiopolicy.h>
 #include <audioclient.h>
 #include <endpointvolume.h>
+#include <functiondiscoverykeys_devpkey.h>
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -20,6 +21,7 @@
 
 #include "Logger.h"
 #include "TextService.h"
+#include "EndpointVisibility.h"
 
 namespace vmex::audio::detail {
 
@@ -31,6 +33,10 @@ static const PROPERTYKEY kPkeyEnumeratorName =
     { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 24 };
 static const PROPERTYKEY kPkeyInterfaceName =
     { { 0x026e516e, 0xb814, 0x414b, { 0x83, 0xcd, 0x85, 0x6d, 0x6f, 0xef, 0x48, 0x22 } }, 2 };
+static constexpr PROPERTYKEY kPkeyEndpointFormFactor =
+    { { 0x1da5d803, 0xd492, 0x4edd, { 0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e } }, 0 };
+static constexpr PROPERTYKEY kPkeyEndpointJackSubType =
+    { { 0x1da5d803, 0xd492, 0x4edd, { 0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e } }, 8 };
 
 template <class T>
 class Ptr
@@ -113,6 +119,9 @@ struct Endpoint
     std::wstring description;
     std::wstring interfaceName;
     std::wstring enumerator;
+    std::wstring hardwareId;
+    EndpointFormFactor formFactor = UnknownFormFactor;
+    GUID jackSubType{};
     EDataFlow    flow = eRender;
     DWORD        state = DEVICE_STATE_ACTIVE;
     bool         isDefault = false;
@@ -187,12 +196,14 @@ inline std::wstring DisplayDeviceName(const Endpoint& ep, bool showDriverName)
 
 inline bool IsOurVirtualDevice(const Endpoint& ep)
 {
-    return ep.interfaceName == L"VB-Audio Virtual Cable" ||
-        ep.friendly.find(L"(VB-Audio Virtual Cable)") != std::wstring::npos;
+    return recording::IsCableHardwareId(ep.hardwareId);
 }
 
 inline bool ReadEndpoint(IMMDevice* dev, EDataFlow flow, Endpoint& out)
 {
+    out.hardwareId.clear();
+    out.formFactor = UnknownFormFactor;
+    out.jackSubType = {};
     out.flow = flow;
     out.id = TakeDeviceId([&] { LPWSTR p = nullptr; dev->GetId(&p); return p; }());
     if (out.id.empty()) return false;
@@ -204,6 +215,15 @@ inline bool ReadEndpoint(IMMDevice* dev, EDataFlow flow, Endpoint& out)
         GetPropString(props.get(), kPkeyDeviceDesc, out.description);
         GetPropString(props.get(), kPkeyInterfaceName, out.interfaceName);
         GetPropString(props.get(), kPkeyEnumeratorName, out.enumerator);
+        GetPropString(props.get(), PKEY_Device_MatchingDeviceId, out.hardwareId);
+        PROPVARIANT formFactor{};
+        if (SUCCEEDED(props->GetValue(kPkeyEndpointFormFactor, &formFactor)) &&
+            formFactor.vt == VT_UI4 && formFactor.ulVal < EndpointFormFactor_enum_count)
+            out.formFactor = static_cast<EndpointFormFactor>(formFactor.ulVal);
+        ::PropVariantClear(&formFactor);
+        std::wstring jackSubType;
+        if (GetPropString(props.get(), kPkeyEndpointJackSubType, jackSubType))
+            ::CLSIDFromString(jackSubType.c_str(), &out.jackSubType);
     }
     if (out.friendly.empty()) out.friendly = out.id;
     return true;
@@ -266,13 +286,18 @@ enum class CableEndpointRole { Unknown, Playback, MultichannelPlayback, Capture 
 
 inline CableEndpointRole GetCableEndpointRole(const Endpoint& endpoint)
 {
-    if (endpoint.interfaceName != L"VB-Audio Virtual Cable") return CableEndpointRole::Unknown;
+    if (!IsOurVirtualDevice(endpoint)) return CableEndpointRole::Unknown;
+    constexpr GUID speaker{ 0xdff21ce1, 0xf70f, 0x11d0, { 0xb9, 0x17, 0x00, 0xa0, 0xc9, 0x22, 0x31, 0x96 } };
+    constexpr GUID line{ 0xdff21fe3, 0xf70f, 0x11d0, { 0xb9, 0x17, 0x00, 0xa0, 0xc9, 0x22, 0x31, 0x96 } };
     if (endpoint.flow == eRender)
     {
-        if (endpoint.description == L"CABLE Input") return CableEndpointRole::Playback;
-        if (endpoint.description == L"CABLE In 16 Ch") return CableEndpointRole::MultichannelPlayback;
+        if (endpoint.formFactor == Speakers && ::IsEqualGUID(endpoint.jackSubType, speaker))
+            return CableEndpointRole::Playback;
+        if (endpoint.formFactor == LineLevel && ::IsEqualGUID(endpoint.jackSubType, line))
+            return CableEndpointRole::MultichannelPlayback;
     }
-    if (endpoint.flow == eCapture && endpoint.description == L"CABLE Output") return CableEndpointRole::Capture;
+    if (endpoint.flow == eCapture && endpoint.formFactor == LineLevel && ::IsEqualGUID(endpoint.jackSubType, line))
+        return CableEndpointRole::Capture;
     return CableEndpointRole::Unknown;
 }
 

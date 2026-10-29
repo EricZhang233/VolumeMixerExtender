@@ -20,8 +20,10 @@ namespace vmex::recording
     {
         HANDLE process = nullptr;
         HANDLE stop = nullptr;
+        HANDLE targets = nullptr;
         ~Guard();
         Status Start(const std::array<std::wstring, 2>& defaults, std::wstring_view endpoint);
+        Status UpdateDefaults(const std::array<std::wstring, 2>& defaults);
         void Stop() noexcept;
         void Abandon() noexcept;
         [[nodiscard]] bool Running() const;

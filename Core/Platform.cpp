@@ -106,6 +106,25 @@ namespace vmex::platform
         return GetExecutablePath().parent_path();
     }
 
+    std::filesystem::path GetApplicationDirectory()
+    {
+        HMODULE module = nullptr;
+        if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&GetApplicationDirectory), &module)) return {};
+        std::wstring buffer(MAX_PATH, L'\0');
+        for (;;)
+        {
+            const auto length = ::GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+            if (!length) return {};
+            if (length < buffer.size())
+            {
+                buffer.resize(length);
+                return std::filesystem::path(buffer).parent_path();
+            }
+            buffer.resize(buffer.size() * 2);
+        }
+    }
+
     std::filesystem::path GetLocalAppDataDirectory()
     {
         const auto length = ::GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);

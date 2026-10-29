@@ -71,7 +71,7 @@ namespace vmex::management
             DWORD size = static_cast<DWORD>(path.size());
             if (!::QueryFullProcessImageNameW(process.value, 0, path.data(), &size)) return false;
             const std::filesystem::path image(std::wstring(path.data(), size));
-            return IsHostImage(image, platform::GetExecutableDirectory());
+            return IsHostImage(image, platform::GetApplicationDirectory());
         }
 
         Status StopUnlocked()
@@ -98,7 +98,7 @@ namespace vmex::management
 
         Status Launch(std::wstring_view file)
         {
-            const auto path = platform::GetExecutableDirectory() / file;
+            const auto path = platform::GetApplicationDirectory() / file;
             if (!platform::FileExists(path)) return Status::Failed(L"executable-missing:" + path.wstring());
             std::wstring command = L"\"" + path.wstring() + L"\"";
             STARTUPINFOW startup{ sizeof(startup) };

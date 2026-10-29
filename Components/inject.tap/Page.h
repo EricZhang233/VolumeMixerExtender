@@ -12,6 +12,7 @@
 #include "UserSettings.h"
 #include "RecordingClient.h"
 #include "RecordingDriverService.h"
+#include "PanelPresentation.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -31,6 +32,7 @@
 #include <winrt/Windows.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Windows.UI.Xaml.Input.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
+#include <winrt/Windows.UI.Xaml.Media.Animation.h>
 #include <winrt/Windows.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.UI.Xaml.Shapes.h>
 
@@ -42,6 +44,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <utility>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -122,16 +126,10 @@ namespace vmex::tap::page
         return state;
     }
 
-    struct PageData final
+    struct PageData final : presentation::DeviceSnapshot
     {
-        std::vector<audio::DeviceInfo> render;
-        std::vector<audio::DeviceInfo> routingRender;
-        std::vector<audio::DeviceInfo> capture;
         std::vector<audio::AppSessionInfo> apps;
         std::vector<std::unique_ptr<audio::IAudioSessionHandle>> handles;
-        std::wstring defaultRender;
-        std::wstring defaultCapture;
-        std::wstring appsEndpoint;
     };
 
     struct AppRowBinding final
@@ -163,13 +161,25 @@ namespace vmex::tap::page
         std::map<std::wstring, std::wstring> redirects;
         std::vector<std::shared_ptr<audio::detail::EndpointVolumeMonitor>> endpointMonitors;
         std::vector<PGX::DispatcherTimer> meterTimers;
+        std::vector<PGX::DispatcherTimer> endpointMeterTimers;
+        PGXC::StackPanel customRoot{nullptr};
+        PGXC::TextBlock volumeLabel{nullptr};
+        std::optional<presentation::DeviceSnapshot> renderedDevices;
         std::vector<std::shared_ptr<AppRowBinding>> rows;
         PGX::DispatcherTimer settleTimer{nullptr};
         PGX::DispatcherTimer deviceTimer{nullptr};
         PGX::DispatcherTimer recordingTimer{nullptr};
+        PGX::DispatcherTimer recordingActionTimer{nullptr};
+        PGX::DispatcherTimer deviceSelectionTimer{nullptr};
         PGXC::ToggleSwitch recordingToggle{nullptr};
         PGXC::TextBlock recordingFeedback{nullptr};
         bool recordingBusy = false;
+        bool recordingChanging = false;
+        presentation::PendingSelection<bool> pendingRecording;
+        presentation::PendingSelection<std::wstring> pendingRenderSelection;
+        presentation::PendingSelection<std::wstring> pendingCaptureSelection;
+        presentation::DeviceSnapshotBuffer deviceBuffer;
+        bool environmentRefreshRequired = false;
         bool recordingSynchronizing = false;
         bool recordingAvailable = false;
         std::shared_ptr<PageData> data;
@@ -463,12 +473,13 @@ namespace vmex::tap::page
 
     inline void SendSetDefault(bool render, const std::wstring& deviceId);
     winrt::fire_and_forget RefreshRecording(ContextPtr context, std::wstring action, std::wstring device = {});
-    inline void MountPage(ContextPtr const& context, int page);
-    inline void LoadData(ContextPtr const& context);
+    inline void MountPage(ContextPtr const& context, int page, const presentation::DeviceSnapshot* snapshot = nullptr);
+    inline void LoadData(ContextPtr const& context, const presentation::DeviceSnapshot* snapshot = nullptr);
     inline void SyncAppTargets(ContextPtr const& context);
     inline void ScheduleSettleSync(ContextPtr const& context);
     inline void RefreshEnvironmentNow(ContextPtr const& context);
     inline void ScheduleEnvironmentRefresh(ContextPtr const& context);
+    [[nodiscard]] inline bool IsInLiveTree(PGX::DependencyObject const& node);
 
     inline PGXC::Grid MakeEndpointRow(ContextPtr const& context, const audio::DeviceInfo& device)
     {
@@ -551,7 +562,7 @@ namespace vmex::tap::page
             }
         });
         meterTimer.Start();
-        context->meterTimers.push_back(meterTimer);
+        context->endpointMeterTimers.push_back(meterTimer);
 
         auto dispatcher = slider.Dispatcher();
         if (dispatcher)
@@ -587,6 +598,77 @@ namespace vmex::tap::page
 
     inline void SendSetDefault(bool render, const std::wstring& deviceId);
 
+    inline void QueueRecordingChange(ContextPtr const& context, bool enabled)
+    {
+        context->pendingRecording.Queue(enabled, ::GetTickCount64());
+        if (!context->recordingActionTimer)
+        {
+            context->recordingActionTimer = PGX::DispatcherTimer();
+            context->recordingActionTimer.Interval(std::chrono::milliseconds(200));
+            const std::weak_ptr<Context> weak = context;
+            context->recordingActionTimer.Tick([weak](auto const&, auto const&)
+            {
+                const auto live = weak.lock();
+                if (!live) return;
+                if (Settings().page != 0 || !IsInLiveTree(live->list))
+                {
+                    live->recordingActionTimer.Stop();
+                    live->pendingRecording.Reset();
+                    return;
+                }
+                if (live->recordingBusy || !live->pendingRecording.Due(::GetTickCount64())) return;
+                live->recordingActionTimer.Stop();
+                const auto desired = live->pendingRecording.Take(::GetTickCount64());
+                if (desired && *desired != Settings().recordingMode)
+                    RefreshRecording(live, *desired ? L"on" : L"off");
+            });
+        }
+        context->recordingActionTimer.Stop();
+        context->recordingActionTimer.Start();
+    }
+
+    inline void QueueDeviceSelection(ContextPtr const& context, bool render, const std::wstring& deviceId)
+    {
+        (render ? context->pendingRenderSelection : context->pendingCaptureSelection).Queue(deviceId, ::GetTickCount64());
+        if (!context->deviceSelectionTimer)
+        {
+            context->deviceSelectionTimer = PGX::DispatcherTimer();
+            context->deviceSelectionTimer.Interval(std::chrono::milliseconds(200));
+            const std::weak_ptr<Context> weak = context;
+            context->deviceSelectionTimer.Tick([weak](auto const&, auto const&)
+            {
+                const auto live = weak.lock();
+                if (!live) return;
+                if (Settings().page != 0 || !IsInLiveTree(live->list))
+                {
+                    live->deviceSelectionTimer.Stop();
+                    live->pendingRenderSelection.Reset();
+                    live->pendingCaptureSelection.Reset();
+                    return;
+                }
+                if (live->recordingBusy || live->pendingRecording) return;
+                const auto now = ::GetTickCount64();
+                if ((live->pendingRenderSelection && !live->pendingRenderSelection.Due(now)) ||
+                    (live->pendingCaptureSelection && !live->pendingCaptureSelection.Due(now))) return;
+                live->deviceSelectionTimer.Stop();
+                const auto output = live->pendingRenderSelection.Take(now).value_or(std::wstring());
+                const auto input = live->pendingCaptureSelection.Take(now).value_or(std::wstring());
+                if (!input.empty() && input != live->data->defaultCapture) SendSetDefault(false, input);
+                if (!output.empty())
+                {
+                    if (Settings().recordingMode)
+                    {
+                        if (output != Settings().listenEndpoint) RefreshRecording(live, L"monitor", output);
+                    }
+                    else if (output != live->data->defaultRender) SendSetDefault(true, output);
+                }
+                ScheduleEnvironmentRefresh(live);
+            });
+        }
+        context->deviceSelectionTimer.Stop();
+        context->deviceSelectionTimer.Start();
+    }
+
     inline PGXC::Grid MakeRecordingRow(ContextPtr const& context)
     {
         auto row = Row(44);
@@ -606,15 +688,15 @@ namespace vmex::tap::page
         toggle.OffContent(nullptr);
         toggle.HorizontalAlignment(PGX::HorizontalAlignment::Right);
         toggle.VerticalAlignment(PGX::VerticalAlignment::Center);
-        toggle.IsOn(Settings().recordingMode);
-        toggle.IsEnabled(!context->recordingBusy);
+        toggle.IsOn(context->pendingRecording.ValueOr(Settings().recordingMode));
+        toggle.IsEnabled(!context->recordingChanging);
         PGXAU::AutomationProperties::SetName(toggle, winrt::hstring(text::Embedded().Resolve(L"page.checkbox.recordingMode")));
         context->recordingToggle = toggle;
         const std::weak_ptr<Context> weak = context;
         toggle.Toggled([weak, toggle](auto const&, auto const&)
         {
-            if (const auto live = weak.lock(); live && !live->recordingBusy && !live->recordingSynchronizing)
-                RefreshRecording(live, toggle.IsOn() ? L"on" : L"off");
+            if (const auto live = weak.lock(); live && !live->recordingChanging && !live->recordingSynchronizing)
+                QueueRecordingChange(live, toggle.IsOn());
         });
         controls.Children().Append(toggle);
         PGXC::Grid::SetColumn(controls, 2);
@@ -627,6 +709,8 @@ namespace vmex::tap::page
                                             bool render)
     {
         PGXC::ListView list;
+        list.ItemContainerTransitions(PGX::Media::Animation::TransitionCollection());
+        list.Transitions(PGX::Media::Animation::TransitionCollection());
         list.SelectionMode(PGXC::ListViewSelectionMode::Single);
         list.IsItemClickEnabled(false);
         list.Padding(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
@@ -682,17 +766,7 @@ namespace vmex::tap::page
             if (index < 0 || static_cast<std::size_t>(index) >= snapshot.size()) return;
 
             const std::wstring deviceId = snapshot[static_cast<std::size_t>(index)].id;
-            if (render && Settings().recordingMode)
-            {
-                RefreshRecording(context, L"monitor", deviceId);
-                return;
-            }
-            SendSetDefault(render, deviceId);
-            auto& current = render ? context->data->render : context->data->capture;
-            for (auto& item : current) item.isDefault = item.id == deviceId;
-            if (render) context->data->defaultRender = deviceId;
-            else context->data->defaultCapture = deviceId;
-            ScheduleEnvironmentRefresh(context);
+            QueueDeviceSelection(context, render, deviceId);
         });
 
         for (std::size_t i = 0; i < devices.size(); ++i)
@@ -710,8 +784,9 @@ namespace vmex::tap::page
     inline PGXC::StackPanel BuildVolumeLayer(ContextPtr const& context)
     {
         PGXC::StackPanel layer;
-        layer.Children().Append(SectionLabel(winrt::hstring(text::Embedded().Resolve(
-            Settings().recordingMode ? L"page.label.listenOutput" : L"page.section.volume"))));
+        context->volumeLabel = SectionLabel(winrt::hstring(text::Embedded().Resolve(
+            Settings().recordingMode ? L"page.label.listenOutput" : L"page.section.volume")));
+        layer.Children().Append(context->volumeLabel);
 
         layer.Children().Append(MakeEndpointList(context, context->data->render, true));
 
@@ -1300,7 +1375,7 @@ namespace vmex::tap::page
         context->slotRight.Visibility(PGX::Visibility::Visible);
     }
 
-    inline void ReleaseRowWork(ContextPtr const& context)
+    inline void ReleaseRowWork(ContextPtr const& context, bool keepEndpoints = false)
     {
         for (auto& timer : context->meterTimers)
         {
@@ -1308,31 +1383,64 @@ namespace vmex::tap::page
         }
 
         context->meterTimers.clear();
-        context->endpointMonitors.clear();
+        if (!keepEndpoints)
+        {
+            for (auto& timer : context->endpointMeterTimers)
+                if (timer) timer.Stop();
+            context->endpointMeterTimers.clear();
+            context->endpointMonitors.clear();
+        }
         context->rows.clear();
     }
 
-    inline void MountPage(ContextPtr const& context, int page)
+    inline void MountPage(ContextPtr const& context, int page, const presentation::DeviceSnapshot* snapshot)
     {
         Settings().page = page;
         if (!context->list) return;
+        if (page != 0)
+        {
+            context->pendingRecording.Reset();
+            context->pendingRenderSelection.Reset();
+            context->pendingCaptureSelection.Reset();
+            if (context->recordingActionTimer) context->recordingActionTimer.Stop();
+            if (context->deviceSelectionTimer) context->deviceSelectionTimer.Stop();
+        }
 
-        ReleaseRowWork(context);
+        const bool keepEndpoints = page == 0 && snapshot && context->customRoot && context->renderedDevices &&
+            context->list.Content() == context->customRoot && presentation::SameVolumeRows(*snapshot, *context->renderedDevices);
+        ReleaseRowWork(context, keepEndpoints);
 
         std::wstring name = text::Embedded().Resolve(L"log.page.name.system");
         if (page == 0)
         {
             name = text::Embedded().Resolve(L"log.page.name.custom");
-            LoadData(context);
-            context->list.Content(BuildCustomPage(context));
+            LoadData(context, snapshot);
+            if (keepEndpoints)
+            {
+                context->volumeLabel.Text(winrt::hstring(text::Embedded().Resolve(
+                    Settings().recordingMode ? L"page.label.listenOutput" : L"page.section.volume")));
+                auto apps = BuildAppLayer(context);
+                const auto children = context->customRoot.Children();
+                children.SetAt(children.Size() - 1, apps);
+            }
+            else
+            {
+                auto root = BuildCustomPage(context);
+                context->list.Content(root);
+                context->customRoot = root;
+            }
+            context->renderedDevices = static_cast<const presentation::DeviceSnapshot&>(*context->data);
         }
         else
         {
             context->list.Content(context->savedContent);
+            context->customRoot = nullptr;
+            context->volumeLabel = nullptr;
+            context->renderedDevices.reset();
         }
         RefreshFooter(context);
 
-        LogKey(L"log.page.mountPage", { std::to_wstring(page), name });
+        LogKey(keepEndpoints ? L"log.page.reuseDevices" : L"log.page.mountPage", { std::to_wstring(page), name });
     }
 
     inline void InstallFooter(ContextPtr const& context)
@@ -1386,32 +1494,50 @@ namespace vmex::tap::page
         }
     }
 
-    inline void LoadData(ContextPtr const& context)
+    inline bool ReadDeviceLists(ContextPtr const& context, presentation::DeviceSnapshot& data)
+    {
+        Settings().showDriverName = settings::ReadBool(settings::kShowDriverName, true);
+        const auto outputs = context->manager->EnumerateDevices(audio::DataFlow::Render, audio::DeviceState::Active, data.render);
+        const auto routes = context->manager->EnumerateRoutingDevices(Settings().recordingMode, data.routingRender);
+        const auto inputs = context->manager->EnumerateDevices(audio::DataFlow::Capture, audio::DeviceState::Active, data.capture);
+        data.recordingMode = Settings().recordingMode;
+        data.recordingAvailable = context->recordingAvailable;
+        data.showDriverName = Settings().showDriverName;
+        if (!outputs || !routes || !inputs) return false;
+        audio::DeviceInfo device;
+        if (context->manager->GetDefaultDevice(audio::DataFlow::Render, audio::DeviceRole::Multimedia, device))
+            data.defaultRender = device.id;
+        else if (!data.render.empty()) return false;
+        if (context->manager->GetDefaultDevice(audio::DataFlow::Capture, audio::DeviceRole::Multimedia, device))
+            data.defaultCapture = device.id;
+        else if (!data.capture.empty()) return false;
+        data.appsEndpoint = data.defaultRender;
+        if (data.recordingMode)
+        {
+            presentation::PrioritizeMonitor(data.render, Settings().listenEndpoint);
+            audio::DeviceInfo virtualDevice;
+            if (!context->manager->FindVirtualDevice(virtualDevice) || data.defaultRender != virtualDevice.id) return false;
+            data.appsEndpoint = virtualDevice.id;
+        }
+        else if (!data.render.empty() && std::none_of(data.render.begin(), data.render.end(),
+            [&](const auto& item) { return item.id == data.defaultRender; })) return false;
+        return true;
+    }
+
+    inline void LoadData(ContextPtr const& context, const presentation::DeviceSnapshot* snapshot)
     {
         Settings().showDriverName = settings::ReadBool(settings::kShowDriverName, true);
         PageData& data = *context->data;
         if (!context->manager) return;
 
-        context->manager->EnumerateDevices(audio::DataFlow::Render, audio::DeviceState::Active, data.render);
-        context->manager->EnumerateRoutingDevices(Settings().recordingMode, data.routingRender);
-        context->manager->EnumerateDevices(audio::DataFlow::Capture, audio::DeviceState::Active, data.capture);
-
-        audio::DeviceInfo device;
-        if (context->manager->GetDefaultDevice(audio::DataFlow::Render, audio::DeviceRole::Multimedia, device).IsOk())
+        if (snapshot)
         {
-            data.defaultRender = device.id;
+            static_cast<presentation::DeviceSnapshot&>(data) = *snapshot;
         }
-        if (context->manager->GetDefaultDevice(audio::DataFlow::Capture, audio::DeviceRole::Multimedia, device).IsOk())
+        else
         {
-            data.defaultCapture = device.id;
-        }
-
-        data.appsEndpoint = data.defaultRender;
-        if (data.appsEndpoint.empty() && !data.render.empty()) data.appsEndpoint = data.render.front().id;
-        if (Settings().recordingMode)
-        {
-            audio::DeviceInfo virtualDevice;
-            data.appsEndpoint = context->manager->FindVirtualDevice(virtualDevice).IsOk() ? virtualDevice.id : std::wstring();
+            presentation::DeviceSnapshot devices;
+            if (ReadDeviceLists(context, devices)) static_cast<presentation::DeviceSnapshot&>(data) = std::move(devices);
         }
 
         data.apps.clear();
@@ -1497,11 +1623,19 @@ namespace vmex::tap::page
     {
         if (context->settleTimer) context->settleTimer.Stop();
         if (Settings().page != 0 || !IsInLiveTree(context->list)) return;
+        if (context->recordingChanging || context->pendingRecording || context->pendingRenderSelection ||
+            context->pendingCaptureSelection || context->environmentRefreshRequired)
+        {
+            ScheduleSettleSync(context);
+            return;
+        }
         const auto previous = context->redirects;
         SeedRedirects(context);
         if (previous != context->redirects)
         {
-            MountPage(context, 0);
+            context->environmentRefreshRequired = true;
+            context->deviceBuffer.Hold(::GetTickCount64());
+            ScheduleEnvironmentRefresh(context);
             return;
         }
         SyncAppTargets(context);
@@ -1533,10 +1667,37 @@ namespace vmex::tap::page
         if (context->deviceTimer) context->deviceTimer.Stop();
 
         if (!IsInLiveTree(context->list)) return;
+        if (context->recordingChanging || context->pendingRecording || context->pendingRenderSelection ||
+            context->pendingCaptureSelection || context->deviceBuffer.Waiting(::GetTickCount64()) ||
+            std::any_of(context->rows.begin(), context->rows.end(), [](const auto& row)
+                { return row->dragging->load(std::memory_order_acquire); }))
+        {
+            ScheduleEnvironmentRefresh(context);
+            return;
+        }
 
         if (Settings().page == 0)
         {
-            MountPage(context, 0);
+            presentation::DeviceSnapshot candidate;
+            if (!ReadDeviceLists(context, candidate))
+            {
+                context->deviceBuffer.Hold(::GetTickCount64());
+                ScheduleEnvironmentRefresh(context);
+                return;
+            }
+            if (!context->deviceBuffer.Observe(candidate, ::GetTickCount64()))
+            {
+                ScheduleEnvironmentRefresh(context);
+                return;
+            }
+            if (!context->environmentRefreshRequired && context->renderedDevices &&
+                presentation::SameDeviceSnapshot(candidate, *context->renderedDevices))
+            {
+                SyncAppTargets(context);
+                return;
+            }
+            context->environmentRefreshRequired = false;
+            MountPage(context, 0, &candidate);
             return;
         }
 
@@ -1550,7 +1711,7 @@ namespace vmex::tap::page
         if (!context->deviceTimer)
         {
             context->deviceTimer = PGX::DispatcherTimer();
-            context->deviceTimer.Interval(std::chrono::milliseconds(400));
+            context->deviceTimer.Interval(std::chrono::milliseconds(150));
 
             ContextPtr weakContext = context;
             context->deviceTimer.Tick([weakContext](PGF::IInspectable const&, PGF::IInspectable const&)
@@ -1577,6 +1738,7 @@ namespace vmex::tap::page
             LogKey(L"log.page.deviceListChanged", { event.deviceId });
         }
 
+        context->deviceBuffer.Hold(::GetTickCount64());
         ScheduleEnvironmentRefresh(context);
     }
 
@@ -1927,16 +2089,20 @@ namespace vmex::tap::page
     {
         if (context->recordingBusy || !context->list) co_return;
         context->recordingBusy = true;
-        if (action != L"status") context->list.IsEnabled(false);
+        const bool changing = action != L"status";
+        context->recordingChanging = changing;
+        if (changing) context->list.IsHitTestVisible(false);
         const auto dispatcher = context->list.Dispatcher();
-        if (context->recordingToggle) context->recordingToggle.IsEnabled(false);
+        if (changing && context->recordingToggle) context->recordingToggle.IsEnabled(false);
         recording::Snapshot state;
         Status result;
-        bool available = false;
+        bool available = context->recordingAvailable;
         try
         {
             co_await winrt::resume_background();
             result = recording::Request(action, device, state);
+            if (!result && action == L"status")
+                LogKey(L"log.page.recordingQueryFailed", { result.detail });
             if (state.known)
                 available = recording::QueryRecordingReadiness(state.enabled || state.cleanupPending ?
                     std::wstring_view(state.monitorDevice) : std::wstring_view()).IsOk();
@@ -1944,9 +2110,14 @@ namespace vmex::tap::page
         catch (...) { result = Status::Failed(L"recording-request-exception"); }
         co_await winrt::resume_foreground(dispatcher);
         context->recordingBusy = false;
-        if (action != L"status") context->list.IsEnabled(true);
+        context->recordingChanging = false;
+        if (changing)
+        {
+            context->list.IsHitTestVisible(true);
+            context->deviceBuffer.Hold(::GetTickCount64(), 800);
+        }
         if (!IsInLiveTree(context->list) || Settings().page != 0) co_return;
-        bool changed = context->recordingAvailable != available || (state.known &&
+        bool changed = action == L"monitor" || context->recordingAvailable != available || (state.known &&
             (Settings().recordingMode != (state.enabled || state.cleanupPending) || Settings().listenEndpoint != state.monitorDevice));
         if (context->recordingAvailable != available)
             LogKey(L"log.page.recordingAvailable", { available ? L"1" : L"0" });
@@ -1976,13 +2147,19 @@ namespace vmex::tap::page
             if (changed && std::any_of(context->rows.begin(), context->rows.end(), [](const auto& row)
                 { return row->dragging->load(std::memory_order_acquire); })) changed = false;
         }
-        if (changed) MountPage(context, 0);
+        if (changed)
+        {
+            context->environmentRefreshRequired = true;
+            if (!changing) context->deviceBuffer.Hold(::GetTickCount64());
+            ScheduleEnvironmentRefresh(context);
+        }
         if (context->recordingToggle)
         {
             context->recordingSynchronizing = true;
-            context->recordingToggle.IsOn(Settings().recordingMode);
+            if (!context->pendingRecording && context->recordingToggle.IsOn() != Settings().recordingMode)
+                context->recordingToggle.IsOn(Settings().recordingMode);
             context->recordingSynchronizing = false;
-            context->recordingToggle.IsEnabled(true);
+            if (changing) context->recordingToggle.IsEnabled(true);
         }
         if (context->recordingFeedback)
         {
@@ -2016,8 +2193,6 @@ namespace vmex::tap::page
                 });
                 context->recordingTimer.Start();
             }
-            if (Settings().recordingMode)
-                for (auto& endpoint : context->data->render) endpoint.isDefault = endpoint.id == Settings().listenEndpoint;
         }
         root.Children().Append(BuildVolumeLayer(context));
         root.Children().Append(BuildAppLayer(context));

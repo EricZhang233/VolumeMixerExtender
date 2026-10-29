@@ -83,7 +83,7 @@ internal sealed class ManagerWindow : Window
     internal ManagerWindow(bool selfTest)
     {
         test = selfTest;
-        Title = Core.Text("manager.title"); Width = 600; Height = 610;
+        Title = Core.Text("manager.title"); Width = 600; Height = 650;
         WindowStyle = WindowStyle.SingleBorderWindow;
         ResizeMode = ResizeMode.NoResize;
         WindowChrome.SetWindowChrome(this, new WindowChrome { CaptionHeight = 64, ResizeBorderThickness = SystemParameters.WindowResizeBorderThickness, GlassFrameThickness = new Thickness(0, 64, 0, 0), UseAeroCaptionButtons = true });
@@ -221,6 +221,9 @@ internal sealed class ManagerWindow : Window
                     Theme.Apply(this, false); UpdateLayout(); Preview("light");
                     Theme.Apply(this, true); UpdateLayout(); Preview("dark"); Theme.Apply(this);
                     if (ActualWidth < 580 || status.Text.Length == 0 || host.Template is null || autostart.Template is null) throw new InvalidOperationException("WPF layout or resources unavailable");
+                    feedback.Text = Core.Text("manager.done"); UpdateLayout();
+                    if (scroll.ScrollableHeight > 1) throw new InvalidOperationException("A short feedback message must fit the default manager height");
+                    feedback.Text = string.Empty; UpdateLayout();
                     double contentWidth = body.ActualWidth;
                     Height = 440; UpdateLayout();
                     await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);

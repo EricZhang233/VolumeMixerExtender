@@ -46,7 +46,7 @@ namespace vmex::recording
 
         std::filesystem::path Package()
         {
-            return platform::GetExecutableDirectory() / L"Driver" / L"VBCABLE";
+            return platform::GetApplicationDirectory() / L"Driver" / L"VBCABLE";
         }
 
         std::wstring HashFile(const std::filesystem::path& path)
@@ -217,7 +217,15 @@ namespace vmex::recording
                         return Status::Failed(L"recording-endpoints");
                     for (const auto& endpoint : endpoints)
                     {
-                        if (audio::detail::GetCableEndpointRole(endpoint) == audio::detail::CableEndpointRole::Unknown) continue;
+                        if (!audio::detail::IsOurVirtualDevice(endpoint)) continue;
+                        const auto role = audio::detail::GetCableEndpointRole(endpoint);
+                        std::array<wchar_t, 40> subtype{};
+                        ::StringFromGUID2(endpoint.jackSubType, subtype.data(), static_cast<int>(subtype.size()));
+                        log::Logger::Instance().WriteKeyFormat(role == audio::detail::CableEndpointRole::Unknown ?
+                            log::Level::Warn : log::Level::Info, kChannel, L"log.recording.endpoint_identity",
+                            { endpoint.id, endpoint.hardwareId, std::to_wstring(endpoint.formFactor), subtype.data(),
+                              std::to_wstring(static_cast<int>(role)), std::to_wstring(endpoint.state) });
+                        if (role == audio::detail::CableEndpointRole::Unknown) continue;
                         DWORD owned = 0, size = sizeof(owned);
                         const auto read = ::RegGetValueW(HKEY_CURRENT_USER, ownershipKey.c_str(), endpoint.id.c_str(),
                             RRF_RT_REG_DWORD, nullptr, &owned, &size);
@@ -392,7 +400,7 @@ namespace vmex::recording
                 reinterpret_cast<PBYTE>(ids.data()), sizeof(ids) - sizeof(wchar_t), nullptr)) continue;
             bool match = false;
             for (const auto* id = ids.data(); *id; id += ::wcslen(id) + 1)
-                match = match || ::_wcsicmp(id, L"VBAudioVACWDM") == 0 || ::_wcsicmp(id, L"ROOT\\VBAudioVACWDM") == 0;
+                match = match || IsCableHardwareId(id);
             if (!match) continue;
             state.installed = true;
             ULONG flags = 0, problem = 0;

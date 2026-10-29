@@ -5,6 +5,7 @@
 #include "RecordingDriverService.h"
 #include "RecordingGuard.h"
 #include "AudioRoutingCleanup.h"
+#include "RecordingEndpointLock.h"
 #include <array>
 
 namespace vmex::recording
@@ -14,7 +15,7 @@ namespace vmex::recording
         class Backend final : public IBackend
         {
         public:
-            ~Backend() override { StopMirror(); m_guard.Abandon(); }
+            ~Backend() override { m_endpointLock.Stop(); StopMirror(); m_guard.Abandon(); }
 
             Status SaveDefaults(std::wstring& monitorDevice) override
             {
@@ -22,6 +23,7 @@ namespace vmex::recording
                 if (!ready) return ready;
                 auto enumerator = audio::detail::MakeEnumerator();
                 if (!enumerator) return Status::Failed(L"audio-enumerator");
+                std::array<std::wstring, 2> defaults;
                 for (int i = 0; i < 2; ++i)
                 {
                     audio::detail::Ptr<IMMDevice> device;
@@ -29,12 +31,13 @@ namespace vmex::recording
                     if (FAILED(result)) return Status::FromHResult(L"recording-default", result);
                     LPWSTR id = nullptr;
                     if (FAILED(device->GetId(&id))) return Status::Failed(L"recording-default-id");
-                    m_defaults[i] = audio::detail::TakeDeviceId(id);
+                    defaults[i] = audio::detail::TakeDeviceId(id);
                     audio::detail::Endpoint endpoint;
                     if (!audio::detail::ReadEndpoint(device.get(), eRender, endpoint) || audio::detail::IsOurVirtualDevice(endpoint))
                         return Status::Failed(text::Embedded().Resolve(L"recording.monitor.physicalRequired"));
                 }
-                monitorDevice = m_defaults[eMultimedia];
+                m_outputs.Remember(std::move(defaults));
+                monitorDevice = m_outputs.Monitor();
                 return Status::Ok();
             }
 
@@ -46,7 +49,7 @@ namespace vmex::recording
                 if (!audio::detail::FindVirtualEndpoint(m_virtual, friendly, true))
                     return Status::NotSupported(text::Embedded().Resolve(QueryDriver().installed ?
                         L"recording.driver.notReady" : L"recording.driver.missing"));
-                const auto guarded = m_guard.Start(m_defaults, m_virtual);
+                const auto guarded = m_guard.Start(m_outputs.Initial(), m_virtual);
                 if (!guarded) return guarded;
                 const auto enabled = SetRecordingEndpointEnabled(m_virtual, true);
                 return enabled ? RestoreDefaultDevices(true) : enabled;
@@ -54,6 +57,8 @@ namespace vmex::recording
 
             Status StartMirror(std::wstring_view monitorDevice) override
             {
+                if (!audio::detail::SetEndpointVolume(m_virtual, 1.0f))
+                    return Status::Failed(L"recording-volume-lock");
                 return m_mirror->Start(m_virtual, monitorDevice);
             }
 
@@ -64,11 +69,16 @@ namespace vmex::recording
                     const auto result = audio::detail::SetSystemDefaultEndpointForRoleResult(m_virtual, role);
                     if (FAILED(result)) return Status::FromHResult(L"recording-default-switch", result);
                 }
-                return Status::Ok();
+                const auto locked = m_endpointLock.Start(m_virtual);
+                if (!locked) return locked;
+                const auto saved = m_guard.UpdateDefaults({m_outputs.Monitor(), m_outputs.Monitor()});
+                if (saved) m_outputs.SelectMonitor(m_outputs.Monitor());
+                return saved;
             }
 
             Status RestoreDefaults() override
             {
+                m_endpointLock.Stop();
                 const auto result = RestoreDefaultDevices();
                 const auto cleaned = ClearVirtualRedirects(m_virtual);
                 if (!result && !cleaned) return Status::Failed(result.detail + L"; " + cleaned.detail);
@@ -78,15 +88,19 @@ namespace vmex::recording
             void StopMirror() noexcept override { m_mirror->Stop(); }
             Status MirrorState() const override
             {
+                const auto locked = m_endpointLock.State();
+                if (!locked) return locked;
                 return m_guard.Running() ? m_mirror->State() : Status::Failed(L"recording-guard-stopped");
             }
 
             Status DisconnectVirtualDevice() override
             {
+                m_endpointLock.Stop();
                 const auto disabled = SetRecordingEndpointEnabled(m_virtual, false);
                 if (!disabled) return disabled;
                 m_guard.Stop();
                 m_virtual.clear();
+                m_outputs = {};
                 return Status::Ok();
             }
 
@@ -100,7 +114,11 @@ namespace vmex::recording
                 auto candidate = std::make_unique<AudioMirror>();
                 const auto result = candidate->Start(m_virtual, monitorDevice);
                 if (!result) return result;
+                std::wstring monitor(monitorDevice);
+                const auto saved = m_guard.UpdateDefaults({monitor, monitor});
+                if (!saved) return saved;
                 m_mirror.swap(candidate);
+                m_outputs.SelectMonitor(std::move(monitor));
                 return Status::Ok();
             }
 
@@ -110,9 +128,10 @@ namespace vmex::recording
                 Status result;
                 auto enumerator = audio::detail::MakeEnumerator();
                 if (!enumerator) return Status::Failed(L"audio-enumerator");
+                const auto targets = m_outputs.Targets();
                 for (int i = 0; i < 2; ++i)
                 {
-                    if (m_defaults[i].empty()) continue;
+                    if (targets[i].empty()) continue;
                     if (onlyIfVirtual)
                     {
                         audio::detail::Ptr<IMMDevice> current;
@@ -123,15 +142,16 @@ namespace vmex::recording
                         if (FAILED(queried)) return Status::FromHResult(L"recording-default-query", queried);
                         if (currentId != m_virtual) continue;
                     }
-                    const auto restored = audio::detail::SetSystemDefaultEndpointForRoleResult(m_defaults[i], static_cast<ERole>(i));
+                    const auto restored = audio::detail::SetSystemDefaultEndpointForRoleResult(targets[i], static_cast<ERole>(i));
                     if (FAILED(restored)) result = Status::FromHResult(L"recording-default-restore", restored);
                 }
                 return result;
             }
 
             Guard m_guard;
+            RecordingEndpointLock m_endpointLock;
             std::wstring m_virtual;
-            std::array<std::wstring, 2> m_defaults;
+            DefaultOutputMemory m_outputs;
             std::unique_ptr<AudioMirror> m_mirror = std::make_unique<AudioMirror>();
         };
     }

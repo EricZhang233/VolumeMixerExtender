@@ -110,7 +110,7 @@ skill.title: VolumeMixerExtender 接入文档
 skill.section.purpose: 用途
 skill.purpose.text: 通过命令行完整驱动快速设置音量面板的注入入口与自定义声音页面, 不依赖图形界面。
 skill.section.workflow: 工作流
-skill.workflow.text: 使用 start 启动后台程序、status 查询状态、stop 退出；manager 打开管理器，about 显示版本与许可；show-driver-name 与 autostart 接受 on/off；recording on/off/status 切换或查询录制模式，recording monitor --device=<id> 更换监听设备。待机时三个 VB-CABLE 端点均禁用，开关按配置完整性显示，包含已禁用的 CABLE Input；开启录制仅临时启用 CABLE Input，监听就绪后切换默认输出；关闭时恢复原默认设备、清除指向 V 的应用重定向、停止监听，最后禁用 CABLE Input，失败保留待清理状态；V 仅录制时出现在重定向列表。driver status/install/uninstall 查询或打开官方安装器，安装卸载需要管理员权限并按提示重启；driver hide 退出录制并禁用三个端点，driver show 退出录制并恢复本程序有记录的禁用操作，用于诊断。clear-redirect 清除全部应用重定向与音量偏好；uninstall --yes 清除自启、配置、缓存及应用音频偏好并保留程序文件，驱动卸载使用 driver uninstall。host 可在当前终端常驻。
+skill.workflow.text: 使用 start 启动后台程序、status 查询状态、stop 退出；manager 打开管理器，about 显示版本与许可；show-driver-name 与 autostart 接受 on/off；recording on/off/status 切换或查询录制模式，recording monitor --device=<id> 更换监听设备。待机时三个 VB-CABLE 端点均禁用，开关按配置完整性显示，包含已禁用的 CABLE Input；开启录制以原默认输出作为初始监听 R，仅临时启用 CABLE Input，监听就绪后切换默认输出；关闭时将当前监听 R 设为默认输出、清除指向 V 的应用重定向、停止监听，最后禁用 CABLE Input，失败保留待清理状态；V 仅录制时出现在重定向列表。driver status/install/uninstall 查询或打开官方安装器，安装卸载需要管理员权限并按提示重启；driver hide 退出录制并禁用三个端点，driver show 退出录制并恢复本程序有记录的禁用操作，用于诊断。clear-redirect 清除全部应用重定向与音量偏好；uninstall --yes 清除自启、配置、缓存及应用音频偏好并保留程序文件，驱动卸载使用 driver uninstall。host 可在当前终端常驻。
 skill.section.commands: 命令清单
 skill.section.exitcodes: 退出码
 skill.exitcode.text: 0 成功; 1 参数错误; 2 尚未实现; 3 运行失败
@@ -277,7 +277,7 @@ page.label.defaultInput: 默认输入设备
 page.checkbox.recordingMode: 录制模式
 log.recording.result: 录制模式操作 {0}，结果 {1}，详情 {2}
 log.recording.dropped: 监听缓冲溢出，丢弃 {0} 帧
-cmd.recording.summary: 查询或切换录制模式，通过虚拟输出录制并监听到实体设备
+cmd.recording.summary: 查询或切换录制模式；录制时默认输出锁定为虚拟端点，其总音量锁定为 100%，通过实体设备监听
 cmd.recording.action: on、off、status 或 monitor（默认 status）
 cmd.recording.device: monitor 操作的监听输出设备标识
 recording.failed: 录制模式操作失败：{0}
@@ -296,6 +296,9 @@ log.recording.endpoint_failed: 隐藏或恢复 VB-CABLE 端点失败：{0}
 log.recording.endpoint_state_unconfirmed: VB-CABLE 端点操作返回后仍未确认目标状态：{0}，期望可见 {1}
 log.recording.endpoint_vendor_mismatch: 端点硬件 ID 不属于 VB-CABLE，已跳过：{0}
 log.recording.endpoint_vendor_unknown: 无法确认端点硬件 ID，已跳过：{0}
+log.recording.endpoint_identity: 虚拟端点身份 id={0} hardware={1} form={2} jack={3} role={4} state={5}
+log.recording.volume_locked: 已将录制虚拟输出总音量恢复为 100%
+log.recording.default_locked: 已将默认输出恢复为录制虚拟端点
 log.recording.endpoints_failed: 枚举音频端点失败，跳过 VB-CABLE 端点处理
 log.recording.endpoints_startup_failed: 启动时隐藏多余的 VB-CABLE 端点失败：{0}
 cmd.driver.summary: 查询、安装或卸载驱动；hide 退出录制并禁用三个虚拟端点，show 退出录制并恢复有记录的禁用操作
@@ -349,6 +352,7 @@ page.footer.settings: 打开管理器
 log.page.appsEmpty: 应用列表为空（端点 {0}）
 log.page.openUrlFailed: ShellExecuteW(open) 失败 code={0}
 log.page.mountPage: MountPage({0}={1}) 正文已重建，底栏已同步
+log.page.reuseDevices: MountPage({0}={1}) 保留设备控件与订阅，仅更新应用区，底栏已同步
 log.page.appRowToggle: 应用行{0}
 log.page.appMute: 应用静音 app={0} {1}
 log.page.appVolume: 应用音量 app={0} 值={1}
@@ -380,6 +384,7 @@ log.page.footerSizeChanged: 底栏 SizeChanged -> {0}x{1}
 log.page.footerFirstLayout: 底栏 LayoutUpdated 首次触发
 log.page.recordingMode: 录制模式 -> {0}
 log.page.recordingAvailable: 录制模式入口可用性 -> {0}
+log.page.recordingQueryFailed: 录制状态查询失败：{0}
 log.page.redirect: 应用重定向 pid={0} device={1}
 log.page.autostart: 开机启动 -> {0}（{1}）
 log.page.autostartFailed: 开机启动：{0} 失败 —— {1}

@@ -6,6 +6,7 @@
 #include "Platform.h"
 #include "AudioInterop.h"
 #include "RecordingMode.h"
+#include "RecordingBackend.h"
 #include "AudioFrameQueue.h"
 #include "RecordingClient.h"
 #include "ManagementService.h"
@@ -15,6 +16,8 @@
 #include "AboutService.h"
 #include "RecordingGuard.h"
 #include "Strings.h"
+#include "RecordingEndpointLock.h"
+#include "PanelPresentation.h"
 
 #include <windows.h>
 #include <atomic>
@@ -299,9 +302,167 @@ namespace
             "Missing fixture audio endpoint must produce an honest recovery failure, not false success");
     }
 
+    void EndpointLockPolicy()
+    {
+        struct Actions final : vmex::recording::IEndpointLockActions
+        {
+            float level = 1.0f;
+            std::array<std::wstring, 2> defaults{L"V", L"V"};
+            unsigned writes = 0;
+            bool failRead = false, failVolume = false;
+            int failDefaultRead = -1, failDefaultWrite = -1;
+            vmex::Status ReadVolume(float& value) override
+            { value = level; return failRead ? vmex::Status::Failed(L"read-volume") : vmex::Status::Ok(); }
+            vmex::Status SetVolume(float value) override
+            {
+                ++writes;
+                if (failVolume) return vmex::Status::Failed(L"write-volume");
+                level = value;
+                return vmex::Status::Ok();
+            }
+            vmex::Status ReadDefault(unsigned role, std::wstring& endpoint) override
+            {
+                Require(role < defaults.size(), "Recording lock must not touch capture or communications roles");
+                endpoint = defaults[role];
+                return static_cast<int>(role) == failDefaultRead ? vmex::Status::Failed(L"read-default") : vmex::Status::Ok();
+            }
+            vmex::Status SetDefault(unsigned role, std::wstring_view endpoint) override
+            {
+                ++writes;
+                if (static_cast<int>(role) == failDefaultWrite) return vmex::Status::Failed(L"write-default");
+                defaults[role] = endpoint;
+                return vmex::Status::Ok();
+            }
+        } actions;
+        using vmex::recording::EnforceRecordingEndpoint;
+        Require(EnforceRecordingEndpoint(actions, L"V").IsOk() && actions.writes == 0,
+            "A stable lock must not repeatedly write volume or default output");
+        actions.level = 0.2f;
+        actions.defaults = {L"R1", L"R2"};
+        Require(EnforceRecordingEndpoint(actions, L"V").IsOk() && actions.level == 1.0f &&
+            actions.defaults[0] == L"V" && actions.defaults[1] == L"V" && actions.writes == 3,
+            "External volume and default changes must be corrected together");
+        Require(EnforceRecordingEndpoint(actions, L"V").IsOk() && actions.writes == 3,
+            "Self-generated notifications must settle without a write loop");
+        actions.failDefaultRead = 1;
+        Require(EnforceRecordingEndpoint(actions, L"V").IsOk() && actions.writes == 4,
+            "A temporarily missing default must be recovered to V");
+        for (unsigned failure = 0; failure < 4; ++failure)
+        {
+            Actions broken;
+            broken.level = 0.1f;
+            broken.defaults = {L"R1", L"R2"};
+            broken.failRead = failure == 0;
+            broken.failVolume = failure == 1;
+            broken.failDefaultWrite = failure >= 2 ? static_cast<int>(failure - 2) : -1;
+            Require(!EnforceRecordingEndpoint(broken, L"V").IsOk(), "Every lock failure must propagate to recording health");
+            if (failure < 2) Require(broken.defaults[0] == L"R1", "Volume failure must not silently rewrite defaults");
+        }
+        Actions empty;
+        Require(!EnforceRecordingEndpoint(empty, L"").IsOk() && empty.writes == 0, "An empty endpoint must never mutate policy");
+        vmex::recording::RecordingEndpointLock lock;
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            Require(!lock.Start(L"missing-fixture-endpoint").IsOk(), "Missing hardware must fail without creating a live lock");
+            lock.Stop();
+            lock.Stop();
+        }
+    }
+
+    void Presentation()
+    {
+        using namespace vmex::presentation;
+        DeviceSnapshotBuffer buffer;
+        DeviceSnapshot before;
+        before.render.resize(1);
+        before.render[0].id = L"R1";
+        before.defaultRender = before.appsEndpoint = L"R1";
+        auto recording = before;
+        recording.recordingMode = true;
+        recording.defaultRender = recording.appsEndpoint = L"V";
+        buffer.Hold(100, 800);
+        buffer.Hold(200);
+        Require(buffer.Waiting(899) && !buffer.Observe(recording, 899),
+            "A delayed device notification must not shorten recording transition buffering");
+        Require(!buffer.Observe(recording, 900) && !buffer.Observe(recording, 1149) && buffer.Observe(recording, 1150),
+            "Recording completion must wait for matching snapshots across the stability interval");
+        buffer.Hold(1200);
+        DeviceSnapshot empty;
+        Require(!buffer.Observe(empty, 1600) && !buffer.Observe(before, 1750) && !buffer.Observe(before, 1999) &&
+            buffer.Observe(before, 2000), "A transient empty device list must be discarded while the old display remains mounted");
+        auto movedDefault = before;
+        movedDefault.defaultRender = movedDefault.appsEndpoint = L"R2";
+        Require(!buffer.Observe(movedDefault, 2050) && buffer.Observe(movedDefault, 2300),
+            "Default changes must restart snapshot stabilization even when device membership is unchanged");
+        buffer.Hold(2400);
+        Require(!buffer.Observe(movedDefault, 2800), "A late notification must invalidate an earlier stable sample");
+        buffer.Hold(2900);
+        Require(!buffer.Observe(movedDefault, 3150) && !buffer.Observe(movedDefault, 3300) && buffer.Observe(movedDefault, 3550),
+            "Notification bursts must merge into one stable refresh after the final quiet interval");
+        auto routingOnly = before;
+        routingOnly.routingRender = recording.render;
+        Require(SameVolumeRows(before, routingOnly) && !SameDeviceSnapshot(before, routingOnly),
+            "Routing changes must update applications while preserving endpoint controls and subscriptions");
+        Require(SameVolumeRows(before, recording) && !SameDeviceSnapshot(before, recording),
+            "Entering and exiting recording with unchanged physical devices must reuse controls while updating the mode and applications");
+        auto renamed = before;
+        renamed.render[0].friendlyName = L"new name";
+        Require(!SameVolumeRows(before, renamed), "Visible device changes must still rebuild endpoint controls");
+        vmex::presentation::PendingSelection<bool> toggle;
+        Require(!toggle.Take(100), "Idle polling must not manufacture a toggle action");
+        toggle.Queue(true, 100);
+        toggle.Queue(false, 150);
+        Require(toggle && !toggle.Due(349) && !toggle.Take(349), "Rapid toggles must wait for the last intent's quiet interval");
+        const auto off = toggle.Take(350);
+        Require(off.has_value() && !*off && !toggle, "A queued off action must survive debounce as a real value");
+        toggle.Queue(true, 400);
+        Require(toggle.ValueOr(false) && toggle.Take(900).value_or(false) && !toggle.Take(901),
+            "A busy status poll may delay but must not duplicate or lose the user's action");
+        toggle.Queue(true, 1000);
+        toggle.Reset();
+        Require(!toggle.Take(2000), "Leaving the page must cancel pending clicks");
+        vmex::presentation::PendingSelection<std::wstring> selection;
+        selection.Queue(L"R1", 0);
+        selection.Queue(L"R2", 100);
+        Require(!selection.Take(299) && selection.Take(300).value_or(L"") == L"R2", "Only the last device click must be applied");
+        std::vector<vmex::audio::DeviceInfo> devices(3);
+        devices[0].id = L"R1"; devices[1].id = L"R2"; devices[2].id = L"R3";
+        vmex::presentation::PrioritizeMonitor(devices, L"R2");
+        Require(devices[0].id == L"R2" && devices[0].isDefault && devices[1].id == L"R1" && devices[2].id == L"R3",
+            "R must be selected and first while other devices keep their relative order");
+        auto repeated = devices;
+        vmex::presentation::PrioritizeMonitor(repeated, L"R2");
+        Require(vmex::presentation::SameDeviceRows(devices, repeated), "Repeated device notifications must not require reconstruction");
+        repeated[0].friendlyName = L"Changed";
+        Require(!vmex::presentation::SameDeviceRows(devices, repeated), "A visible device rename must refresh the list");
+        repeated = devices;
+        repeated[0].isDefault = false;
+        Require(!vmex::presentation::SameDeviceRows(devices, repeated), "A changed selected device must refresh the highlight");
+        vmex::presentation::PrioritizeMonitor(devices, L"missing");
+        Require(std::none_of(devices.begin(), devices.end(), [](const auto& device) { return device.isDefault; }),
+            "An unplugged monitor must not highlight a different device as R");
+    }
+
     void Recording()
     {
         using namespace vmex::recording;
+        DefaultOutputMemory outputs;
+        const std::array<std::wstring, 2> original{L"console-before", L"R1"};
+        outputs.Remember(original);
+        Require(outputs.Monitor() == L"R1", "Entry monitor must use the previous multimedia default");
+        Require(outputs.Targets() == original, "Failed startup must preserve both original default roles");
+        outputs.SelectMonitor(outputs.Monitor());
+        Require(outputs.Targets() == std::array<std::wstring, 2>{L"R1", L"R1"},
+            "Normal exit without a monitor change must select the initial monitor for both roles");
+        outputs.SelectMonitor(L"R2");
+        Require(outputs.Targets() == std::array<std::wstring, 2>{L"R2", L"R2"},
+            "Exit after a monitor change must use the latest monitor instead of entry defaults");
+        outputs.SelectMonitor(L"R3");
+        Require(outputs.Targets() == std::array<std::wstring, 2>{L"R3", L"R3"},
+            "Repeated changes must retain the last successful monitor");
+        outputs.Remember({L"next-console", L"R3"});
+        Require(outputs.Monitor() == L"R3" && outputs.Targets()[0] == L"next-console",
+            "A new recording session must refresh defaults and reset startup rollback state");
         struct VisibilityProbe final : IVisibilityActions
         {
             std::vector<VisibilityState> endpoints;
@@ -384,18 +545,24 @@ namespace
             ::RegQueryValueExW(fixture.key, L"", nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS,
             "Other endpoint routing and application identity must survive");
         vmex::audio::detail::Endpoint cable;
+        cable.hardwareId = L"VBAudioVACWDM";
         cable.interfaceName = L"VB-Audio Virtual Cable";
         cable.friendly = L"Renamed by user";
         Require(vmex::audio::detail::IsOurVirtualDevice(cable), "User-renamed VB-CABLE must remain hidden");
-        cable.interfaceName = L"VB-Audio Cable A";
+        cable.hardwareId = L"VBAudioVACAWDM";
         Require(!vmex::audio::detail::IsOurVirtualDevice(cable), "Additional VB-Audio cables must not be treated as ours");
         vmex::audio::detail::Endpoint extra;
+        extra.hardwareId = L"VBAudioVACWDM";
+        extra.formFactor = LineLevel;
+        extra.jackSubType = { 0xdff21fe3, 0xf70f, 0x11d0, { 0xb9, 0x17, 0x00, 0xa0, 0xc9, 0x22, 0x31, 0x96 } };
         extra.flow = eRender;
         extra.interfaceName = L"VB-Audio Virtual Cable";
         extra.description = L"CABLE In 16 Ch";
         extra.friendly = L"CABLE In 16 Ch (VB-Audio Virtual Cable)";
         Require(vmex::audio::detail::IsExtraCableEndpoint(extra), "The 16-channel cable input must be treated as extra");
         extra.description = L"CABLE Input";
+        extra.formFactor = Speakers;
+        extra.jackSubType.Data1 = 0xdff21ce1;
         extra.friendly = L"CABLE Input (VB-Audio Virtual Cable)";
         Require(!vmex::audio::detail::IsExtraCableEndpoint(extra), "CABLE Input must be classified separately from the two permanently disabled extras");
         extra.state = DEVICE_STATE_DISABLED;
@@ -406,20 +573,40 @@ namespace
             vmex::audio::detail::GetCableEndpointRole(extra) == vmex::audio::detail::CableEndpointRole::Playback,
             "Renaming the primary endpoint must not classify it as a permanently disabled extra");
         extra.description.clear();
-        Require(!vmex::audio::detail::IsExtraCableEndpoint(extra), "A display name alone must never authorize endpoint disable");
+        extra.interfaceName.clear();
+        Require(vmex::audio::detail::GetCableEndpointRole(extra) == vmex::audio::detail::CableEndpointRole::Playback,
+            "Missing display names must not prevent hardware and connector identification");
+        extra.description = L"扬声器";
+        extra.friendly = L"扬声器 (VB-Audio Virtual Cable)";
+        Require(vmex::audio::detail::GetCableEndpointRole(extra) == vmex::audio::detail::CableEndpointRole::Playback,
+            "The laptop's localized Speakers endpoint must be recognized as the primary cable output");
+        extra.formFactor = LineLevel;
+        extra.jackSubType.Data1 = 0xdff21fe3;
         extra.description = L"CABLE In 16 Ch";
         extra.friendly = L"Renamed by user";
         Require(vmex::audio::detail::IsExtraCableEndpoint(extra), "Renaming an extra endpoint must not prevent identification");
         extra.description = L"CABLE In 16 Ch custom";
-        Require(!vmex::audio::detail::IsExtraCableEndpoint(extra), "Unknown endpoint descriptions must not match by substring");
+        Require(vmex::audio::detail::IsExtraCableEndpoint(extra), "Renaming the endpoint description must not change its hardware role");
         extra.description = L"CABLE Output";
-        Require(!vmex::audio::detail::IsExtraCableEndpoint(extra), "A capture name on a render endpoint must be rejected");
+        Require(vmex::audio::detail::GetCableEndpointRole(extra) == vmex::audio::detail::CableEndpointRole::MultichannelPlayback,
+            "A capture display name must not override the render connector role");
         extra.flow = eCapture;
         extra.description = L"CABLE Output";
         extra.friendly = L"CABLE Output (VB-Audio Virtual Cable)";
         Require(vmex::audio::detail::IsExtraCableEndpoint(extra), "The cable recording side must be treated as extra");
         extra.interfaceName = L"VB-Audio Cable A";
-        Require(!vmex::audio::detail::IsExtraCableEndpoint(extra), "Additional VB-Audio cables must not be hidden");
+        extra.hardwareId = L"VBAudioVACAWDM";
+        Require(!vmex::audio::detail::IsExtraCableEndpoint(extra), "Additional VB-Audio cable hardware must not be hidden");
+        extra.hardwareId.clear();
+        extra.interfaceName = L"VB-Audio Virtual Cable";
+        Require(!vmex::audio::detail::IsOurVirtualDevice(extra) &&
+            vmex::audio::detail::GetCableEndpointRole(extra) == vmex::audio::detail::CableEndpointRole::Unknown,
+            "Display names must never substitute for a hardware ID");
+        extra.hardwareId = L"VBAudioVACWDM";
+        extra.jackSubType = {};
+        Require(vmex::audio::detail::GetCableEndpointRole(extra) == vmex::audio::detail::CableEndpointRole::Unknown,
+            "Unknown connector metadata must not authorize endpoint changes");
+        extra.jackSubType = { 0xdff21fe3, 0xf70f, 0x11d0, { 0xb9, 0x17, 0x00, 0xa0, 0xc9, 0x22, 0x31, 0x96 } };
         extra.interfaceName = L"VB-Audio Virtual Cable";
         extra.flow = eRender;
         extra.description = L"CABLE In 16 Ch";
@@ -440,6 +627,10 @@ namespace
         vmex::recording::Guard guard;
         Require(guard.Start({ L"fixture-console", L"fixture-multimedia" }, L"fixture-virtual").IsOk() && guard.Running(),
             "Recovery guard must be ready before audio routing can change");
+        Require(guard.UpdateDefaults({L"fixture-monitor-2", L"fixture-monitor-2"}).IsOk() && guard.Running(),
+            "A monitor change must update crash recovery without restarting the guard");
+        Require(!guard.UpdateDefaults({L"", L"fixture-monitor-2"}).IsOk() && guard.Running(),
+            "Invalid recovery targets must be rejected without stopping protection");
         HANDLE guardProcess = nullptr;
         Require(::DuplicateHandle(::GetCurrentProcess(), guard.process, ::GetCurrentProcess(), &guardProcess,
             SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, 0) != FALSE, "Guard exit must be observable");
@@ -813,6 +1004,8 @@ int main(int argc, char** argv)
         else if (suite == "routing-live") RoutingStore();
         else if (suite == "recording") Recording();
         else if (suite == "guard") GuardRecovery();
+        else if (suite == "endpoint-lock") EndpointLockPolicy();
+        else if (suite == "presentation") Presentation();
         else if (suite == "driver-trust") DriverTrust();
         else if (suite == "commands") Commands();
         else if (suite == "resources") Resources();

@@ -37,6 +37,7 @@ add_library(vmex_core SHARED
     RecordingGuard.cpp
     RecordingClient.cpp
     RecordingDriverService.cpp
+    RecordingEndpointLock.cpp
     PayloadDeployment.cpp
     PayloadResources.cpp
     Platform.cpp

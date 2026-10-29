@@ -22,6 +22,7 @@ namespace vmex::platform
     [[nodiscard]] std::wstring DescribeWindowsVersion(const WindowsVersion& version);
     [[nodiscard]] std::filesystem::path GetExecutablePath();
     [[nodiscard]] std::filesystem::path GetExecutableDirectory();
+    [[nodiscard]] std::filesystem::path GetApplicationDirectory();
     [[nodiscard]] std::filesystem::path GetLocalAppDataDirectory();
 
     inline constexpr std::wstring_view kInstallDirectoryName = L"VolumeMixerExtender";
