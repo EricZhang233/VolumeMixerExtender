@@ -1,0 +1,7 @@
+<Project DefaultTargets="Build">
+  <Target Name="Restore" />
+  <Target Name="Build" />
+  <Target Name="VSTest">
+    <Exec Command="pwsh.exe -NoProfile -NonInteractive -File &quot;$(MSBuildThisFileDirectory)Test\RunTests.ps1&quot;" WorkingDirectory="$(MSBuildThisFileDirectory)" />
+  </Target>
+</Project>

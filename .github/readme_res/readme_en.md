@@ -261,14 +261,14 @@ No. **Windows 11 26H2 (Build 26300)** or later is required; on older builds the 
 The build requires the Visual Studio C++ toolchain, Windows SDK, CMake, PowerShell 7 and .NET 10 SDK. global.json restricts the build SDK to stable .NET 10.0 releases; CI uses Visual Studio 2026. The first build obtains the x64 XAML diagnostics component from a pinned Windows SDK package on Microsoft's official NuGet feed, verifies its SHA-256 hash, Microsoft signature and architecture, and caches it in obj/sdk-deps; no separately installed local XAML diagnostics tools are required. The build also downloads the official VB-CABLE Pack45 with a pinned SHA-256 hash, caches it in obj/driver-deps/vbcable and extracts only the original files needed for Windows 11 x64 into Driver/VBCABLE in the output. The custom test driver is no longer built or distributed. The WPF manager targets .NET Framework 4.8, built into Windows 11. No .NET or Windows App SDK runtime is bundled. `vmex_cli.exe about` shows the same About information as the manager; see `-help` and `skill` for the complete `recording` and `driver` commands.
 
 ```powershell
-cmake --preset vs18-x64 -DBUILD_TESTING=ON
-cmake --build --preset debug
-ctest --test-dir obj/vs18-x64 -C Debug --output-on-failure
+dotnet test
 ```
 
 CTest verifies uninstall failure protection, partial audio reset failures, command parsing and real local pipes, configuration and resources. A separate WPF window smoke test checks real controls, light and dark themes, control templates and layout. Tests do not clear user audio preferences. Routing on real devices, saved volume after restarting applications and meter readability at different scale factors still require machine validation.
 
-Releases automatically check out the matching tag, run self tests, build and verify the package, then upload it before publishing the notes. Failures return the release to draft. Local `output` archives do not need committing. After 48 hours, prereleases are promoted only when the package exists, the matching release pipeline succeeded, and there are no `block-release` issues or `[no-release]` marker.
+Tests are a separate local manual process. Run `dotnet test` in the repository root to automatically prepare fixtures and run every CTest suite and release workflow contract, with no arguments or additional entry points. Tests never commit or push, and normal builds do not run tests. See [testing instructions](../../Test/README.md) for coverage and report locations.
+
+Releases automatically check out the matching tag, build and verify the package, then upload it before publishing the notes. Failures return the release to draft. Remote builds do not run test suites or require test results. Local `output` archives do not need committing. After 48 hours, prereleases are promoted only when the package exists, the matching release build and upload pipeline succeeded, and there are no `block-release` issues or `[no-release]` marker.
 
 We welcome contributions of any kind — bug reports, documentation improvements or code (PRs).
 

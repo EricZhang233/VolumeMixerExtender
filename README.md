@@ -261,14 +261,14 @@ flowchart TB
 需要 Visual Studio C++ 工具链、Windows SDK、CMake、PowerShell 7 与 .NET 10 SDK。global.json 将构建 SDK 约束为 .NET 10.0 正式版；CI 使用 Visual Studio 2026。首次构建从微软官方 NuGet 获取固定版本 Windows SDK 中的 x64 XAML 诊断组件，校验 SHA-256、微软签名与架构，缓存于 obj/sdk-deps；无需依赖本机额外安装的 XAML 诊断工具。构建同时下载固定 SHA-256 的 VB-CABLE 官方 Pack45，缓存于 obj/driver-deps/vbcable，只把 Windows 11 x64 所需的原版文件解压到产物的 Driver/VBCABLE；不再构建或分发自研测试驱动。管理器编译为 .NET Framework 4.8，使用 Windows 11 自带的运行时，发布不携带 .NET 或 Windows App SDK。`vmex_cli.exe about` 显示与管理器相同的关于信息，`recording` 和 `driver` 的完整用法见 `-help` 与 `skill`。
 
 ```powershell
-cmake --preset vs18-x64 -DBUILD_TESTING=ON
-cmake --build --preset debug
-ctest --test-dir obj/vs18-x64 -C Debug --output-on-failure
+dotnet test
 ```
 
 CTest 验证卸载中途失败的保护行为、音频重置部分失败的结果、命令与真实本地管道、配置和资源；另有独立 WPF 窗口冒烟测试，检查实际控件、明暗主题、控件模板与布局。自测不清除用户音频偏好。真实设备上的重定向、应用重启后的音量持久性和不同缩放下的电平可读性仍需实机验收。
 
-发布自动检出对应标签，先自测，再构建并逐项校验发布包，上传成功后更新说明；任一步失败退回草稿。本地 `output` 只存放构建结果，不需要提交压缩包。预发布满 48 小时后，还需确认软件包存在、对应发布流程成功，且没有 `block-release` 问题或 `[no-release]` 标记才会转正。
+测试是独立的本地手动流程，根目录执行 `dotnet test` 即自动准备测试产物，完整运行所有 CTest 和发布契约检查，不需要参数或其他入口，不自动提交或推送。普通构建不运行测试，详细范围与报告位置见 [测试说明](Test/README.md)。
+
+发布自动检出对应标签，构建并逐项校验发布包，上传成功后更新说明；任一步失败退回草稿。远端不运行测试套件，测试不作为构建或发布门槛。本地 `output` 只存放构建结果，不需要提交压缩包。预发布满 48 小时后，还需确认软件包存在、对应发布构建和上传流程成功，且没有 `block-release` 问题或 `[no-release]` 标记才会转正。
 
 欢迎任何形式的贡献——无论是提交 Bug、改进文档，还是提交代码（PR）。
 

@@ -29,6 +29,7 @@ set(VMEX_PRODUCT_NAME "${CMAKE_MATCH_1}")
 
 project(VolumeMixerExtender VERSION "${VMEX_VERSION}" LANGUAGES CXX RC)
 
+option(BUILD_TESTING "Build tests for explicit local CTest runs" OFF)
 include(CTest)
 
 function(vmex_add_version_resource target description internal_name original_name file_type)
