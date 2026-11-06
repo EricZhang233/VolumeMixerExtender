@@ -71,7 +71,7 @@ namespace vmex::recording
         }
         const auto saved = UpdateDefaults(defaults);
         if (!saved) { ::CloseHandle(ready); ::CloseHandle(parent); Stop(); return saved; }
-        const auto executable = platform::GetExecutableDirectory() / L"vmex_cli.exe";
+        const auto executable = platform::GetExecutableDirectory() / L"vmex.exe";
         std::wstring command = L"\"" + executable.wstring() + L"\" --recording-guard " +
             std::to_wstring(reinterpret_cast<std::uintptr_t>(parent)) + L" " +
             std::to_wstring(reinterpret_cast<std::uintptr_t>(stop)) + L" " +
@@ -145,7 +145,6 @@ namespace vmex::recording
         }
         const auto com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         if (FAILED(com)) return kCodeFailed;
-        text::AttachEmbeddedToLogger();
         log::Logger::Instance().AddSink(log::CreateFileSink(log::SessionLogFile(L"recording-guard")));
         ::SetEvent(handles[2]);
         const auto wait = ::WaitForMultipleObjects(2, handles.data(), FALSE, INFINITE);
@@ -191,12 +190,13 @@ namespace vmex::recording
                 Status DisableEndpoint() override { return SetRecordingEndpointEnabled(arguments[6], false); }
             } recovery(recoveryArguments);
             result = RecoverAfterHostExit(recovery);
-            log::Logger::Instance().WriteKeyFormat(result ? log::Level::Info : log::Level::Error,
-                L"recording", L"log.recording.result", { L"guard-recover", std::to_wstring(result.code), result.detail });
+            log::Logger::Instance().WriteFormat(result ? log::Level::Info : log::Level::Error,
+                L"recording", L"Operation {0} code={1} detail={2}", { L"guard-recover", std::to_wstring(result.code), result.detail });
         }
         else if (wait != WAIT_OBJECT_0 + 1) result = Status::Failed(L"recording-guard-wait");
         for (const auto handle : handles) ::CloseHandle(handle);
         log::Logger::Instance().Flush();
+        log::Logger::Instance().ClearSinks();
         ::CoUninitialize();
         return result.code;
     }

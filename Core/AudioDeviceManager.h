@@ -19,10 +19,9 @@ namespace vmex::audio
         virtual Status GetPeak(std::wstring_view deviceId, float& left, float& right) = 0;
         virtual Status EnumerateSessions(std::wstring_view deviceId, std::vector<SessionInfo>& sessions) = 0;
         virtual Status EnumerateAppSessions(const std::map<std::wstring, std::wstring>& preferredDevices,
-                                            std::vector<AppSessionInfo>& sessions, std::wstring_view deviceId = {}) = 0;
-        virtual Status OpenSession(std::wstring_view deviceId, std::wstring_view instanceId,
-                                   std::unique_ptr<IAudioSessionHandle>& handle,
-                                   SessionFollowMode followMode = SessionFollowMode::Application) = 0;
+                                            std::vector<AppSessionInfo>& sessions, std::wstring_view deviceId = {},
+                                            std::vector<std::shared_ptr<IAudioSessionHandle>>* handles = nullptr,
+                                            SessionFollowMode followMode = SessionFollowMode::Application) = 0;
     };
 
     [[nodiscard]] std::unique_ptr<IAudioDeviceManager> CreateAudioDeviceManager();

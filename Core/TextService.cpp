@@ -1,6 +1,5 @@
 #include "TextService.h"
 
-#include "Logger.h"
 #include "Platform.h"
 #include "Strings.h"
 #include "TextEncoding.h"
@@ -8,7 +7,6 @@
 
 #include <algorithm>
 #include <map>
-#include <mutex>
 
 namespace vmex::text
 {
@@ -250,12 +248,4 @@ namespace vmex::text
         return service;
     }
 
-    void AttachEmbeddedToLogger()
-    {
-        static std::once_flag once;
-        std::call_once(once, []()
-        {
-            log::Logger::Instance().SetResolver(&Embedded());
-        });
-    }
 }

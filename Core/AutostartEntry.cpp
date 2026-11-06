@@ -29,14 +29,14 @@ namespace vmex::autostart
 
         constexpr std::size_t kApprovedHeaderBytes = 2;
 
-        void Warn(std::wstring_view key, std::vector<std::wstring> args = {})
+        void Warn(std::wstring_view message, std::vector<std::wstring> args = {}, std::source_location location = std::source_location::current())
         {
-            log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kChannel, key, args);
+            log::Logger::Instance().WriteFormat(log::Level::Warn, kChannel, message, args, location);
         }
 
-        void Info(std::wstring_view key, std::vector<std::wstring> args = {})
+        void Info(std::wstring_view message, std::vector<std::wstring> args = {}, std::source_location location = std::source_location::current())
         {
-            log::Logger::Instance().WriteKeyFormat(log::Level::Info, kChannel, key, args);
+            log::Logger::Instance().WriteFormat(log::Level::Info, kChannel, message, args, location);
         }
 
         std::filesystem::path StartupFolderPath()
@@ -130,17 +130,17 @@ namespace vmex::autostart
         const auto link = ShortcutPath();
         if (link.empty() || !platform::FileExists(link))
         {
-            Info(L"log.autostart.missing");
+            Info(L"Autostart entry missing; enabled=false");
             return false;
         }
 
         if (IsSuppressedBySystem())
         {
-            Info(L"log.autostart.suppressed", { link.wstring() });
+            Info(L"Autostart entry suppressed by Windows path={0}", { link.wstring() });
             return false;
         }
 
-        Info(L"log.autostart.present", { link.wstring() });
+        Info(L"Autostart entry enabled path={0}", { link.wstring() });
         return true;
     }
 
@@ -152,7 +152,7 @@ namespace vmex::autostart
         if (!platform::FileExists(exe))
         {
             error = text::Embedded().ResolveFormat(L"autostart.error.exe_missing", { exe });
-            Warn(L"log.autostart.exe_missing", { exe });
+            Warn(L"Autostart registration rejected; executable missing path={0}", { exe });
             return false;
         }
 
@@ -161,7 +161,7 @@ namespace vmex::autostart
         {
             const std::wstring detail = std::to_wstring(static_cast<unsigned long>(E_FAIL));
             error = text::Embedded().ResolveFormat(L"autostart.error.write_failed", { detail });
-            Warn(L"log.autostart.write_failed", { exe, detail });
+            Warn(L"Autostart registration failed target={0} detail={1}", { exe, detail });
             return false;
         }
 
@@ -171,12 +171,12 @@ namespace vmex::autostart
         {
             const std::wstring detail = std::to_wstring(static_cast<unsigned long>(hr));
             error = text::Embedded().ResolveFormat(L"autostart.error.write_failed", { detail });
-            Warn(L"log.autostart.write_failed", { command, detail });
+            Warn(L"Autostart registration failed target={0} detail={1}", { command, detail });
             return false;
         }
 
         ClearSuppression();
-        Info(L"log.autostart.registered", { command });
+        Info(L"Autostart registered command={0}", { command });
         return true;
     }
 
@@ -189,12 +189,12 @@ namespace vmex::autostart
         {
             const std::wstring detail = std::to_wstring(::GetLastError());
             error = text::Embedded().ResolveFormat(L"autostart.error.delete_failed", { detail });
-            Warn(L"log.autostart.delete_failed", { detail });
+            Warn(L"Autostart removal failed detail={0}", { detail });
             return false;
         }
 
         ClearSuppression();
-        Info(L"log.autostart.deleted");
+        Info(L"Autostart removed");
         return true;
     }
 }

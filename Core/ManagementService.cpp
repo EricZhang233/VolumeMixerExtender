@@ -11,6 +11,7 @@
 #include "UninstallService.h"
 #include "UserSettings.h"
 #include "RecordingDriverService.h"
+#include "RecordingPanelState.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -48,8 +49,8 @@ namespace vmex::management
 
         Status Report(std::wstring_view operation, Status result)
         {
-            log::Logger::Instance().WriteKeyFormat(result ? log::Level::Info : log::Level::Error,
-                L"management", L"log.management.result", { std::wstring(operation), std::to_wstring(result.code), result.detail });
+            log::Logger::Instance().WriteFormat(result ? log::Level::Info : log::Level::Error,
+                L"management", L"Operation {0} code={1} detail={2}", { std::wstring(operation), std::to_wstring(result.code), result.detail });
             return result;
         }
 
@@ -74,19 +75,24 @@ namespace vmex::management
             return IsHostImage(image, platform::GetApplicationDirectory());
         }
 
-        Status StopUnlocked()
+        Status StopUnlocked(bool forUpdate = false)
         {
             if (host::HostPresence::IsRunning())
             {
+                recording::PanelState state;
+                if (forUpdate && recording::PanelStateCache::Read(state) &&
+                    (state.recording.enabled || state.recording.cleanupPending))
+                    return Status::Failed(L"update-recording-active");
                 Handle pipe{ Connect() };
                 if (pipe.value == INVALID_HANDLE_VALUE) return Status::FromLastError(L"host-connect");
                 DWORD pid = 0;
                 if (!Identify(pipe.value, pid)) return Status::Failed(L"host-identity");
                 Handle process{ ::OpenProcess(SYNCHRONIZE, FALSE, pid) };
                 if (!process.value) return Status::FromLastError(L"host-process");
-                constexpr char command[] = "EXIT\n";
+                const std::string_view command = forUpdate ? "UPDATEEXIT\n" : "EXIT\n";
                 DWORD written = 0;
-                if (!::WriteFile(pipe.value, command, sizeof(command) - 1, &written, nullptr) || written != sizeof(command) - 1)
+                if (!::WriteFile(pipe.value, command.data(), static_cast<DWORD>(command.size()), &written, nullptr) ||
+                    written != command.size())
                     return Status::FromLastError(L"host-exit-write");
                 ::CloseHandle(pipe.value);
                 pipe.value = nullptr;
@@ -151,8 +157,7 @@ namespace vmex::management
     {
         const auto normalized = image.lexically_normal();
         return _wcsicmp(normalized.parent_path().c_str(), directory.lexically_normal().c_str()) == 0 &&
-            (_wcsicmp(normalized.filename().c_str(), L"vmex.exe") == 0 ||
-             _wcsicmp(normalized.filename().c_str(), L"vmex_cli.exe") == 0);
+            _wcsicmp(normalized.filename().c_str(), L"vmex.exe") == 0;
     }
 
     Snapshot Query()
@@ -260,11 +265,12 @@ namespace vmex::management
         return Report(L"start", Status::Failed(L"host-start-timeout"));
     }
 
-    Status StopHost()
+    Status StopHost(bool forUpdate)
     {
+        log::OperationTimer timing(L"management", L"StopHost");
         Operation operation;
         if (!operation.Locked()) return Status::Failed(L"management-busy");
-        return Report(L"stop", StopUnlocked());
+        return Report(L"stop", StopUnlocked(forUpdate));
     }
 
     Status OpenManager() { return Report(L"manager", Launch(L"vmex_manager.exe")); }

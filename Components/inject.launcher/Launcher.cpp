@@ -56,17 +56,17 @@ namespace vmex::launcher
         {
             std::call_once(g_logging, []()
             {
-                text::AttachEmbeddedToLogger();
                 log::Logger::Instance().AddSink(
                     log::CreateFileSink(log::SessionLogFile(L"launcher")));
                 log::Logger::Instance().SetMinimumLevel(log::Level::Trace);
             });
         }
 
-        void Record(HRESULT result, std::wstring_view key, const std::vector<std::wstring>& arguments)
+        void Record(HRESULT result, std::wstring_view message, const std::vector<std::wstring>& arguments,
+            std::source_location location = std::source_location::current())
         {
-            log::Logger::Instance().WriteKeyFormat(
-                FAILED(result) ? log::Level::Error : log::Level::Info, kChannel, key, arguments);
+            log::Logger::Instance().WriteFormat(
+                FAILED(result) ? log::Level::Error : log::Level::Info, kChannel, message, arguments, location);
         }
 
         std::filesystem::path LocateXamlDiagnostics()
@@ -98,7 +98,7 @@ namespace vmex::launcher
             {
                 const auto error = ::GetLastError();
                 const HRESULT result = HRESULT_FROM_WIN32(error == ERROR_SUCCESS ? ERROR_MOD_NOT_FOUND : error);
-                Record(result, L"log.launcher.tap_load_failed",
+                Record(result, L"TAP module load failed path={0} error={1} detail={2}",
                        { tapModule.wstring(), std::to_wstring(error),
                          Hex(static_cast<std::uint32_t>(result)) });
             }
@@ -107,8 +107,8 @@ namespace vmex::launcher
         HRESULT InjectCore()
         {
             const HRESULT com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-            log::Logger::Instance().WriteKeyFormat(
-                log::Level::Info, kChannel, L"log.launcher.attached",
+            log::Logger::Instance().WriteFormat(
+                log::Level::Info, kChannel, L"Launcher attached pid={0} CoInitializeEx={1}",
                 { std::to_wstring(::GetCurrentProcessId()), Hex(static_cast<std::uint32_t>(com)) });
 
             const auto directory = ModuleDirectory();
@@ -116,7 +116,7 @@ namespace vmex::launcher
             if (!platform::FileExists(tapModule))
             {
                 const HRESULT result = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
-                Record(result, L"log.launcher.tap_module_missing",
+                Record(result, L"TAP module missing path={0} detail={1}",
                        { tapModule.wstring(), Hex(static_cast<std::uint32_t>(result)) });
                 return result;
             }
@@ -125,7 +125,7 @@ namespace vmex::launcher
             if (!platform::FileExists(diagnostics))
             {
                 const HRESULT result = HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
-                Record(result, L"log.launcher.diag_missing",
+                Record(result, L"Diagnostics module missing name={0} path={1} detail={2}",
                        { std::wstring(kDiagModuleName), diagnostics.wstring(),
                          Hex(static_cast<std::uint32_t>(result)) });
                 return result;
@@ -135,7 +135,7 @@ namespace vmex::launcher
             if (xaml == nullptr)
             {
                 const HRESULT result = HRESULT_FROM_WIN32(WAIT_TIMEOUT);
-                Record(result, L"log.launcher.xaml_not_loaded",
+                Record(result, L"XAML module wait timed out name={0} detail={1}",
                        { std::wstring(kXamlModuleName), Hex(static_cast<std::uint32_t>(result)) });
                 return result;
             }
@@ -146,7 +146,7 @@ namespace vmex::launcher
             if (initialize == nullptr)
             {
                 const HRESULT result = HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
-                Record(result, L"log.launcher.xaml_export_missing",
+                Record(result, L"XAML export missing module={0} export={1} detail={2}",
                        { std::wstring(kXamlModuleName), std::wstring(entryPoint.begin(), entryPoint.end()),
                          Hex(static_cast<std::uint32_t>(result)) });
                 return result;
@@ -156,15 +156,15 @@ namespace vmex::launcher
             const std::wstring classId(inject::kTapClassId);
             if (FAILED(::CLSIDFromString(classId.c_str(), &tapClsid)))
             {
-                Record(E_INVALIDARG, L"log.launcher.class_id_invalid",
+                Record(E_INVALIDARG, L"Invalid TAP class ID value={0} detail={1}",
                        { classId, Hex(static_cast<std::uint32_t>(E_INVALIDARG)) });
                 return E_INVALIDARG;
             }
 
             LoadTap(tapModule);
 
-            log::Logger::Instance().WriteKeyFormat(
-                log::Level::Info, kChannel, L"log.launcher.payload_paths",
+            log::Logger::Instance().WriteFormat(
+                log::Level::Info, kChannel, L"Injection payload paths tap={0} diagnostics={1}",
                 { tapModule.wstring(), diagnostics.wstring() });
 
             for (unsigned long index = 1; index < 1 + kEndpointProbeLimit; ++index)
@@ -175,15 +175,15 @@ namespace vmex::launcher
                                               L"");
                 if (SUCCEEDED(hr))
                 {
-                    log::Logger::Instance().WriteKeyFormat(
-                        log::Level::Info, kChannel, L"log.launcher.endpoint_success",
+                    log::Logger::Instance().WriteFormat(
+                        log::Level::Info, kChannel, L"XAML diagnostics attached endpoint={0} detail={1}",
                         { endpoint, Hex(static_cast<std::uint32_t>(hr)) });
                     return S_OK;
                 }
 
                 if (hr == E_INVALIDARG)
                 {
-                    Record(hr, L"log.launcher.arguments_rejected",
+                    Record(hr, L"Diagnostics arguments rejected interface={0} endpoint={1} detail={2}",
                            { std::wstring(entryPoint.begin(), entryPoint.end()), endpoint,
                              Hex(static_cast<std::uint32_t>(hr)) });
                     return hr;
@@ -191,14 +191,14 @@ namespace vmex::launcher
 
                 if (index < 4 || (index % 1000) == 0)
                 {
-                    log::Logger::Instance().WriteKeyFormat(
-                        log::Level::Debug, kChannel, L"log.launcher.endpoint_probe",
+                    log::Logger::Instance().WriteFormat(
+                        log::Level::Debug, kChannel, L"Diagnostics endpoint probe endpoint={0} detail={1}",
                         { endpoint, Hex(static_cast<std::uint32_t>(hr)) });
                 }
             }
 
             const HRESULT result = HRESULT_FROM_WIN32(ERROR_NO_MORE_ITEMS);
-            Record(result, L"log.launcher.endpoint_exhausted",
+            Record(result, L"Diagnostics endpoint probes exhausted detail={0}",
                    { Hex(static_cast<std::uint32_t>(result)) });
             return result;
         }

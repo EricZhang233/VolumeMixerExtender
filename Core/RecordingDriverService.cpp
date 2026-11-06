@@ -221,8 +221,8 @@ namespace vmex::recording
                         const auto role = audio::detail::GetCableEndpointRole(endpoint);
                         std::array<wchar_t, 40> subtype{};
                         ::StringFromGUID2(endpoint.jackSubType, subtype.data(), static_cast<int>(subtype.size()));
-                        log::Logger::Instance().WriteKeyFormat(role == audio::detail::CableEndpointRole::Unknown ?
-                            log::Level::Warn : log::Level::Info, kChannel, L"log.recording.endpoint_identity",
+                        log::Logger::Instance().WriteFormat(role == audio::detail::CableEndpointRole::Unknown ?
+                            log::Level::Warn : log::Level::Info, kChannel, L"Cable endpoint id={0} hardware={1} form={2} jack={3} role={4} state={5}",
                             { endpoint.id, endpoint.hardwareId, std::to_wstring(endpoint.formFactor), subtype.data(),
                               std::to_wstring(static_cast<int>(role)), std::to_wstring(endpoint.state) });
                         if (role == audio::detail::CableEndpointRole::Unknown) continue;
@@ -234,9 +234,9 @@ namespace vmex::recording
                         const auto vendor = ProbeCableVendor(endpoint.id);
                         if (vendor != CableVendor::Match)
                         {
-                            log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kChannel,
-                                vendor == CableVendor::Unknown ? L"log.recording.endpoint_vendor_unknown" :
-                                    L"log.recording.endpoint_vendor_mismatch", { endpoint.friendly });
+                            log::Logger::Instance().WriteFormat(log::Level::Warn, kChannel,
+                                vendor == CableVendor::Unknown ? L"Endpoint vendor identity unavailable name={0}" :
+                                    L"Endpoint vendor identity mismatch name={0}", { endpoint.friendly });
                             if (owned) return Status::Failed(L"endpoint-owned-identity-unavailable");
                             continue;
                         }
@@ -274,8 +274,8 @@ namespace vmex::recording
                     audio::detail::GetCableEndpointRole(endpoint) == audio::detail::CableEndpointRole::Unknown ||
                     ProbeCableVendor(std::wstring(id)) != CableVendor::Match)
                 {
-                    log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kChannel,
-                        L"log.recording.endpoint_vendor_mismatch", { std::wstring(id) });
+                    log::Logger::Instance().WriteFormat(log::Level::Warn, kChannel,
+                        L"Endpoint vendor identity mismatch id={0}", { std::wstring(id) });
                     return Status::Failed(L"endpoint-role-or-identity-changed");
                 }
                 bool changed = audio::detail::EndpointVisibilityMatches(endpoint.state, visible);
@@ -293,12 +293,12 @@ namespace vmex::recording
                         ::Sleep(20);
                     } while (::GetTickCount64() < deadline);
                     if (!changed)
-                        log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kChannel,
-                            L"log.recording.endpoint_state_unconfirmed", { std::wstring(id), visible ? L"1" : L"0" });
+                        log::Logger::Instance().WriteFormat(log::Level::Warn, kChannel,
+                            L"Endpoint state unconfirmed id={0} visible={1}", { std::wstring(id), visible ? L"1" : L"0" });
                 }
-                log::Logger::Instance().WriteKeyFormat(changed ? log::Level::Info : log::Level::Warn, kChannel,
-                    changed ? (visible ? L"log.recording.endpoint_shown" : L"log.recording.endpoint_hidden") :
-                        L"log.recording.endpoint_failed", { std::wstring(id) });
+                log::Logger::Instance().WriteFormat(changed ? log::Level::Info : log::Level::Warn, kChannel,
+                    changed ? (visible ? L"Endpoint enabled id={0}" : L"Endpoint disabled id={0}") :
+                        L"Endpoint visibility change failed id={0}", { std::wstring(id) });
                 return changed ? Status::Ok() : Status::Failed(L"endpoint-visibility");
             }
         };
@@ -317,8 +317,8 @@ namespace vmex::recording
 
         Status Report(std::wstring_view action, Status result)
         {
-            log::Logger::Instance().WriteKeyFormat(result ? log::Level::Info : log::Level::Error,
-                L"recording.driver", L"log.recording.result", { std::wstring(action), std::to_wstring(result.code), result.detail });
+            log::Logger::Instance().WriteFormat(result ? log::Level::Info : log::Level::Error,
+                L"recording.driver", L"Operation {0} code={1} detail={2}", { std::wstring(action), std::to_wstring(result.code), result.detail });
             return result;
         }
 

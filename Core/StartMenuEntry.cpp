@@ -23,14 +23,14 @@ namespace vmex::startmenu
         constexpr wchar_t kManagerExecutable[] = L"vmex_manager.exe";
         constexpr wchar_t kShortcutName[] = L"VolumeMixerExtender.lnk";
 
-        void Warn(std::wstring_view key, std::vector<std::wstring> args = {})
+        void Warn(std::wstring_view message, std::vector<std::wstring> args = {}, std::source_location location = std::source_location::current())
         {
-            log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kChannel, key, args);
+            log::Logger::Instance().WriteFormat(log::Level::Warn, kChannel, message, args, location);
         }
 
-        void Info(std::wstring_view key, std::vector<std::wstring> args = {})
+        void Info(std::wstring_view message, std::vector<std::wstring> args = {}, std::source_location location = std::source_location::current())
         {
-            log::Logger::Instance().WriteKeyFormat(log::Level::Info, kChannel, key, args);
+            log::Logger::Instance().WriteFormat(log::Level::Info, kChannel, message, args, location);
         }
 
         std::filesystem::path ProgramsFolderPath()
@@ -92,7 +92,7 @@ namespace vmex::startmenu
         if (!platform::FileExists(exe))
         {
             error = text::Embedded().ResolveFormat(L"startmenu.error.exe_missing", { exe });
-            Warn(L"log.startmenu.exe_missing", { exe });
+            Warn(L"Start menu registration rejected; executable missing path={0}", { exe });
             return false;
         }
 
@@ -101,7 +101,7 @@ namespace vmex::startmenu
         {
             const std::wstring detail = std::to_wstring(static_cast<unsigned long>(E_FAIL));
             error = text::Embedded().ResolveFormat(L"startmenu.error.write_failed", { detail });
-            Warn(L"log.startmenu.write_failed", { exe, detail });
+            Warn(L"Start menu shortcut creation failed target={0} detail={1}", { exe, detail });
             return false;
         }
 
@@ -110,11 +110,11 @@ namespace vmex::startmenu
         {
             const std::wstring detail = std::to_wstring(static_cast<unsigned long>(hr));
             error = text::Embedded().ResolveFormat(L"startmenu.error.write_failed", { detail });
-            Warn(L"log.startmenu.write_failed", { exe, detail });
+            Warn(L"Start menu shortcut creation failed target={0} detail={1}", { exe, detail });
             return false;
         }
 
-        Info(L"log.startmenu.registered", { link.wstring() });
+        Info(L"Start menu shortcut registered path={0}", { link.wstring() });
         return true;
     }
 }

@@ -18,6 +18,10 @@
 #include "Strings.h"
 #include "RecordingEndpointLock.h"
 #include "PanelPresentation.h"
+#include "UpdateService.h"
+#include "RecordingPanelState.h"
+#include "../Components/inject.tap/Page.h"
+#include <winrt/Windows.Data.Json.h>
 
 #include <windows.h>
 #include <atomic>
@@ -180,6 +184,44 @@ namespace
     void AudioFailures()
     {
         AudioSessionReset();
+        using vmex::application::ProcessImagePath;
+        using namespace vmex::audio::detail;
+        bool exited = true;
+        const auto image = ProcessImagePath(::GetCurrentProcessId(), &exited);
+        Require(!image.empty() && !exited, "A live process must retain its audio sessions, including inactive sessions");
+        Require(SessionDisplayName({}, false, L"Protected player") == L"Protected player",
+            "An unreadable process path must fall back to the session display name");
+        Require(SessionDisplayName(L"C:\\Missing\\Player.exe", false) == L"Player",
+            "An executable without version metadata must retain its filename");
+        Require(SessionDisplayName(L"C:\\Missing\\Player.exe", false, {}, L"Registered player") == L"Registered player",
+            "The registered application name must take precedence over the executable name");
+        Require(SessionGroupKey(1, false, L"C:\\APP\\Player.exe") ==
+            SessionGroupKey(2, false, L"c:\\app\\player.exe"), "Application grouping must use the normalized process path");
+        Require(SessionGroupKey(1, false, {}) != SessionGroupKey(2, false, {}),
+            "Processes without readable image paths must not merge into one unknown application");
+        Require(!ProcessExecutableName(::GetCurrentProcessId(), exited).empty() && !exited,
+            "A process snapshot must provide an executable name independently of image path access");
+        struct Child final
+        {
+            PROCESS_INFORMATION process{};
+            ~Child()
+            {
+                if (!process.hProcess) return;
+                if (::WaitForSingleObject(process.hProcess, 0) == WAIT_TIMEOUT) ::TerminateProcess(process.hProcess, 1);
+                ::WaitForSingleObject(process.hProcess, 1000);
+                ::CloseHandle(process.hThread);
+                ::CloseHandle(process.hProcess);
+            }
+        } child;
+        STARTUPINFOW startup{ sizeof(startup) };
+        Require(::CreateProcessW(image.c_str(), nullptr, nullptr, nullptr, FALSE, CREATE_SUSPENDED | CREATE_NO_WINDOW,
+            nullptr, nullptr, &startup, &child.process) != FALSE, "Session lifecycle fixture must start hidden and suspended");
+        Require(!ProcessImagePath(child.process.dwProcessId, &exited).empty() && !exited,
+            "A running but silent process must not be discarded");
+        Require(::TerminateProcess(child.process.hProcess, 1) && ::WaitForSingleObject(child.process.hProcess, 3000) == WAIT_OBJECT_0,
+            "Session lifecycle fixture must exit");
+        Require(ProcessImagePath(child.process.dwProcessId, &exited).empty() && exited,
+            "A terminated process with a retained handle must not become an unknown application");
         struct Probe final : vmex::maintenance::IAudioResetActions
         {
             int failMask = 0;
@@ -372,42 +414,153 @@ namespace
     void Presentation()
     {
         using namespace vmex::presentation;
-        DeviceSnapshotBuffer buffer;
+        for (const auto refreshRate : { 60, 120 })
+        {
+            MeterCadence cadence;
+            int frames = 0;
+            int samples = 0;
+            for (int tick = 0; tick < refreshRate; ++tick)
+            {
+                const auto time = std::chrono::nanoseconds(1'000'000'000LL * tick / refreshRate);
+                if (const auto frame = cadence.Tick(MeterClock::time_point{} + time))
+                {
+                    ++frames;
+                    if (frame->sample) ++samples;
+                }
+            }
+            Require(frames == 60 && samples == 30, "The meter must render at 60 Hz and sample at 30 Hz on either display");
+        }
+        MeterCadence interrupted;
+        Require(interrupted.Tick(MeterClock::time_point{})->sample, "The first meter frame must sample immediately");
+        const auto resumed = MeterClock::time_point{} + std::chrono::seconds(2);
+        Require(interrupted.Tick(resumed)->sample && !interrupted.Tick(resumed + std::chrono::milliseconds(1)),
+            "A stalled renderer must resume without replaying missed meter frames");
+        MeterLevel left, right;
+        left.Sample(0.8f);
+        right.Sample(0.003f);
+        const float attack = left.Advance(kMeterFrameInterval);
+        Require(attack > 0.0f && attack < 0.8f && right.Advance(kMeterFrameInterval) == 0.0f,
+            "Stereo levels must attack independently and suppress near-zero noise");
+        Require(left.Advance(kMeterFrameInterval) > attack,
+            "The meter must animate between peak samples");
+        const auto settled = left.Advance(std::chrono::seconds(1));
+        left.Sample(0.804f);
+        Require(left.Advance(kMeterFrameInterval) == settled, "Small peak changes must not shake a settled meter");
+        left.Sample(0.0f);
+        const auto decay = left.Advance(kMeterFrameInterval);
+        Require(decay < settled && settled - decay < attack && left.Advance(std::chrono::seconds(2)) == 0.0f,
+            "Release must be slower than attack and settle completely at silence");
+        const auto cacheName = L"Local\\Vmex.RecordingPanel.Test." + std::to_wstring(::GetCurrentProcessId());
+        vmex::recording::PanelState cached;
+        Require(!vmex::recording::PanelStateCache::Read(cached, cacheName), "A stopped host must not leave a stale recording entry");
+        {
+            vmex::recording::PanelStateCache publisher(cacheName);
+            Require(publisher.Start().IsOk(), "Recording panel cache must initialize independently of XAML");
+            Require(!vmex::recording::PanelStateCache::Read(cached, cacheName), "Unpublished recording state must remain unavailable");
+            publisher.Publish({ { true, false, false, L"physical" }, true });
+            Require(vmex::recording::PanelStateCache::Read(cached, cacheName) && cached.available && !cached.recording.enabled,
+                "The first panel frame must read precomputed availability without IPC or device enumeration");
+            publisher.Publish({ { true, true, false, L"monitor" }, true });
+            Require(vmex::recording::PanelStateCache::Read(cached, cacheName) && cached.recording.enabled &&
+                cached.recording.monitorDevice == L"monitor", "Recording selection and monitor must form one snapshot");
+            publisher.Publish({ { true, false, false, L"" }, false });
+            Require(vmex::recording::PanelStateCache::Read(cached, cacheName) && !cached.available && !cached.recording.enabled,
+                "Driver removal must invalidate the recording entry");
+        }
+        Require(!vmex::recording::PanelStateCache::Read(cached, cacheName), "Host exit must discard the shared recording snapshot");
+        struct Session final : vmex::audio::IAudioSessionHandle
+        {
+            int& destroyed;
+            explicit Session(int& counter) : destroyed(counter) {}
+            ~Session() override { ++destroyed; }
+            std::wstring_view InstanceId() const noexcept override { return L"session"; }
+            std::wstring_view DeviceId() const noexcept override { return L"device"; }
+            std::uint32_t ProcessId() const noexcept override { return 1; }
+            vmex::Status GetState(float&, bool&) override { return vmex::Status::Ok(); }
+            vmex::Status GetPeak(float&, float&) override { return vmex::Status::Ok(); }
+            vmex::Status SetVolume(float) override { return vmex::Status::Ok(); }
+            vmex::Status SetMuted(bool) override { return vmex::Status::Ok(); }
+            vmex::Status Rebind(std::wstring_view, std::wstring_view) override { return vmex::Status::Ok(); }
+        };
+        int destroyed = 0;
+        const auto context = std::make_shared<vmex::tap::page::Context>();
+        context->data = std::make_shared<vmex::tap::page::PageData>();
+        auto binding = std::make_shared<vmex::tap::page::AppRowBinding>();
+        context->data->handles.push_back(std::make_shared<Session>(destroyed));
+        binding->handle = context->data->handles.front();
+        context->rows.push_back(binding);
+        context->data->handles.clear();
+        Require(destroyed == 0, "Rebuilding the application snapshot must retain sessions used by old rows");
+        auto inFlight = binding->handle;
+        vmex::tap::page::ReleaseRowWork(context);
+        Require(!binding->active && !binding->handle && destroyed == 0,
+            "Retiring rows must invalidate queued UI callbacks while preserving in-flight audio calls");
+        inFlight.reset();
+        Require(destroyed == 1, "A retired session must be released after the final callback completes");
         DeviceSnapshot before;
         before.render.resize(1);
         before.render[0].id = L"R1";
+        before.render[0].isDefault = true;
+        before.capture.resize(1);
+        before.capture[0].id = L"M1";
+        before.capture[0].isDefault = true;
+        before.routingRender = before.render;
         before.defaultRender = before.appsEndpoint = L"R1";
-        auto recording = before;
+        before.defaultCapture = L"M1";
+        auto cableHandoff = before;
+        cableHandoff.render[0].isDefault = false;
+        cableHandoff.capture[0].isDefault = false;
+        cableHandoff.routingRender[0].isDefault = false;
+        SelectVisibleDefaults(cableHandoff, before, {});
+        Require(SameDeviceSnapshot(before, cableHandoff),
+            "A filtered recording endpoint becoming the system default must not refresh the visible device rows");
+        auto recording = cableHandoff;
         recording.recordingMode = true;
-        recording.defaultRender = recording.appsEndpoint = L"V";
-        buffer.Hold(100, 800);
-        buffer.Hold(200);
-        Require(buffer.Waiting(899) && !buffer.Observe(recording, 899),
-            "A delayed device notification must not shorten recording transition buffering");
-        Require(!buffer.Observe(recording, 900) && !buffer.Observe(recording, 1149) && buffer.Observe(recording, 1150),
-            "Recording completion must wait for matching snapshots across the stability interval");
-        buffer.Hold(1200);
-        DeviceSnapshot empty;
-        Require(!buffer.Observe(empty, 1600) && !buffer.Observe(before, 1750) && !buffer.Observe(before, 1999) &&
-            buffer.Observe(before, 2000), "A transient empty device list must be discarded while the old display remains mounted");
-        auto movedDefault = before;
-        movedDefault.defaultRender = movedDefault.appsEndpoint = L"R2";
-        Require(!buffer.Observe(movedDefault, 2050) && buffer.Observe(movedDefault, 2300),
-            "Default changes must restart snapshot stabilization even when device membership is unchanged");
-        buffer.Hold(2400);
-        Require(!buffer.Observe(movedDefault, 2800), "A late notification must invalidate an earlier stable sample");
-        buffer.Hold(2900);
-        Require(!buffer.Observe(movedDefault, 3150) && !buffer.Observe(movedDefault, 3300) && buffer.Observe(movedDefault, 3550),
-            "Notification bursts must merge into one stable refresh after the final quiet interval");
+        recording.appsEndpoint = L"V";
+        recording.routingRender.push_back({ L"V" });
+        SelectVisibleDefaults(recording, before, L"R1");
+        Require(recording.defaultRender == L"R1" && recording.appsEndpoint == L"V",
+            "The physical monitor selection must remain independent of the virtual session endpoint");
+        auto unplugged = recording;
+        unplugged.render = { vmex::audio::DeviceInfo{ L"R2" } };
+        SelectVisibleDefaults(unplugged, recording, L"R1");
+        Require(unplugged.defaultRender.empty() && !unplugged.render[0].isDefault,
+            "Removing the monitor must not select an unrelated physical device");
         auto routingOnly = before;
-        routingOnly.routingRender = recording.render;
+        routingOnly.routingRender = recording.routingRender;
         Require(SameVolumeRows(before, routingOnly) && !SameDeviceSnapshot(before, routingOnly),
             "Routing changes must update applications while preserving endpoint controls and subscriptions");
         Require(SameVolumeRows(before, recording) && !SameDeviceSnapshot(before, recording),
             "Entering and exiting recording with unchanged physical devices must reuse controls while updating the mode and applications");
         auto renamed = before;
         renamed.render[0].friendlyName = L"new name";
-        Require(!SameVolumeRows(before, renamed), "Visible device changes must still rebuild endpoint controls");
+        Require(!SameVolumeRows(before, renamed) && !CanReuseVolumeRows(before, renamed),
+            "Visible device changes must still rebuild endpoint controls");
+        vmex::audio::detail::Endpoint endpoint;
+        using vmex::audio::DeviceIcon;
+        Require(GetRecommendedDeviceIcon(endpoint) == DeviceIcon::Speakers, "An unclassified output must use the speakers icon");
+        endpoint.flow = eCapture;
+        Require(GetRecommendedDeviceIcon(endpoint) == DeviceIcon::Microphone, "An unclassified input must use the microphone icon");
+        endpoint.flow = eRender;
+        endpoint.formFactor = Headphones;
+        auto headphones = before;
+        headphones.render[0].recommendedIcon = GetRecommendedDeviceIcon(endpoint);
+        Require(headphones.render[0].recommendedIcon == DeviceIcon::Headphones &&
+            !SameVolumeRows(before, headphones) && !CanReuseVolumeRows(before, headphones),
+            "A device changing to headphones must refresh its icon even when its name is unchanged");
+        auto twoOutputs = before;
+        twoOutputs.render.push_back({});
+        twoOutputs.render.back().id = L"R2";
+        vmex::presentation::PrioritizeMonitor(twoOutputs.render, L"R1");
+        auto switchedOutput = twoOutputs;
+        switchedOutput.render[0].isDefault = false;
+        switchedOutput.render[1].isDefault = true;
+        SelectVisibleDefaults(switchedOutput, twoOutputs, {});
+        Require(CanReuseVolumeRows(twoOutputs, switchedOutput) && !SameVolumeRows(twoOutputs, switchedOutput),
+            "Default device changes must reorder existing controls without rebuilding them");
+        Require(switchedOutput.defaultRender == L"R2" && switchedOutput.render.front().id == L"R2",
+            "A physical default in the new snapshot must take precedence over the previous selection");
+        Require(!CanReuseVolumeRows(before, twoOutputs), "Device membership changes must rebuild endpoint controls");
         vmex::presentation::PendingSelection<bool> toggle;
         Require(!toggle.Take(100), "Idle polling must not manufacture a toggle action");
         toggle.Queue(true, 100);
@@ -422,9 +575,11 @@ namespace
         toggle.Reset();
         Require(!toggle.Take(2000), "Leaving the page must cancel pending clicks");
         vmex::presentation::PendingSelection<std::wstring> selection;
-        selection.Queue(L"R1", 0);
-        selection.Queue(L"R2", 100);
-        Require(!selection.Take(299) && selection.Take(300).value_or(L"") == L"R2", "Only the last device click must be applied");
+        selection.Queue(L"R1", 0, kDeviceSelectionDelayMs);
+        selection.Queue(L"R2", 10, kDeviceSelectionDelayMs);
+        Require(!selection.Take(10 + kDeviceSelectionDelayMs - 1) &&
+            selection.Take(10 + kDeviceSelectionDelayMs).value_or(L"") == L"R2",
+            "Rapid device clicks must coalesce without the recording action delay");
         std::vector<vmex::audio::DeviceInfo> devices(3);
         devices[0].id = L"R1"; devices[1].id = L"R2"; devices[2].id = L"R3";
         vmex::presentation::PrioritizeMonitor(devices, L"R2");
@@ -512,7 +667,7 @@ namespace
         Require(!ChangeVisibility(visibility, false, changes) && !RestoreVisibility(visibility, changes) && visibility.endpoints[0].owned,
             "Failed rollback must retain the ownership record for a later recovery attempt");
         Require(vmex::management::IsHostImage(L"C:\\App\\vmex.exe", L"C:\\App") &&
-            vmex::management::IsHostImage(L"C:\\APP\\vmex_cli.exe", L"c:\\app"), "Both same-directory host entry points must be recognized");
+            vmex::management::IsHostImage(L"C:\\APP\\vmex.exe", L"c:\\app"), "The same-directory background host must be recognized");
         Require(!vmex::management::IsHostImage(L"C:\\Other\\vmex.exe", L"C:\\App") &&
             !vmex::management::IsHostImage(L"C:\\App\\unrelated.exe", L"C:\\App"), "Another copy or unrelated executable must be rejected");
         const auto registryPath = L"Software\\EricSoft\\VolumeMixerExtender.Tests." + std::to_wstring(::GetCurrentProcessId());
@@ -876,6 +1031,94 @@ namespace
         Require(!vmex::recording::ValidateDriverPackage(scratch.path, testSigned), "A missing original installer must fail verification");
     }
 
+    void Updates()
+    {
+        using namespace vmex::update;
+        Require(ParseVersion(L"v1.2.3") == ParseVersion(L"1.2.3.0"), "Release versions must normalize missing revisions");
+        Require(ParseVersion(L"1.2.10") > ParseVersion(L"1.2.9.9"), "Update ordering must compare numeric components");
+        Require(!ParseVersion(L"1.2") && !ParseVersion(L"1.2.3.4.5") && !ParseVersion(L"1.2.65536") &&
+            !ParseVersion(L"1.2.3/evil"), "Invalid versions must not become installation paths");
+        Require(CheckDue(0, 100) && !CheckDue(100, 43299) && CheckDue(100, 43300) && CheckDue(200, 100),
+            "Update checks must respect twelve hours and recover from a clock moving backwards");
+        Require(!ValidDigest(L"") && !ValidDigest(L"sha256:abc") && ValidDigest(L"sha256:" + std::wstring(64, L'a')),
+            "Update packages require a complete SHA256 digest");
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        struct Apartment { ~Apartment() { winrt::uninit_apartment(); } } apartment;
+        const auto release = [](std::wstring version, bool prerelease, bool draft, std::wstring digest, std::wstring host = L"https://github.com/")
+        {
+            return L"{\"tag_name\":\"v" + version + L"\",\"draft\":" + (draft ? L"true" : L"false") +
+                L",\"prerelease\":" + (prerelease ? L"true" : L"false") + L",\"assets\":[{\"name\":\"VolumeMixerExtender_" + version +
+                L".zip\",\"browser_download_url\":\"" + host + L"EricZhang233/VolumeMixerExtender/releases/download/v" + version +
+                L"/VolumeMixerExtender_" + version + L".zip\",\"size\":123,\"digest\":" + digest + L"}]}";
+        };
+        const auto hash = L"\"sha256:" + std::wstring(64, L'a') + L"\"";
+        const auto json = L"[" + release(L"2.0.0", true, false, hash) + L"," + release(L"1.2.0", false, false, hash) +
+            L"," + release(L"9.0.0", false, true, hash) + L"," + release(L"8.0.0", false, false, L"null") +
+            L"," + release(L"7.0.0", false, false, hash, L"https://attacker.invalid/") + L"]";
+        const auto stable = SelectRelease(json, L"1.0.1");
+        Require(stable && stable->version == L"1.2.0",
+            "Only stable releases with a complete hash and the official download URL may be installed");
+        Require(!SelectRelease(json, L"1.2.0"), "Updates must never downgrade, reinstall or accept prereleases");
+        Require(ReleasePage(*stable) == L"https://github.com/EricZhang233/VolumeMixerExtender/releases/tag/v1.2.0",
+            "Release notes must open the exact selected version");
+        auto unsafeRelease = *stable;
+        unsafeRelease.tag = L"../other";
+        Require(ReleasePage(unsafeRelease).empty(), "An unrelated tag must never become a browser destination");
+        auto candidate = stable;
+        bool rejectCheck = false;
+        int checks = 0, opened = 0, launched = 0;
+        InteractiveSession session(
+            [&](std::optional<Release>& selected)
+            {
+                ++checks;
+                selected = candidate;
+                return rejectCheck ? vmex::Status::Failed(L"fixture-network") : vmex::Status::Ok();
+            },
+            [&](std::wstring_view page)
+            {
+                ++opened;
+                Require(page == ReleasePage(*stable), "The manager must open the checked release page");
+                return vmex::Status::Ok();
+            },
+            [&](const Release& selected)
+            {
+                ++launched;
+                Require(selected.version == stable->version && selected.digest == stable->digest,
+                    "Download must retain the release and hash shown to the user");
+                return vmex::Status::Ok();
+            });
+        bool available = true;
+        Require(!session.OpenRelease() && !session.Install() && opened == 0 && launched == 0,
+            "Opening or installing before a successful check must be rejected");
+        Require(session.Check(available).IsOk() && available && session.OpenRelease().IsOk(),
+            "A successful manual check must offer the selected release page");
+        candidate.reset();
+        Require(session.Install().IsOk() && checks == 1 && launched == 1,
+            "Downloading must use the checked selection without a second network check");
+        Require(session.Check(available).IsOk() && !available && !session.Install(),
+            "A no-update check must clear a previous download selection");
+        candidate = stable;
+        rejectCheck = true;
+        Require(!session.Check(available) && !available && !session.OpenRelease() && !session.Install() && launched == 1,
+            "A failed check must not leave a stale release available for download");
+        struct Cache final
+        {
+            std::filesystem::path directory;
+            ~Cache() { std::error_code error; std::filesystem::remove_all(directory, error); }
+        } cache{ std::filesystem::temp_directory_path() / (L"vmex-updater-payload-" + std::to_wstring(::GetCurrentProcessId())) };
+        const auto executable = cache.directory / L"vmex_updater.exe";
+        std::vector<std::byte> original;
+        Require(ExtractUpdater(executable).IsOk() && vmex::platform::ReadAllBytes(executable, original).IsOk() &&
+            original.size() > 1024 && original[0] == std::byte{'M'} && original[1] == std::byte{'Z'},
+            "Core must embed and extract a standalone updater executable");
+        const std::array stale{ std::byte{'x'}, std::byte{'x'} };
+        Require(vmex::platform::WriteAllBytes(executable, stale).IsOk() && ExtractUpdater(executable).IsOk(),
+            "Updater extraction must forcibly overwrite an existing cached executable");
+        std::vector<std::byte> replaced;
+        Require(vmex::platform::ReadAllBytes(executable, replaced).IsOk() && replaced == original,
+            "A stale cached updater must be replaced with the exact embedded payload");
+    }
+
     void Commands()
     {
         using vmex::inject::ParseTapCommand;
@@ -899,9 +1142,9 @@ namespace
         vmex::text::TextService text;
         Require(text.Attach(vmex::text::CreateEmbeddedTextSource()).IsOk(), "Text resources unavailable");
         for (const auto key : { L"manager.title", L"manager.stop.confirm", L"manager.uninstall.confirm", L"manager.missing",
-                               L"cmd.start.summary", L"cmd.stop.summary", L"cmd.uninstall.summary", L"cmd.uninstall.yes",
-                                 L"cmd.show-driver-name.summary", L"cmd.panel.summary", L"manager.panel", L"manager.panel.pending",
-                                 L"log.management.result", L"page.footer.settings" })
+                               L"manager.update.check", L"manager.update.download", L"manager.update.available", L"manager.update.restarting",
+                                 L"manager.panel", L"manager.panel.pending",
+                                 L"page.footer.settings" })
             Require(text.Contains(key) && !text.Resolve(key).empty(), "Required management text is missing");
         const auto message = text.ResolveFormat(L"manager.failed", { L"probe-error" });
         Require(message.find(L"probe-error") != std::wstring::npos, "Error details lost in localization");
@@ -928,6 +1171,34 @@ namespace
         std::filesystem::remove(file);
         Require(!std::filesystem::exists(file), "Configuration cleanup failed");
         std::filesystem::remove(root);
+
+        using vmex::audio::DeviceIcon;
+        using vmex::audio::ResolveDeviceIcon;
+        using namespace vmex::settings;
+        const std::wstring id = L"vmex-test-" + std::to_wstring(::GetCurrentProcessId()) + L"-" +
+            std::to_wstring(::GetTickCount64());
+        struct RemoveTestDeviceIcon final
+        {
+            std::wstring key;
+            std::wstring name;
+            ~RemoveTestDeviceIcon() { ::RegDeleteKeyValueW(HKEY_CURRENT_USER, key.c_str(), name.c_str()); }
+        } cleanup{ std::wstring(kRootKey) + L"\\DeviceIcons", id };
+        Require(ReadDeviceIcon(id) == DeviceIcon::Recommended, "A device without a preference must follow Windows");
+        Require(WriteDeviceIcon(id, DeviceIcon::Headphones) && ReadDeviceIcon(id) == DeviceIcon::Headphones,
+            "An explicit device icon must round trip through the registry");
+        Require(ReadDeviceIcon(id + L"-other") == DeviceIcon::Recommended,
+            "Device icon preferences must not affect other endpoints");
+        Require(ResolveDeviceIcon(DeviceIcon::Display, ReadDeviceIcon(id)) == DeviceIcon::Headphones,
+            "An explicit icon must remain selected when Windows recommends a different one");
+        Require(WriteDeviceIcon(id, DeviceIcon::DisplayAudio) && ReadDeviceIcon(id) == DeviceIcon::DisplayAudio,
+            "An icon from the expanded catalog must round trip through the registry");
+        Require(WriteDeviceIcon(id, DeviceIcon::Recommended) &&
+            ResolveDeviceIcon(DeviceIcon::Display, ReadDeviceIcon(id)) == DeviceIcon::Display,
+            "Selecting the first option must restore the current Windows recommendation");
+        const DWORD invalid = static_cast<DWORD>(DeviceIcon::Count);
+        Require(!WriteDeviceIcon(id, DeviceIcon::Count) &&
+            ::RegSetKeyValueW(HKEY_CURRENT_USER, cleanup.key.c_str(), id.c_str(), REG_DWORD, &invalid, sizeof(invalid)) == ERROR_SUCCESS &&
+            ReadDeviceIcon(id) == DeviceIcon::Recommended, "An invalid stored icon must fall back to the Windows recommendation");
     }
 
     void Pipe()
@@ -988,6 +1259,11 @@ namespace
         ::CloseHandle(pipe);
         Require(elapsed < std::chrono::seconds(3), "An idle connected client must not prevent server shutdown");
         Require(!server.IsRunning(), "Pipe server did not stop");
+        for (int attempt = 0; attempt < 32; ++attempt)
+        {
+            Require(server.Start(), "Pipe server failed to restart");
+            server.Stop();
+        }
     }
 }
 
@@ -1008,6 +1284,7 @@ int main(int argc, char** argv)
         else if (suite == "presentation") Presentation();
         else if (suite == "driver-trust") DriverTrust();
         else if (suite == "commands") Commands();
+        else if (suite == "update") Updates();
         else if (suite == "resources") Resources();
         else if (suite == "config") Config();
         else if (suite == "pipe") Pipe();

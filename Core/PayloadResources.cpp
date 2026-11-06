@@ -52,8 +52,8 @@ namespace vmex::payload
         const auto read = platform::ReadAllBytes(source, bytes);
         if (!read.IsOk())
         {
-            log::Logger::Instance().WriteKeyFormat(
-                log::Level::Error, kChannel, L"log.payload.missing", { std::wstring(ToString(item)) });
+            log::Logger::Instance().WriteFormat(
+                log::Level::Error, kChannel, L"Injection payload missing name={0}", { std::wstring(ToString(item)) });
             return Status::Failed(L"missing payload file");
         }
 
@@ -63,10 +63,10 @@ namespace vmex::payload
             return status;
         }
 
-        log::Logger::Instance().WriteKeyFormat(
+        log::Logger::Instance().WriteFormat(
             log::Level::Info,
             kChannel,
-            L"log.payload.extracted",
+            L"Payload extracted name={0} path={1} bytes={2}",
             { std::wstring(ToString(item)), destination.wstring(), std::to_wstring(bytes.size()) });
         return Status::Ok();
     }

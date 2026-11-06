@@ -3,6 +3,7 @@
 #include "Foundation.h"
 
 #include <chrono>
+#include <source_location>
 
 namespace vmex::log
 {
@@ -26,6 +27,11 @@ namespace vmex::log
         std::wstring text;
         std::uint64_t sequence = 0;
         std::uint32_t threadId = 0;
+        std::uint32_t processId = 0;
+        std::wstring sourceFile;
+        std::wstring function;
+        std::uint32_t sourceLine = 0;
+        std::wstring operationId;
         std::chrono::system_clock::time_point time{};
     };
 
@@ -39,7 +45,18 @@ namespace vmex::log
         virtual void Flush() {}
     };
 
-    [[nodiscard]] std::shared_ptr<ILogSink> CreateFileSink(const std::filesystem::path& file);
+    struct FileOptions final
+    {
+        std::size_t queueCapacity = 4096;
+        std::size_t batchSize = 256;
+        std::uint64_t partBytes = 5 * 1024 * 1024;
+        std::uint64_t retainedBytes = 100 * 1024 * 1024;
+        std::chrono::hours retention = std::chrono::hours(24 * 30);
+    };
+
+    [[nodiscard]] std::wstring Redact(std::wstring_view value);
+    [[nodiscard]] std::wstring FormatLine(const Record& record);
+    [[nodiscard]] std::shared_ptr<ILogSink> CreateFileSink(const std::filesystem::path& file, FileOptions options = {});
 
     [[nodiscard]] std::filesystem::path SessionLogFile(std::wstring_view role);
     [[nodiscard]] std::shared_ptr<ILogSink> CreateDebugSink();

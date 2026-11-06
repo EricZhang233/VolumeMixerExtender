@@ -1,8 +1,6 @@
 #pragma once
 
 #include "AudioDeviceManager.h"
-#include "CliTypes.h"
-#include "CommandRegistry.h"
 #include "ConfigService.h"
 #include "EndpointPolicyService.h"
 #include "Foundation.h"
@@ -17,7 +15,6 @@ namespace vmex
         std::filesystem::path configFile;
         std::filesystem::path logFile;
         log::Level logLevel = log::Level::Info;
-        bool consoleLog = false;
         bool autorun = false;
         bool saveConfig = true;
     };
@@ -36,13 +33,9 @@ namespace vmex
 
         [[nodiscard]] text::TextService& Text() noexcept;
         [[nodiscard]] config::ConfigService& Config() noexcept;
-        [[nodiscard]] cli::CommandRegistry& Commands() noexcept;
         [[nodiscard]] audio::IAudioDeviceManager& AudioDevices();
         [[nodiscard]] audio::IEndpointPolicyService& EndpointPolicy();
         [[nodiscard]] inject::IInjectionService& Injection();
-
-        void Report(log::Level level, std::wstring_view channel, std::wstring_view key);
-        void ReportFormat(log::Level level, std::wstring_view channel, std::wstring_view key, const std::vector<std::wstring>& arguments);
 
         Status Serve();
         void StopServing();
@@ -64,8 +57,6 @@ namespace vmex
         App& operator=(const App&) = delete;
         App(App&&) = delete;
         App& operator=(App&&) = delete;
-
-        void RegisterCommands();
 
         struct Impl;
         std::unique_ptr<Impl> m_impl;

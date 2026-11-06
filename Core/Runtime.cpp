@@ -7,18 +7,22 @@
 
 namespace vmex::runtime
 {
-    std::vector<std::wstring> CollectArguments(int argc, wchar_t** argv)
+    std::vector<std::wstring> Arguments()
     {
+        int argc = 0;
+        auto** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
         std::vector<std::wstring> arguments;
+        if (!argv) return arguments;
         arguments.reserve(static_cast<std::size_t>(argc > 0 ? argc - 1 : 0));
         for (int index = 1; index < argc; ++index)
         {
             arguments.emplace_back(argv[index]);
         }
+        ::LocalFree(argv);
         return arguments;
     }
 
-    AppOptions BuildOptions(const std::vector<std::wstring>& arguments, bool autorun)
+    AppOptions BuildOptions(bool autorun)
     {
         AppOptions options;
         const auto base = platform::GetInstallDirectory();
@@ -26,34 +30,7 @@ namespace vmex::runtime
         options.logFile = log::SessionLogFile(L"app");
         options.autorun = autorun;
 
-        for (const auto& token : arguments)
-        {
-            if (token == L"--verbose")
-            {
-                options.logLevel = log::Level::Debug;
-                options.consoleLog = true;
-            }
-            else if (token == L"--trace")
-            {
-                options.logLevel = log::Level::Trace;
-                options.consoleLog = true;
-            }
-        }
         return options;
-    }
-
-    std::vector<std::wstring> RemoveGlobalOptions(const std::vector<std::wstring>& arguments)
-    {
-        std::vector<std::wstring> filtered;
-        filtered.reserve(arguments.size());
-        for (const auto& token : arguments)
-        {
-            if (token != L"--verbose" && token != L"--trace")
-            {
-                filtered.push_back(token);
-            }
-        }
-        return filtered;
     }
 
     bool HasAutorunArgument()

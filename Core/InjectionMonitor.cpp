@@ -42,8 +42,8 @@ namespace vmex::inject
         m_stopEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
         m_thread = std::thread([this]() { Loop(); });
 
-        log::Logger::Instance().WriteKeyFormat(
-            log::Level::Info, kChannel, L"log.monitor.started", { std::to_wstring(m_pollIntervalMs) });
+        log::Logger::Instance().WriteFormat(
+            log::Level::Info, kChannel, L"Injection monitor started interval={0}ms", { std::to_wstring(m_pollIntervalMs) });
     }
 
     void InjectionMonitor::Stop()
@@ -61,7 +61,7 @@ namespace vmex::inject
 
         if (m_running.exchange(false))
         {
-            log::Logger::Instance().WriteKey(log::Level::Info, kChannel, L"log.monitor.stopped");
+            log::Logger::Instance().Write(log::Level::Info, kChannel, L"Injection monitor stopped");
         }
     }
 

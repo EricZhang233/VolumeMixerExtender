@@ -40,10 +40,10 @@ namespace vmex::audio
                 {
                     wchar_t hex[16] = {};
                     ::swprintf_s(hex, L"%08lX", static_cast<unsigned long>(result));
-                    log::Logger::Instance().WriteKeyFormat(
+                    log::Logger::Instance().WriteFormat(
                         log::Level::Warn,
                         kChannel,
-                        L"log.audio.policy_set_default_failed",
+                        L"Set default endpoint failed device={0} hr=0x{1} role={2}",
                         { std::wstring(deviceId), hex, std::to_wstring(static_cast<int>(role)) });
                     return Status::FromHResult(L"set-default", static_cast<std::int32_t>(result));
                 }
@@ -60,10 +60,10 @@ namespace vmex::audio
 
                 if (!detail::SetPersistedEndpointForRole(ToFlow(flow), processId, ToRole(role), std::wstring(deviceId)))
                 {
-                    log::Logger::Instance().WriteKeyFormat(
+                    log::Logger::Instance().WriteFormat(
                         log::Level::Warn,
                         kChannel,
-                        L"log.audio.policy_set_redirect_failed",
+                        L"Set application route failed pid={0}",
                         { std::to_wstring(processId) });
                     return Status::Failed(L"set-redirect");
                 }
@@ -129,11 +129,11 @@ namespace vmex::audio
                     }
                 } actions;
                 const auto result = maintenance::ResetAudioPreferences(actions);
-                log::Logger::Instance().WriteKeyFormat(log::Level::Info, kChannel, L"log.audio.preferences_reset",
+                log::Logger::Instance().WriteFormat(log::Level::Info, kChannel, L"Audio preferences reset code={0} detail={1}",
                     { std::to_wstring(result.code), result.detail });
                 if (!result)
                 {
-                    log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.audio.policy_clear_redirect_failed");
+                    log::Logger::Instance().Write(log::Level::Warn, kChannel, L"Clear application routes failed");
                     return result;
                 }
 

@@ -10,6 +10,8 @@
 #include <audioclient.h>
 #include <endpointvolume.h>
 #include <functiondiscoverykeys_devpkey.h>
+#include <tlhelp32.h>
+#include <shlwapi.h>
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -19,6 +21,8 @@
 #include <limits>
 #include <memory>
 
+#include "ApplicationIdentity.h"
+#include "AudioTypes.h"
 #include "Logger.h"
 #include "TextService.h"
 #include "EndpointVisibility.h"
@@ -127,6 +131,24 @@ struct Endpoint
     bool         isDefault = false;
 };
 
+inline DeviceIcon GetRecommendedDeviceIcon(const Endpoint& endpoint)
+{
+    switch (endpoint.formFactor)
+    {
+    case Speakers: return DeviceIcon::Speakers;
+    case Headphones: return DeviceIcon::Headphones;
+    case Microphone: return DeviceIcon::Microphone;
+    case Headset: return DeviceIcon::Headset;
+    case Handset: return DeviceIcon::Handset;
+    case DigitalAudioDisplayDevice: return DeviceIcon::Display;
+    case RemoteNetworkDevice:
+    case LineLevel:
+    case UnknownDigitalPassthrough:
+    case SPDIF: return DeviceIcon::Audio;
+    default: return endpoint.flow == eCapture ? DeviceIcon::Microphone : DeviceIcon::Speakers;
+    }
+}
+
 struct Session
 {
     std::wstring id;
@@ -138,6 +160,7 @@ struct Session
     bool         mute = false;
     AudioSessionState state = AudioSessionStateInactive;
     Ptr<ISimpleAudioVolume> vol;
+    Ptr<IAudioMeterInformation> meter;
 };
 
 inline void CoInitOnce()
@@ -364,17 +387,22 @@ inline bool GetEndpointState(const std::wstring& devId, float& volume, bool& mut
     return true;
 }
 
-inline bool GetEndpointPeak(const std::wstring& devId, float& left, float& right)
+inline Ptr<IAudioMeterInformation> OpenEndpointMeter(const std::wstring& devId)
 {
-    left = 0.0f;
-    right = 0.0f;
     Ptr<IAudioMeterInformation> meter;
     auto e = MakeEnumerator();
     auto d = FindDevice(e.get(), devId);
     if (!d || FAILED(d->Activate(__uuidof(IAudioMeterInformation), CLSCTX_ALL, nullptr, meter.putv())))
-        return false;
+        return {};
+    return meter;
+}
+
+inline bool ReadMeterPeaks(IAudioMeterInformation* meter, float& left, float& right)
+{
+    left = 0.0f;
+    right = 0.0f;
     UINT channels = 0;
-    if (FAILED(meter->GetMeteringChannelCount(&channels)) || channels == 0) return false;
+    if (!meter || FAILED(meter->GetMeteringChannelCount(&channels)) || channels == 0) return false;
     float values[2] = {};
     if (channels <= 2)
     {
@@ -481,17 +509,27 @@ private:
     Callback* callback_ = nullptr;
 };
 
-inline std::wstring ProcessImagePath(DWORD pid)
+inline std::wstring ProcessExecutableName(DWORD pid, bool& exited)
 {
-    std::wstring path;
-    if (pid == 0) return path;
-    HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!h) return path;
-    wchar_t buf[1024] = {};
-    DWORD n = ARRAYSIZE(buf);
-    if (::QueryFullProcessImageNameW(h, 0, buf, &n) && n > 0) path.assign(buf, n);
-    ::CloseHandle(h);
-    return path;
+    if (pid == 0) return {};
+    const HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return {};
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    std::wstring name;
+    if (::Process32FirstW(snapshot, &entry))
+    {
+        exited = true;
+        do
+        {
+            if (entry.th32ProcessID != pid) continue;
+            name = entry.szExeFile;
+            exited = false;
+            break;
+        } while (::Process32NextW(snapshot, &entry));
+    }
+    ::CloseHandle(snapshot);
+    return name;
 }
 
 inline std::wstring FileDescriptionOf(const std::wstring& path)
@@ -518,11 +556,31 @@ inline std::wstring FileDescriptionOf(const std::wstring& path)
     return result;
 }
 
-inline std::wstring SessionDisplayName(DWORD pid, bool systemSounds)
+inline std::wstring RegisteredApplicationName(const std::wstring& applicationId)
+{
+    const auto app = application::FindRegisteredApplication(applicationId);
+    if (!app) return {};
+    LPWSTR name = nullptr;
+    return SUCCEEDED(app->GetDisplayName(SIGDN_NORMALDISPLAY, &name)) ? TakeDeviceId(name) : std::wstring{};
+}
+
+inline std::wstring AudioSessionDisplayName(IAudioSessionControl* control)
+{
+    LPWSTR value = nullptr;
+    if (FAILED(control->GetDisplayName(&value))) return {};
+    auto name = TakeDeviceId(value);
+    if (name.empty() || name.front() != L'@') return name;
+    wchar_t resolved[1024]{};
+    return SUCCEEDED(::SHLoadIndirectString(name.c_str(), resolved, ARRAYSIZE(resolved), nullptr))
+        ? std::wstring(resolved) : std::wstring{};
+}
+
+inline std::wstring SessionDisplayName(const std::wstring& path, bool systemSounds,
+                                      const std::wstring& fallback = {}, std::wstring_view applicationName = {})
 {
     if (systemSounds) return text::Embedded().Resolve(L"audio.session.system_sounds");
-    const std::wstring path = ProcessImagePath(pid);
-    if (path.empty()) return text::Embedded().Resolve(L"audio.session.unknown_app");
+    if (!applicationName.empty()) return std::wstring(applicationName);
+    if (path.empty()) return fallback.empty() ? text::Embedded().Resolve(L"audio.session.unknown_app") : fallback;
     const std::wstring desc = FileDescriptionOf(path);
     if (!desc.empty()) return desc;
     size_t slash = path.find_last_of(L"\\/");
@@ -531,10 +589,9 @@ inline std::wstring SessionDisplayName(DWORD pid, bool systemSounds)
     return stem;
 }
 
-inline std::wstring SessionGroupKey(DWORD pid, bool systemSounds)
+inline std::wstring SessionGroupKey(DWORD pid, bool systemSounds, std::wstring path)
 {
     if (systemSounds) return L"#system";
-    std::wstring path = ProcessImagePath(pid);
     std::transform(path.begin(), path.end(), path.begin(), towlower);
     return path.empty() ? (L"#pid" + std::to_wstring(pid)) : path;
 }
@@ -606,7 +663,7 @@ inline Ptr<IAudioMeterInformation> ResolveSessionMeter(const std::wstring& devId
     return {};
 }
 
-inline bool EnumSessionsOnce(const std::wstring& devId, std::vector<Session>& out)
+inline bool EnumSessionsOnce(const std::wstring& devId, std::vector<Session>& out, bool includeMeters = false)
 {
     out.clear();
     auto e = MakeEnumerator();
@@ -619,6 +676,7 @@ inline bool EnumSessionsOnce(const std::wstring& devId, std::vector<Session>& ou
     int n = 0;
     if (FAILED(list->GetCount(&n))) return false;
 
+    std::size_t discarded = 0;
     for (int i = 0; i < n; ++i) {
         Ptr<IAudioSessionControl> sc;
         if (FAILED(list->GetSession(i, sc.put())) || !sc) continue;
@@ -631,13 +689,28 @@ inline bool EnumSessionsOnce(const std::wstring& devId, std::vector<Session>& ou
         if (s.id.empty()) continue;
 
         s.systemSounds = (c2->IsSystemSoundsSession() == S_OK);
+        bool sharedSession = false;
         if (!s.systemSounds) {
             DWORD pid = 0;
-            if (SUCCEEDED(c2->GetProcessId(&pid))) s.pid = pid;
+            const HRESULT result = c2->GetProcessId(&pid);
+            if (SUCCEEDED(result))
+            {
+                s.pid = pid;
+                sharedSession = result != S_OK;
+            }
         }
 
         AudioSessionState state = AudioSessionStateInactive;
         if (SUCCEEDED(c2->GetState(&state))) s.state = state;
+        if (s.state == AudioSessionStateExpired) { ++discarded; continue; }
+
+        bool exited = false;
+        std::wstring applicationId;
+        const auto path = application::ProcessImagePath(s.pid, &exited, &applicationId);
+        std::wstring fallback;
+        if (!s.systemSounds && path.empty() && (!exited || sharedSession))
+            fallback = ProcessExecutableName(s.pid, exited);
+        if (!s.systemSounds && exited && !sharedSession) { ++discarded; continue; }
 
         Ptr<ISimpleAudioVolume> vol;
         if (SUCCEEDED(sc->QueryInterface(__uuidof(ISimpleAudioVolume), vol.putv())) && vol) {
@@ -645,12 +718,19 @@ inline bool EnumSessionsOnce(const std::wstring& devId, std::vector<Session>& ou
             BOOL m = FALSE;
             if (SUCCEEDED(vol->GetMute(&m))) s.mute = (m != FALSE);
             s.vol = std::move(vol);
+            if (includeMeters) sc->QueryInterface(__uuidof(IAudioMeterInformation), s.meter.putv());
         }
 
-        s.name = SessionDisplayName(s.pid, s.systemSounds);
-        s.key = SessionGroupKey(s.pid, s.systemSounds);
+        auto applicationName = RegisteredApplicationName(applicationId);
+        if (!s.systemSounds && path.empty() && applicationName.empty())
+            applicationName = AudioSessionDisplayName(sc.get());
+        s.name = SessionDisplayName(path, s.systemSounds, fallback, applicationName);
+        s.key = SessionGroupKey(s.pid, s.systemSounds, path);
         out.push_back(std::move(s));
     }
+    if (discarded != 0)
+        log::Logger::Instance().WriteFormat(log::Level::Debug, L"audio", L"Expired or exited audio sessions discarded device={0} count={1}",
+            { devId, std::to_wstring(discarded) });
     return true;
 }
 
@@ -773,7 +853,7 @@ inline Ptr<IAudioPolicyConfigFactory21H2> MakePolicyFactory()
         }
     }
     if (!fn) {
-        log::Logger::Instance().WriteKey(log::Level::Debug, L"audio", L"log.interop.rogetactivationfactory_unavailable");
+        log::Logger::Instance().Write(log::Level::Debug, L"audio", L"RoGetActivationFactory unavailable");
         return {};
     }
 
@@ -787,7 +867,7 @@ inline Ptr<IAudioPolicyConfigFactory21H2> MakePolicyFactory()
     ::WindowsDeleteString(hs);
 
     if (FAILED(hr)) {
-        log::Logger::Instance().WriteKey(log::Level::Debug, L"audio", L"log.interop.policy_factory_activation_failed");
+        log::Logger::Instance().Write(log::Level::Debug, L"audio", L"Windows.Media.Internal.AudioPolicyConfig activation failed");
         return {};
     }
     return f;
@@ -870,7 +950,7 @@ inline Ptr<IPolicyConfig> CreatePolicyConfig()
     const HRESULT created = ::CoCreateInstance(__uuidof(PolicyConfigClient), nullptr, CLSCTX_ALL,
                                                __uuidof(::IUnknown), unknown.putv());
     if (FAILED(created) || !unknown) {
-        log::Logger::Instance().WriteKey(log::Level::Debug, L"audio", L"log.interop.ipolicyconfig_unavailable");
+        log::Logger::Instance().Write(log::Level::Debug, L"audio", L"IPolicyConfig unavailable");
         return {};
     }
 
@@ -883,7 +963,7 @@ inline Ptr<IPolicyConfig> CreatePolicyConfig()
         }
     }
 
-    log::Logger::Instance().WriteKey(log::Level::Debug, L"audio", L"log.interop.ipolicyconfig_unavailable");
+    log::Logger::Instance().Write(log::Level::Debug, L"audio", L"IPolicyConfig unavailable");
     return {};
 }
 
@@ -918,8 +998,8 @@ inline bool SetSystemDefaultEndpointForRole(const std::wstring& rawDeviceId, ERo
     if (FAILED(hr)) {
         wchar_t hex[16] = {};
         ::swprintf_s(hex, L"%08lX", static_cast<unsigned long>(hr));
-        log::Logger::Instance().WriteKeyFormat(log::Level::Debug, L"audio",
-            L"log.interop.set_default_endpoint_failed_role",
+        log::Logger::Instance().WriteFormat(log::Level::Debug, L"audio",
+            L"SetDefaultEndpoint failed role={0} hr=0x{1}",
             { std::to_wstring(static_cast<int>(role)), hex });
         return false;
     }

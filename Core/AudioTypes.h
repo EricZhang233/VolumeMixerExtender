@@ -29,6 +29,56 @@ namespace vmex::audio
         All = 4
     };
 
+    enum class DeviceIcon : std::uint32_t
+    {
+        Recommended = 0,
+        Volume = 1,
+        Display = 2,
+        Speakers = 3,
+        Headphones = 4,
+        Headset = 5,
+        Earbuds = 6,
+        Microphone = 7,
+        Handset = 8,
+        Audio = 9,
+        Bluetooth = 10,
+        Laptop = 11,
+        Projector = 12,
+        Console = 13,
+        SingleEarbud = 14,
+        HearingAid = 15,
+        Usb = 16,
+        Dock = 17,
+        Desktop = 18,
+        Mobile = 19,
+        Mixer = 20,
+        Conference = 21,
+        Casting = 22,
+        MediaPlayer = 23,
+        MediaRecorder = 24,
+        Megaphone = 25,
+        VrHeadset = 26,
+        Camera = 27,
+        RecordingMicrophone = 28,
+        Equalizer = 29,
+        Optical = 30,
+        NetworkAudio = 31,
+        Streaming = 32,
+        AudioShare = 33,
+        Music = 34,
+        ExternalMonitor = 35,
+        WiredUsb = 36,
+        WirelessUsb = 37,
+        MediaReceiver = 38,
+        DisplayAudio = 39,
+        Count
+    };
+
+    constexpr DeviceIcon ResolveDeviceIcon(DeviceIcon recommended, DeviceIcon selection)
+    {
+        return selection == DeviceIcon::Recommended ? recommended : selection;
+    }
+
     enum class SessionState
     {
         Inactive = 0,
@@ -117,6 +167,7 @@ namespace vmex::audio
         std::wstring description;
         DeviceState state = DeviceState::Active;
         bool isDefault = false;
+        DeviceIcon recommendedIcon = DeviceIcon::Speakers;
     };
 
     struct SessionInfo final

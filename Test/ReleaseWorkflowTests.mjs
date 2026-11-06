@@ -47,6 +47,20 @@ check('release build disables testing and retains package verification', () => {
   assert.doesNotMatch(build, /\bctest\b|vmex_tests|--self-test/);
 });
 check('normal configure defaults to tests disabled', () => assert.match(read('CMakeLists.txt'), /option\(BUILD_TESTING "[^"]+" OFF\)\s+include\(CTest\)/));
+check('the distribution omits the removed command-line layer', () => {
+  for (const path of ['CliProgram.cpp', 'CliService.cpp', 'CliService.h', 'Core/CliTypes.cpp', 'Core/CliTypes.h', 'Core/CommandRegistry.cpp', 'Core/CommandRegistry.h']) {
+    assert.equal(existsSync(new URL(path, root)), false, path);
+  }
+  for (const path of ['CMakeLists.txt', 'Core/CMakeLists.txt', 'cmake/Package.cmake', '.github/scripts/build-release.ps1']) {
+    assert.doesNotMatch(read(path), /vmex_cli|CliProgram|CliService|CliTypes|CommandRegistry/);
+  }
+});
+check('diagnostic messages are independent from UI localization', () => {
+  assert.doesNotMatch(read('text.yaml'), /^log\./m);
+  assert.doesNotMatch(read('Core/Logger.h') + read('Core/Logger.cpp'), /ITextResolver|SetResolver|WriteKey/);
+  assert.doesNotMatch(read('Core/UpdateInstaller.cs'), /LoadText|GetManifestResourceStream|log\.update\./);
+  assert.doesNotMatch(read('Components/updater/Updater.csproj'), /text\.yaml|EmbeddedResource/);
+});
 check('promotion retains release success, asset, age and blocking checks', () => {
   const promotion = read('.github/workflows/promote_prerelease.yml');
   for (const required of ["workflow_id: 'post_release.yml'", "latestRun.conclusion !== 'success'", "latestRun.status !== 'completed'", 'asset.size > 0', 'hoursSincePublish >= 48', '[no-release]', 'block-release']) assert.ok(promotion.includes(required));

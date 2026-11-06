@@ -34,7 +34,7 @@ namespace vmex::management
     [[nodiscard]] bool IsHostImage(const std::filesystem::path& image, const std::filesystem::path& directory);
     [[nodiscard]] Snapshot Query();
     Status StartHost();
-    Status StopHost();
+    Status StopHost(bool forUpdate = false);
     Status OpenManager();
     Status OpenPanel();
     Status OpenLogs();

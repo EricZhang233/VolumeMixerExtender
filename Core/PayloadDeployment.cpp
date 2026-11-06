@@ -23,14 +23,14 @@ namespace vmex::inject
         {
             if (!platform::FileExists(file))
             {
-                log::Logger::Instance().WriteKeyFormat(
-                    log::Level::Error, kChannel, L"log.payload.missing", { file.wstring() });
+                log::Logger::Instance().WriteFormat(
+                    log::Level::Error, kChannel, L"Injection payload missing path={0}", { file.wstring() });
                 return Status::Failed(L"missing payload file");
             }
         }
 
-        log::Logger::Instance().WriteKeyFormat(
-            log::Level::Info, kChannel, L"log.payload.deployed", { exeDirectory.wstring() });
+        log::Logger::Instance().WriteFormat(
+            log::Level::Info, kChannel, L"Injection payload deployed directory={0}", { exeDirectory.wstring() });
         return Status::Ok();
     }
 

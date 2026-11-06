@@ -139,7 +139,7 @@ namespace vmex::config
         if (!platform::FileExists(file))
         {
             m_loaded = true;
-            log::Logger::Instance().WriteKeyFormat(log::Level::Info, kChannel, L"log.config.created", { file.wstring() });
+            log::Logger::Instance().WriteFormat(log::Level::Info, kChannel, L"Configuration missing; using defaults path={0}", { file.wstring() });
             return Status::Ok();
         }
 
@@ -160,11 +160,11 @@ namespace vmex::config
         ParseDocument(decoded.text, m_sections);
         m_loaded = true;
 
-        log::Logger::Instance().WriteKeyFormat(log::Level::Info, kChannel, L"log.config.loaded", { file.wstring() });
+        log::Logger::Instance().WriteFormat(log::Level::Info, kChannel, L"Configuration loaded path={0}", { file.wstring() });
 
         if (!SourceEncodingIsCanonical())
         {
-            log::Logger::Instance().WriteKeyFormat(log::Level::Warn, kChannel, L"log.config.encoding",
+            log::Logger::Instance().WriteFormat(log::Level::Warn, kChannel, L"Configuration encoding={0}; expected UTF-16LE BOM",
                 { std::wstring(encoding::ToString(m_sourceEncoding)) });
         }
 
@@ -189,7 +189,7 @@ namespace vmex::config
 
         m_file = file;
         m_sourceEncoding = encoding::Encoding::Utf16LeBom;
-        log::Logger::Instance().WriteKeyFormat(log::Level::Info, kChannel, L"log.config.saved", { file.wstring() });
+        log::Logger::Instance().WriteFormat(log::Level::Info, kChannel, L"Configuration saved path={0}", { file.wstring() });
         return Status::Ok();
     }
 

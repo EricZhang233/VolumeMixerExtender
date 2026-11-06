@@ -11,6 +11,7 @@
 #include "TextService.h"
 #include "UserSettings.h"
 #include "RecordingClient.h"
+#include "RecordingPanelState.h"
 #include "RecordingDriverService.h"
 #include "PanelPresentation.h"
 
@@ -24,6 +25,7 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.UI.h>
 #include <winrt/Windows.UI.Core.h>
+#include <winrt/Windows.UI.Input.h>
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Windows.UI.Xaml.h>
@@ -40,7 +42,10 @@
 #include <cmath>
 #include <atomic>
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -55,6 +60,7 @@ extern int TapPageSendPipe(const char* line);
 struct FooterMount final
 {
     winrt::Windows::UI::Xaml::UIElement systemItem{nullptr};
+    winrt::Windows::UI::Xaml::Controls::Grid row{nullptr};
     bool ok = false;
     const char* reason = "";
 };
@@ -72,6 +78,7 @@ namespace vmex::tap::page
     namespace PGXC  = winrt::Windows::UI::Xaml::Controls;
     namespace PGXCP = winrt::Windows::UI::Xaml::Controls::Primitives;
     namespace PGXM  = winrt::Windows::UI::Xaml::Media;
+    namespace PGXA  = winrt::Windows::UI::Xaml::Media::Animation;
     namespace PGXMI = winrt::Windows::UI::Xaml::Media::Imaging;
     namespace PGXSH = winrt::Windows::UI::Xaml::Shapes;
     namespace PGXAU = winrt::Windows::UI::Xaml::Automation;
@@ -79,13 +86,10 @@ namespace vmex::tap::page
     namespace PGF   = winrt::Windows::Foundation;
     namespace PGXIN = winrt::Windows::UI::Xaml::Input;
 
-    inline void LogKey(std::wstring_view key, const std::vector<std::wstring>& args = {})
+    inline void Log(std::wstring_view message, const std::vector<std::wstring>& args = {},
+        std::source_location location = std::source_location::current())
     {
-        static std::once_flag attach;
-        std::call_once(attach, []() { text::AttachEmbeddedToLogger(); });
-
-        const std::wstring resolved = text::Embedded().ResolveFormat(key, args);
-        log::Logger::Instance().Write(log::Level::Debug, L"page", resolved);
+        log::Logger::Instance().WriteFormat(log::Level::Debug, L"page", message, args, location);
     }
 
     inline std::string Narrow(const std::wstring& value)
@@ -107,7 +111,7 @@ namespace vmex::tap::page
     struct State final
     {
         bool recordingMode = false;
-        std::wstring savedDefaultRender;
+        bool recordingAvailable = false;
         std::wstring listenEndpoint;
         bool showDriverName = true;
         int page = 0;
@@ -129,22 +133,40 @@ namespace vmex::tap::page
     struct PageData final : presentation::DeviceSnapshot
     {
         std::vector<audio::AppSessionInfo> apps;
-        std::vector<std::unique_ptr<audio::IAudioSessionHandle>> handles;
+        std::vector<std::shared_ptr<audio::IAudioSessionHandle>> handles;
     };
 
     struct AppRowBinding final
     {
         std::shared_ptr<std::atomic_bool> dragging = std::make_shared<std::atomic_bool>(false);
         std::shared_ptr<std::atomic_bool> synchronizing = std::make_shared<std::atomic_bool>(false);
-        audio::IAudioSessionHandle* handle = nullptr;
+        std::shared_ptr<audio::IAudioSessionHandle> handle;
+        bool active = true;
         std::wstring appKey;
         PGXC::Slider slider{nullptr};
         PGXC::Button mute{nullptr};
-        unsigned statePollTicks = 0;
+    };
+
+    struct AppRowMotion final
+    {
+        PGXA::Storyboard animation{nullptr};
+        bool removing = false;
+    };
+
+    struct EndpointIconPicker final
+    {
+        PGXC::Button anchor;
+        PGXC::Grid row;
+        PGXC::StackPanel name;
+        PGXC::StackPanel controls;
+        PGXC::ScrollViewer view;
+        PGXM::SolidColorBrush selectedOutline;
     };
 
     struct Context;
     using ContextPtr = std::shared_ptr<Context>;
+    using presentation::MeterClock;
+    using MeterUpdate = std::function<void(const presentation::MeterFrame&)>;
 
     struct Context final
     {
@@ -155,14 +177,26 @@ namespace vmex::tap::page
         PGX::FrameworkElement pageWindow{nullptr};
         PGF::IInspectable savedContent{nullptr};
         PGXC::Button slotLeft{nullptr};
+        PGXC::Button slotEdit{nullptr};
         PGXC::Button slotMid{nullptr};
         PGXC::Button slotRight{nullptr};
+        PGXC::Button slotRecording{nullptr};
+        PGXC::Grid footerRow{nullptr};
         PGX::UIElement systemItem{nullptr};
         std::map<std::wstring, std::wstring> redirects;
         std::vector<std::shared_ptr<audio::detail::EndpointVolumeMonitor>> endpointMonitors;
-        std::vector<PGX::DispatcherTimer> meterTimers;
-        std::vector<PGX::DispatcherTimer> endpointMeterTimers;
+        std::vector<std::shared_ptr<MeterUpdate>> appMeters;
+        std::vector<std::shared_ptr<MeterUpdate>> endpointMeters;
+        std::optional<PGXM::CompositionTarget::Rendering_revoker> meterRendering;
+        std::uint64_t meterGeneration = 0;
         PGXC::StackPanel customRoot{nullptr};
+        PGXC::Grid volumeLayer{nullptr};
+        PGXC::ListView renderRows{nullptr};
+        PGXC::ListView captureRows{nullptr};
+        std::vector<PGXC::Button> endpointIcons;
+        std::optional<EndpointIconPicker> endpointIconPicker;
+        PGXC::StackPanel appRows{nullptr};
+        std::map<std::wstring, AppRowMotion> appRowMotions;
         PGXC::TextBlock volumeLabel{nullptr};
         std::optional<presentation::DeviceSnapshot> renderedDevices;
         std::vector<std::shared_ptr<AppRowBinding>> rows;
@@ -171,17 +205,18 @@ namespace vmex::tap::page
         PGX::DispatcherTimer recordingTimer{nullptr};
         PGX::DispatcherTimer recordingActionTimer{nullptr};
         PGX::DispatcherTimer deviceSelectionTimer{nullptr};
-        PGXC::ToggleSwitch recordingToggle{nullptr};
         PGXC::TextBlock recordingFeedback{nullptr};
+        bool editing = false;
         bool recordingBusy = false;
         bool recordingChanging = false;
+        std::optional<bool> recordingTarget;
         presentation::PendingSelection<bool> pendingRecording;
         presentation::PendingSelection<std::wstring> pendingRenderSelection;
         presentation::PendingSelection<std::wstring> pendingCaptureSelection;
-        presentation::DeviceSnapshotBuffer deviceBuffer;
         bool environmentRefreshRequired = false;
-        bool recordingSynchronizing = false;
         bool recordingAvailable = false;
+        bool active = true;
+        bool updatingPage = false;
         std::shared_ptr<PageData> data;
 
         bool mounting = false;
@@ -198,6 +233,37 @@ namespace vmex::tap::page
         unsigned long long lastIdentifyTick = 0;
     };
 
+    struct PageUpdate final
+    {
+        explicit PageUpdate(bool& updating) : value(updating) { value = true; }
+        ~PageUpdate() { value = false; }
+        bool& value;
+    };
+
+    inline void StartMeterUpdates(ContextPtr const& context)
+    {
+        if (context->meterRendering || (context->endpointMeters.empty() && context->appMeters.empty())) return;
+        const auto generation = ++context->meterGeneration;
+        const std::weak_ptr<Context> weak = context;
+        context->meterRendering.emplace(PGXM::CompositionTarget::Rendering(winrt::auto_revoke,
+            [weak, generation, cadence = presentation::MeterCadence{}](auto const&, auto const&) mutable
+            {
+                const auto live = weak.lock();
+                if (!live || !live->active || live->meterGeneration != generation) return;
+                const auto frame = cadence.Tick(MeterClock::now());
+                if (!frame) return;
+                for (const auto* rows : { &live->endpointMeters, &live->appMeters })
+                {
+                    for (std::size_t index = 0; live->meterGeneration == generation && index < rows->size(); ++index)
+                    {
+                        const auto update = (*rows)[index];
+                        (*update)(*frame);
+                    }
+                }
+            }));
+        Log(L"Meter rendering started frameLimitHz=60 sampleRateHz=30");
+    }
+
     inline PGXC::TextBlock Text(winrt::hstring const& value, double size)
     {
         PGXC::TextBlock block;
@@ -208,6 +274,11 @@ namespace vmex::tap::page
     }
 
     inline constexpr double kBodyInset = 8.0;
+    inline constexpr double kAudioRowLeadingInset = 8.0;
+    inline constexpr double kAudioRowTrailingInset = 12.0;
+    inline constexpr double kAudioRowIconWidth = 24.0;
+    inline constexpr double kAudioRowIconGap = 4.0;
+    inline constexpr double kVolumeSliderWidth = 120.0;
     inline constexpr bool kRecordingModeEnabled = true;
 
     inline PGXC::TextBlock SectionLabel(winrt::hstring const& value)
@@ -275,10 +346,10 @@ namespace vmex::tap::page
         return grid;
     }
 
-    inline PGXC::TextBlock Glyph(wchar_t const* code, double size)
+    inline PGXC::TextBlock Glyph(wchar_t const* code, double size, wchar_t const* font = L"Segoe MDL2 Assets")
     {
         PGXC::TextBlock block = Text(code, size);
-        block.FontFamily(PGXM::FontFamily(L"Segoe MDL2 Assets"));
+        block.FontFamily(PGXM::FontFamily(font));
         block.VerticalAlignment(PGX::VerticalAlignment::Center);
         block.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 10, 0));
         return block;
@@ -312,31 +383,12 @@ namespace vmex::tap::page
         return ui.GetColorValue(winrt::Windows::UI::ViewManagement::UIColorType::Accent);
     }
 
-    [[nodiscard]] inline PGXM::SolidColorBrush AccentBrush()
+    [[nodiscard]] inline PGXM::SolidColorBrush AccentBrush(double opacity = 1.0)
     {
-        return PGXM::SolidColorBrush(AccentColor());
-    }
-
-    [[nodiscard]] inline PGXM::SolidColorBrush DimAccentBrush()
-    {
-        static thread_local winrt::Windows::UI::ViewManagement::UISettings ui;
-        static thread_local winrt::Windows::UI::ViewManagement::AccessibilitySettings accessibility;
-        auto color = AccentColor();
-        if (accessibility.HighContrast())
-        {
-            color = ui.UIElementColor(winrt::Windows::UI::ViewManagement::UIElementType::Highlight);
-        }
-        else
-        {
-            color.R = static_cast<std::uint8_t>(color.R * 0.5f);
-            color.G = static_cast<std::uint8_t>(color.G * 0.5f);
-            color.B = static_cast<std::uint8_t>(color.B * 0.5f);
-        }
-        static thread_local PGXM::SolidColorBrush brush(color);
-        if (brush.Color() != color) brush.Color(color);
+        const auto brush = PGXM::SolidColorBrush(AccentColor());
+        if (opacity != 1.0) brush.Opacity(opacity);
         return brush;
     }
-
 
     [[nodiscard]] inline winrt::hstring MuteGlyph(bool muted)
     {
@@ -371,16 +423,9 @@ namespace vmex::tap::page
         slider.Minimum(0);
         slider.Maximum(100);
         slider.Value(level * 100.0);
-        slider.Width(150);
+        slider.Width(kVolumeSliderWidth);
         slider.MinHeight(0);
         slider.VerticalAlignment(PGX::VerticalAlignment::Center);
-        const auto track = DimAccentBrush();
-        slider.Foreground(track);
-        for (auto key : { L"SliderTrackValueFill", L"SliderTrackValueFillPointerOver", L"SliderTrackValueFillPressed",
-                          L"SliderThumbBackground", L"SliderThumbBackgroundPointerOver", L"SliderThumbBackgroundPressed" })
-        {
-            slider.Resources().Insert(winrt::box_value(key), track);
-        }
         return slider;
     }
 
@@ -404,82 +449,450 @@ namespace vmex::tap::page
         }
     }
 
+    struct MeterBand final
+    {
+        PGXM::PathFigure figure;
+        std::array<PGXM::LineSegment, 4> edges;
+        std::array<PGXM::QuadraticBezierSegment, 4> corners;
+        PGF::Rect bounds{};
+
+        MeterBand()
+        {
+            figure.IsClosed(true);
+            const auto segments = figure.Segments();
+            for (std::size_t index = 0; index < edges.size(); ++index)
+            {
+                segments.Append(edges[index]);
+                segments.Append(corners[index]);
+            }
+        }
+
+        void Update(PGF::Rect next, float topLeft, float topRight, float bottomRight, float bottomLeft)
+        {
+            if (bounds == next) return;
+            bounds = next;
+            const auto [x, top, width, height] = bounds;
+            const float right = x + width;
+            const float bottom = top + height;
+            const float limit = std::min(width / 2.0f, height);
+            topLeft = std::min(topLeft, limit);
+            topRight = std::min(topRight, limit);
+            bottomRight = std::min(bottomRight, limit);
+            bottomLeft = std::min(bottomLeft, limit);
+            const std::array vertices{ PGF::Point{ right, top }, PGF::Point{ right, bottom },
+                                       PGF::Point{ x, bottom }, PGF::Point{ x, top } };
+            const std::array before{ PGF::Point{ right - topRight, top }, PGF::Point{ right, bottom - bottomRight },
+                                     PGF::Point{ x + bottomLeft, bottom }, PGF::Point{ x, top + topLeft } };
+            const std::array after{ PGF::Point{ right, top + topRight }, PGF::Point{ right - bottomRight, bottom },
+                                    PGF::Point{ x, bottom - bottomLeft }, PGF::Point{ x + topLeft, top } };
+            figure.IsFilled(width > 0);
+            figure.StartPoint(after.back());
+            for (std::size_t index = 0; index < edges.size(); ++index)
+            {
+                edges[index].Point(before[index]);
+                corners[index].Point1(vertices[index]);
+                corners[index].Point2(after[index]);
+            }
+        }
+    };
+
     struct StereoMeter final
     {
         PGXC::Grid layer{nullptr};
-        PGXSH::Rectangle left{nullptr};
-        PGXSH::Rectangle right{nullptr};
+        PGXC::Canvas overlay{nullptr};
+        PGX::DependencyObject templateRoot{nullptr};
+        PGXSH::Shape track{nullptr};
+        PGXSH::Shape volumeFill{nullptr};
+        PGX::FrameworkElement thumb{nullptr};
+        PGXSH::Path shape{nullptr};
+        MeterBand left;
+        MeterBand right;
+        PGXM::LinearGradientBrush brush{nullptr};
+        presentation::MeterLevel leftLevel;
+        presentation::MeterLevel rightLevel;
+
+        void Sample(float leftPeak, float rightPeak)
+        {
+            leftLevel.Sample(leftPeak);
+            rightLevel.Sample(rightPeak);
+        }
     };
 
-    inline PGXM::SolidColorBrush MeterBrush()
+    inline void UpdateMeterBrush(StereoMeter const& meter, PGXC::Slider const& slider, PGF::Rect const& bounds)
     {
-        static thread_local winrt::Windows::UI::ViewManagement::UISettings ui;
         static thread_local winrt::Windows::UI::ViewManagement::AccessibilitySettings accessibility;
-        auto color = AccentColor();
+        auto foreground = meter.volumeFill.Fill().try_as<PGXM::SolidColorBrush>();
+        if (!foreground) foreground = slider.Foreground().try_as<PGXM::SolidColorBrush>();
+        auto accent = foreground ? foreground.Color() : AccentColor();
+        const auto rail = meter.track.Fill().try_as<PGXM::SolidColorBrush>();
+        auto gray = rail && rail.Color().A == 255 && rail.Opacity() == 1
+            ? rail.Color() : PGUI::Color{ 255, 128, 128, 128 };
         if (accessibility.HighContrast())
         {
-            color = ui.UIElementColor(winrt::Windows::UI::ViewManagement::UIElementType::Hotlight);
+            static thread_local winrt::Windows::UI::ViewManagement::UISettings ui;
+            accent = ui.UIElementColor(winrt::Windows::UI::ViewManagement::UIElementType::Hotlight);
+            gray = ui.UIElementColor(winrt::Windows::UI::ViewManagement::UIElementType::GrayText);
         }
-        else
+        accent.A = 255;
+        gray.A = 255;
+
+        const auto thumbCenter = meter.thumb.TransformToVisual(meter.overlay)
+            .TransformPoint({ static_cast<float>(meter.thumb.ActualWidth() / 2.0), 0 });
+        const auto split = std::clamp(static_cast<double>(thumbCenter.X - bounds.X) / bounds.Width, 0.0, 1.0);
+        const PGF::Point end{ bounds.Width, 0 };
+        if (meter.brush.EndPoint() != end) meter.brush.EndPoint(end);
+        const auto stops = meter.brush.GradientStops();
+        const auto leading = stops.GetAt(0);
+        const auto accentEdge = stops.GetAt(1);
+        const auto grayEdge = stops.GetAt(2);
+        const auto trailing = stops.GetAt(3);
+        if (leading.Color() != accent)
         {
-            color.R = static_cast<std::uint8_t>(color.R + (255 - color.R) * 0.5f);
-            color.G = static_cast<std::uint8_t>(color.G + (255 - color.G) * 0.5f);
-            color.B = static_cast<std::uint8_t>(color.B + (255 - color.B) * 0.5f);
+            leading.Color(accent);
+            accentEdge.Color(accent);
         }
-        static thread_local PGXM::SolidColorBrush brush(color);
-        if (brush.Color() != color) brush.Color(color);
-        return brush;
+        if (trailing.Color() != gray)
+        {
+            grayEdge.Color(gray);
+            trailing.Color(gray);
+        }
+        if (accentEdge.Offset() != split)
+        {
+            accentEdge.Offset(split);
+            grayEdge.Offset(split);
+        }
     }
 
     inline StereoMeter MakeStereoMeter()
     {
         StereoMeter meter;
         meter.layer = PGXC::Grid();
-        meter.layer.Width(150);
+        meter.layer.Width(kVolumeSliderWidth);
         meter.layer.Height(32);
         meter.layer.UseLayoutRounding(true);
-
-        meter.left = PGXSH::Rectangle();
-        meter.right = PGXSH::Rectangle();
-        for (const auto& bar : { meter.left, meter.right })
+        meter.overlay = PGXC::Canvas();
+        meter.overlay.IsHitTestVisible(false);
+        meter.brush = PGXM::LinearGradientBrush();
+        meter.brush.MappingMode(PGXM::BrushMappingMode::Absolute);
+        meter.brush.StartPoint({ 0, 0 });
+        for (const double offset : { 0.0, 0.5, 0.5, 1.0 })
         {
-            bar.Width(0);
-            bar.Height(2);
-            bar.IsHitTestVisible(false);
-            bar.HorizontalAlignment(PGX::HorizontalAlignment::Left);
-            bar.VerticalAlignment(PGX::VerticalAlignment::Center);
+            PGXM::GradientStop stop;
+            stop.Offset(offset);
+            meter.brush.GradientStops().Append(stop);
         }
-        const auto accent = MeterBrush();
-        meter.left.Fill(accent);
-        meter.right.Fill(accent);
-        meter.left.Margin(PGX::ThicknessHelper::FromLengths(6, -3, 6, 0));
-        meter.right.Margin(PGX::ThicknessHelper::FromLengths(6, 3, 6, 0));
+
+        PGXM::PathGeometry geometry;
+        geometry.FillRule(PGXM::FillRule::Nonzero);
+        for (const auto& figure : { meter.left.figure, meter.right.figure })
+            geometry.Figures().Append(figure);
+        meter.shape = PGXSH::Path();
+        meter.shape.Data(geometry);
+        meter.shape.Fill(meter.brush);
+        meter.shape.Stretch(PGXM::Stretch::None);
+        meter.shape.IsHitTestVisible(false);
+        meter.shape.Visibility(PGX::Visibility::Collapsed);
+        meter.overlay.Children().Append(meter.shape);
         return meter;
     }
 
-    inline void UpdateStereoMeter(StereoMeter const& meter, PGXC::Slider const& slider,
-                                  float leftPeak, float rightPeak)
+    inline PGX::FrameworkElement FindSliderPart(PGX::DependencyObject const& node, std::wstring_view name)
     {
-        const double trackWidth = std::max(0.0, slider.ActualWidth() - 12.0);
-        const auto track = DimAccentBrush();
-        if (slider.Foreground() != track) slider.Foreground(track);
-        const auto brush = MeterBrush();
-        meter.left.Fill(brush);
-        meter.right.Fill(brush);
-        const double volume = std::clamp(slider.Value() / 100.0, 0.0, 1.0);
-        meter.left.Width(trackWidth * std::clamp(static_cast<double>(leftPeak), 0.0, 1.0) * volume);
-        meter.right.Width(trackWidth * std::clamp(static_cast<double>(rightPeak), 0.0, 1.0) * volume);
+        if (auto element = node.try_as<PGX::FrameworkElement>();
+            element && std::wstring_view(element.Name()) == name) return element;
+        const int count = PGXM::VisualTreeHelper::GetChildrenCount(node);
+        for (int index = 0; index < count; ++index)
+        {
+            if (auto part = FindSliderPart(PGXM::VisualTreeHelper::GetChild(node, index), name)) return part;
+        }
+        return nullptr;
+    }
+
+    inline void MountStereoMeter(StereoMeter& meter, PGX::DependencyObject const& root)
+    {
+        if (auto previous = PGXM::VisualTreeHelper::GetParent(meter.overlay).try_as<PGXC::Grid>())
+        {
+            std::uint32_t index = 0;
+            if (previous.Children().IndexOf(meter.overlay, index)) previous.Children().RemoveAt(index);
+        }
+        meter.templateRoot = root;
+        meter.track = nullptr;
+        meter.volumeFill = nullptr;
+        meter.thumb = nullptr;
+        if (!root) return;
+
+        const auto track = FindSliderPart(root, L"HorizontalTrackRect").try_as<PGXSH::Shape>();
+        const auto volumeFill = FindSliderPart(root, L"HorizontalDecreaseRect").try_as<PGXSH::Shape>();
+        const auto thumb = FindSliderPart(root, L"HorizontalThumb");
+        if (!track || !volumeFill || !thumb) return;
+        const auto parent = PGXM::VisualTreeHelper::GetParent(track).try_as<PGXC::Grid>();
+        if (!parent || PGXM::VisualTreeHelper::GetParent(volumeFill) != parent ||
+            PGXM::VisualTreeHelper::GetParent(thumb) != parent) return;
+
+        int highest = 0;
+        for (const auto& child : parent.Children())
+        {
+            if (child != thumb) highest = std::max(highest, PGXC::Canvas::GetZIndex(child));
+        }
+        if (highest > std::numeric_limits<int>::max() - 3) return;
+
+        PGXC::Grid::SetRowSpan(meter.overlay, static_cast<int>(std::max(1u, parent.RowDefinitions().Size())));
+        PGXC::Grid::SetColumnSpan(meter.overlay, static_cast<int>(std::max(1u, parent.ColumnDefinitions().Size())));
+        PGXC::Canvas::SetZIndex(meter.overlay, highest + 1);
+        PGXC::Canvas::SetZIndex(volumeFill, highest + 2);
+        PGXC::Canvas::SetZIndex(thumb, highest + 3);
+        parent.Children().Append(meter.overlay);
+        meter.track = track;
+        meter.volumeFill = volumeFill;
+        meter.thumb = thumb;
+    }
+
+    inline void UpdateStereoMeter(StereoMeter& meter, PGXC::Slider const& slider,
+                                  MeterClock::duration elapsed)
+    {
+        const float leftPeak = meter.leftLevel.Advance(elapsed);
+        const float rightPeak = meter.rightLevel.Advance(elapsed);
+        const auto root = PGXM::VisualTreeHelper::GetChildrenCount(slider) != 0
+            ? PGXM::VisualTreeHelper::GetChild(slider, 0) : nullptr;
+        if (meter.templateRoot != root || !meter.track || !PGXM::VisualTreeHelper::GetParent(meter.track))
+        {
+            MountStereoMeter(meter, root);
+        }
+        if (!meter.track)
+        {
+            meter.shape.Visibility(PGX::Visibility::Collapsed);
+            return;
+        }
+        for (const auto& part : { meter.track, meter.volumeFill })
+        {
+            if (const auto rectangle = part.try_as<PGXSH::Rectangle>())
+            {
+                const double radius = rectangle.ActualHeight() / 2.0;
+                if (rectangle.RadiusX() != radius) rectangle.RadiusX(radius);
+                if (rectangle.RadiusY() != radius) rectangle.RadiusY(radius);
+            }
+        }
+        if ((leftPeak == 0 && rightPeak == 0) ||
+            meter.track.ActualWidth() <= 0 || meter.track.ActualHeight() <= 0 || meter.thumb.ActualWidth() <= 0)
+        {
+            if (meter.shape.Visibility() != PGX::Visibility::Collapsed)
+                meter.shape.Visibility(PGX::Visibility::Collapsed);
+            return;
+        }
+        const auto bounds = meter.track.TransformToVisual(meter.overlay).TransformBounds({ 0, 0,
+            static_cast<float>(meter.track.ActualWidth()), static_cast<float>(meter.track.ActualHeight()) });
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            meter.shape.Visibility(PGX::Visibility::Collapsed);
+            return;
+        }
+        const float channelHeight = bounds.Height * 0.875f;
+        const float shoulder = channelHeight - bounds.Height / 2.0f;
+        const auto leftWidth = bounds.Width * leftPeak;
+        const auto rightWidth = bounds.Width * rightPeak;
+        if (PGXC::Canvas::GetLeft(meter.shape) != bounds.X) PGXC::Canvas::SetLeft(meter.shape, bounds.X);
+        if (PGXC::Canvas::GetTop(meter.shape) != bounds.Y - shoulder) PGXC::Canvas::SetTop(meter.shape, bounds.Y - shoulder);
+        meter.left.Update({ 0, 0, leftWidth, channelHeight }, channelHeight, shoulder, 0, 0);
+        meter.right.Update({ 0, channelHeight, rightWidth, channelHeight }, 0, 0, shoulder, channelHeight);
+        UpdateMeterBrush(meter, slider, bounds);
+        if (meter.shape.Visibility() != PGX::Visibility::Visible) meter.shape.Visibility(PGX::Visibility::Visible);
     }
 
     inline void SendSetDefault(bool render, const std::wstring& deviceId);
     winrt::fire_and_forget RefreshRecording(ContextPtr context, std::wstring action, std::wstring device = {});
+    inline void RefreshFooter(ContextPtr const& context);
     inline void MountPage(ContextPtr const& context, int page, const presentation::DeviceSnapshot* snapshot = nullptr);
     inline void LoadData(ContextPtr const& context, const presentation::DeviceSnapshot* snapshot = nullptr);
     inline void SyncAppTargets(ContextPtr const& context);
     inline void ScheduleSettleSync(ContextPtr const& context);
     inline void RefreshEnvironmentNow(ContextPtr const& context);
-    inline void ScheduleEnvironmentRefresh(ContextPtr const& context);
+    inline void ScheduleEnvironmentRefresh(ContextPtr const& context,
+        std::chrono::milliseconds delay = std::chrono::milliseconds(16));
     [[nodiscard]] inline bool IsInLiveTree(PGX::DependencyObject const& node);
+
+    inline void SetButtonLabel(PGXC::Button const& button, std::wstring_view key,
+        const std::vector<std::wstring>& args = {})
+    {
+        const auto label = winrt::hstring(text::Embedded().ResolveFormat(key, args));
+        PGXC::ToolTipService::SetToolTip(button, winrt::box_value(label));
+        PGXAU::AutomationProperties::SetName(button, label);
+    }
+
+    struct EndpointIconOption final
+    {
+        const wchar_t* glyph;
+        std::wstring_view label;
+    };
+
+    inline constexpr std::array<EndpointIconOption, static_cast<std::size_t>(audio::DeviceIcon::Count)> kEndpointIcons{{
+        { nullptr, L"page.device.icon.recommended" },
+        { L"\xE767", L"page.device.icon.volume" },
+        { L"\xE7F4", L"page.device.icon.display" },
+        { L"\xE7F5", L"page.device.icon.speakers" },
+        { L"\xE7F6", L"page.device.icon.headphones" },
+        { L"\xE95B", L"page.device.icon.headset" },
+        { L"\xF4C0", L"page.device.icon.earbuds" },
+        { L"\xE720", L"page.device.icon.microphone" },
+        { L"\xE717", L"page.device.icon.handset" },
+        { L"\xE8D6", L"page.device.icon.audio" },
+        { L"\xE702", L"page.device.icon.bluetooth" },
+        { L"\xE7F7", L"page.device.icon.laptop" },
+        { L"\xE95D", L"page.device.icon.projector" },
+        { L"\xE967", L"page.device.icon.console" },
+        { L"\xF27C", L"page.device.icon.singleEarbud" },
+        { L"\xF27F", L"page.device.icon.hearingAid" },
+        { L"\xE88E", L"page.device.icon.usb" },
+        { L"\xE952", L"page.device.icon.dock" },
+        { L"\xE977", L"page.device.icon.desktop" },
+        { L"\xE8EA", L"page.device.icon.mobile" },
+        { L"\xF4C3", L"page.device.icon.mixer" },
+        { L"\xE8AA", L"page.device.icon.conference" },
+        { L"\xF117", L"page.device.icon.casting" },
+        { L"\xE955", L"page.device.icon.mediaPlayer" },
+        { L"\xE954", L"page.device.icon.mediaRecorder" },
+        { L"\xE789", L"page.device.icon.megaphone" },
+        { L"\xEC94", L"page.device.icon.vrHeadset" },
+        { L"\xE722", L"page.device.icon.camera" },
+        { L"\xF12E", L"page.device.icon.recordingMicrophone" },
+        { L"\xE9E9", L"page.device.icon.equalizer" },
+        { L"\xE958", L"page.device.icon.optical" },
+        { L"\xE953", L"page.device.icon.networkAudio" },
+        { L"\xE93E", L"page.device.icon.streaming" },
+        { L"\xF539", L"page.device.icon.audioShare" },
+        { L"\xEC4F", L"page.device.icon.music" },
+        { L"\xE7F9", L"page.device.icon.externalMonitor" },
+        { L"\xECF0", L"page.device.icon.wiredUsb" },
+        { L"\xECF1", L"page.device.icon.wirelessUsb" },
+        { L"\xED47", L"page.device.icon.mediaReceiver" },
+        { L"\xE7F3", L"page.device.icon.displayAudio" }
+    }};
+
+    inline constexpr wchar_t kEndpointIconFont[] = L"Segoe Fluent Icons";
+    inline constexpr double kEndpointIconEditOpacity = 0.13;
+
+    inline void SetEndpointIconPointerBackgrounds(PGXC::Button const& button, double opacity)
+    {
+        const auto resources = button.Resources();
+        resources.Insert(winrt::box_value(L"ButtonBackgroundPointerOver"), AccentBrush(opacity + 0.06));
+        resources.Insert(winrt::box_value(L"ButtonBackgroundPressed"), AccentBrush(opacity + 0.12));
+    }
+
+    inline void SetEndpointIconEditing(PGXC::Button const& button, bool editing)
+    {
+        button.IsHitTestVisible(editing);
+        button.IsTabStop(editing);
+        button.Background(editing ? AccentBrush(kEndpointIconEditOpacity) : nullptr);
+    }
+
+    inline void CloseEndpointIconPicker(ContextPtr const& context)
+    {
+        const auto picker = std::exchange(context->endpointIconPicker, std::nullopt);
+        if (!picker) return;
+        const auto children = picker->row.Children();
+        std::uint32_t index = 0;
+        if (children.IndexOf(picker->view, index)) children.RemoveAt(index);
+        picker->name.Visibility(PGX::Visibility::Visible);
+        picker->controls.Visibility(PGX::Visibility::Visible);
+    }
+
+    inline void ToggleEndpointIconPicker(ContextPtr const& context, PGXC::Button const& anchor, PGXC::Grid const& row,
+        PGXC::StackPanel const& name, PGXC::StackPanel const& controls,
+        const std::wstring& deviceId, audio::DeviceIcon recommended)
+    {
+        const bool wasOpen = context->endpointIconPicker && context->endpointIconPicker->anchor == anchor;
+        CloseEndpointIconPicker(context);
+        if (wasOpen) return;
+
+        PGXC::ScrollViewer picker;
+        picker.HorizontalScrollMode(PGXC::ScrollMode::Enabled);
+        picker.HorizontalScrollBarVisibility(PGXC::ScrollBarVisibility::Hidden);
+        picker.VerticalScrollMode(PGXC::ScrollMode::Disabled);
+        picker.VerticalScrollBarVisibility(PGXC::ScrollBarVisibility::Disabled);
+        picker.VerticalAlignment(PGX::VerticalAlignment::Center);
+        picker.Height(34);
+        picker.IsTabStop(false);
+
+        PGXC::StackPanel strip;
+        strip.Orientation(PGXC::Orientation::Horizontal);
+        const auto selected = settings::ReadDeviceIcon(deviceId);
+        const auto accent = AccentColor();
+        PGXM::SolidColorBrush selectedOutline{nullptr};
+        const auto weak = std::weak_ptr<Context>(context);
+        const auto weakAnchor = winrt::make_weak(anchor);
+        for (std::size_t index = 0; index < kEndpointIcons.size(); ++index)
+        {
+            const auto choice = static_cast<audio::DeviceIcon>(index);
+            const auto& visual = kEndpointIcons[static_cast<std::size_t>(audio::ResolveDeviceIcon(recommended, choice))];
+            const auto button = BareButton(L"");
+            button.MinWidth(0);
+            button.Width(34);
+            button.Height(32);
+            button.Padding(PGX::ThicknessHelper::FromUniformLength(0));
+            button.Margin(PGX::ThicknessHelper::FromLengths(0, 0, index == 0 ? 8 : 2, 0));
+            const auto glyph = Glyph(visual.glyph, 16, kEndpointIconFont);
+            glyph.Margin(PGX::ThicknessHelper::FromUniformLength(0));
+            button.Content(glyph);
+            const auto outline = PGXM::SolidColorBrush(accent);
+            outline.Opacity(choice == selected ? 1.0 : 0.0);
+            button.BorderBrush(outline);
+            button.BorderThickness(PGX::ThicknessHelper::FromUniformLength(1));
+            button.Resources().Insert(winrt::box_value(L"ButtonBorderBrushPointerOver"), outline);
+            button.Resources().Insert(winrt::box_value(L"ButtonBorderBrushPressed"), outline);
+            if (choice == selected) selectedOutline = outline;
+            if (choice == audio::DeviceIcon::Recommended)
+            {
+                constexpr double recommendedOpacity = 0.08;
+                button.Background(AccentBrush(recommendedOpacity));
+                SetEndpointIconPointerBackgrounds(button, recommendedOpacity);
+                SetButtonLabel(button, kEndpointIcons[index].label, { text::Embedded().Resolve(visual.label) });
+            }
+            else
+                SetButtonLabel(button, visual.label);
+            const auto label = PGXAU::AutomationProperties::GetName(button);
+            button.Click([weak, weakAnchor, deviceId, recommended, choice, outline, label]
+                (PGF::IInspectable const& sender, auto const&)
+            {
+                const auto live = weak.lock();
+                const auto icon = weakAnchor.get();
+                if (!live || !live->active || !live->editing || !icon ||
+                    !live->endpointIconPicker || live->endpointIconPicker->anchor != icon) return;
+                const auto option = sender.as<PGXC::Button>();
+                if (!settings::WriteDeviceIcon(deviceId, choice))
+                {
+                    SetButtonLabel(option, L"page.device.icon.saveFailed");
+                    return;
+                }
+                PGXC::ToolTipService::SetToolTip(option, winrt::box_value(label));
+                PGXAU::AutomationProperties::SetName(option, label);
+                const auto visual = audio::ResolveDeviceIcon(recommended, choice);
+                icon.Content().as<PGXC::TextBlock>().Text(kEndpointIcons[static_cast<std::size_t>(visual)].glyph);
+                auto& current = live->endpointIconPicker->selectedOutline;
+                if (current != outline)
+                {
+                    current.Opacity(0);
+                    outline.Opacity(1);
+                    current = outline;
+                }
+            });
+            strip.Children().Append(button);
+        }
+        strip.PointerWheelChanged([weakPicker = winrt::make_weak(picker)](auto const&, PGXIN::PointerRoutedEventArgs const& args)
+        {
+            const auto view = weakPicker.get();
+            const auto wheel = args.GetCurrentPoint(nullptr).Properties();
+            if (!view || wheel.IsHorizontalMouseWheel() || view.ScrollableWidth() <= 0) return;
+            const double offset = view.HorizontalOffset() - 102.0 * wheel.MouseWheelDelta() / WHEEL_DELTA;
+            view.ChangeView(std::clamp(offset, 0.0, view.ScrollableWidth()), nullptr, nullptr, true);
+            args.Handled(true);
+        });
+        picker.Content(strip);
+        PGXC::Grid::SetColumn(picker, 1);
+        PGXC::Grid::SetColumnSpan(picker, 2);
+        name.Visibility(PGX::Visibility::Collapsed);
+        controls.Visibility(PGX::Visibility::Collapsed);
+        row.Children().Append(picker);
+        context->endpointIconPicker.emplace(EndpointIconPicker{ anchor, row, name, controls, picker, selectedOutline });
+    }
 
     inline PGXC::Grid MakeEndpointRow(ContextPtr const& context, const audio::DeviceInfo& device)
     {
@@ -493,8 +906,21 @@ namespace vmex::tap::page
         }
 
         PGXC::Grid grid = Row(44);
-        PGXC::TextBlock icon = Glyph(L"\xE7F5", 14);
-        icon.Width(14);
+        const auto choice = audio::ResolveDeviceIcon(device.recommendedIcon, settings::ReadDeviceIcon(device.id));
+        const auto glyph = Glyph(kEndpointIcons[static_cast<std::size_t>(choice)].glyph, 14, kEndpointIconFont);
+        glyph.Margin(PGX::ThicknessHelper::FromUniformLength(0));
+        const auto icon = BareButton(L"");
+        icon.MinWidth(0);
+        icon.Width(kAudioRowIconWidth);
+        icon.Height(28);
+        icon.HorizontalContentAlignment(PGX::HorizontalAlignment::Center);
+        icon.Margin(PGX::ThicknessHelper::FromLengths(0, 0, kAudioRowIconGap, 0));
+        icon.Padding(PGX::ThicknessHelper::FromUniformLength(0));
+        icon.Content(glyph);
+        SetEndpointIconPointerBackgrounds(icon, kEndpointIconEditOpacity);
+        SetEndpointIconEditing(icon, context->editing);
+        SetButtonLabel(icon, L"page.device.icon.change");
+        context->endpointIcons.push_back(icon);
         PGXC::Grid::SetColumn(icon, 0);
         grid.Children().Append(icon);
 
@@ -512,6 +938,7 @@ namespace vmex::tap::page
         ContextPtr weakContext = context;
         mute.Click([weakContext, deviceId, mute](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
         {
+            if (!weakContext->active) return;
             audio::EndpointVolume current;
             if (!weakContext->manager || !weakContext->manager->GetVolume(deviceId, current).IsOk()) return;
             if (weakContext->manager->SetMuted(deviceId, !current.muted).IsOk())
@@ -527,7 +954,7 @@ namespace vmex::tap::page
         slider.ValueChanged([weakContext, deviceId, synchronizing](PGF::IInspectable const& sender,
                                                                     PGXCP::RangeBaseValueChangedEventArgs const&)
         {
-            if (synchronizing->load(std::memory_order_acquire)) return;
+            if (!weakContext->active || synchronizing->load(std::memory_order_acquire)) return;
             if (!weakContext->manager) return;
             if (auto s = sender.try_as<PGXC::Slider>())
             {
@@ -536,6 +963,7 @@ namespace vmex::tap::page
         });
         auto refreshAfterDrag = [weakContext, deviceId, slider, dragging, synchronizing]()
         {
+            if (!weakContext->active) return;
             dragging->store(false, std::memory_order_release);
             audio::EndpointVolume current;
             if (!weakContext->manager || !weakContext->manager->GetVolume(deviceId, current).IsOk()) return;
@@ -546,46 +974,58 @@ namespace vmex::tap::page
         ObserveSliderDrag(slider, dragging, refreshAfterDrag);
         StereoMeter meter = MakeStereoMeter();
         meter.layer.Children().Append(slider);
-        meter.layer.Children().Append(meter.left);
-        meter.layer.Children().Append(meter.right);
         trailing.Children().Append(meter.layer);
 
-        PGX::DispatcherTimer meterTimer;
-        meterTimer.Interval(std::chrono::milliseconds(50));
-        meterTimer.Tick([weakContext, deviceId, meter, slider](PGF::IInspectable const&, PGF::IInspectable const&)
+        context->endpointMeters.push_back(std::make_shared<MeterUpdate>(
+            [weak = std::weak_ptr<Context>(context), deviceId, meter, slider](const presentation::MeterFrame& frame) mutable
         {
-            float left = 0.0f;
-            float right = 0.0f;
-            if (weakContext->manager && weakContext->manager->GetPeak(deviceId, left, right).IsOk())
+            const auto live = weak.lock();
+            if (!live || !live->active || !slider.IsLoaded()) return;
+            if (frame.sample)
             {
-                UpdateStereoMeter(meter, slider, left, right);
+                float left = 0.0f;
+                float right = 0.0f;
+                if (live->manager) live->manager->GetPeak(deviceId, left, right);
+                meter.Sample(left, right);
             }
-        });
-        meterTimer.Start();
-        context->endpointMeterTimers.push_back(meterTimer);
+            if (live->active) UpdateStereoMeter(meter, slider, frame.elapsed);
+        }));
 
         auto dispatcher = slider.Dispatcher();
         if (dispatcher)
         {
             auto monitor = audio::detail::EndpointVolumeMonitor::Create(
-                deviceId, [slider, mute, dispatcher, dragging, synchronizing](float externalLevel, bool externalMuted)
+                deviceId, [weakSlider = winrt::make_weak(slider), weakMute = winrt::make_weak(mute),
+                           weak = std::weak_ptr<Context>(context), dispatcher, dragging, synchronizing](float externalLevel, bool externalMuted)
                 {
                     try
                     {
                         dispatcher.RunAsync(
                             winrt::Windows::UI::Core::CoreDispatcherPriority::Low,
-                            [slider, mute, dragging, synchronizing, externalLevel, externalMuted]()
+                            [weakSlider, weakMute, weak, dragging, synchronizing, externalLevel, externalMuted]()
                             {
-                                if (dragging->load(std::memory_order_acquire)) return;
-                                synchronizing->store(true, std::memory_order_release);
-                                slider.Value(externalLevel * 100.0);
-                                synchronizing->store(false, std::memory_order_release);
-                                SetMuteGlyph(mute, externalMuted);
+                                try
+                                {
+                                    const auto live = weak.lock();
+                                    const auto slider = weakSlider.get();
+                                    const auto mute = weakMute.get();
+                                    if (!live || !live->active || !slider || !mute || !slider.IsLoaded() ||
+                                        dragging->load(std::memory_order_acquire)) return;
+                                    synchronizing->store(true, std::memory_order_release);
+                                    struct Reset final
+                                    {
+                                        std::shared_ptr<std::atomic_bool> value;
+                                        ~Reset() { value->store(false, std::memory_order_release); }
+                                    } reset{ synchronizing };
+                                    slider.Value(externalLevel * 100.0);
+                                    if (live->active) SetMuteGlyph(mute, externalMuted);
+                                }
+                                catch (...) { Log(L"Footer retry dispatch failed"); }
                             });
                     }
                     catch (const winrt::hresult_error&)
                     {
-                        LogKey(L"log.page.dispatchFailed");
+                        Log(L"Footer retry dispatch failed");
                     }
                 });
             if (monitor) context->endpointMonitors.push_back(std::move(monitor));
@@ -593,6 +1033,17 @@ namespace vmex::tap::page
 
         PGXC::Grid::SetColumn(trailing, 2);
         grid.Children().Append(trailing);
+        icon.Click([weak = std::weak_ptr<Context>(context), weakRow = winrt::make_weak(grid),
+            weakName = winrt::make_weak(block), weakControls = winrt::make_weak(trailing), deviceId,
+            recommended = device.recommendedIcon](PGF::IInspectable const& sender, auto const&)
+        {
+            const auto live = weak.lock();
+            const auto row = weakRow.get();
+            const auto name = weakName.get();
+            const auto controls = weakControls.get();
+            if (!live || !live->active || !live->editing || Settings().page != 0 || !row || !name || !controls) return;
+            ToggleEndpointIconPicker(live, sender.as<PGXC::Button>(), row, name, controls, deviceId, recommended);
+        });
         return grid;
     }
 
@@ -601,6 +1052,7 @@ namespace vmex::tap::page
     inline void QueueRecordingChange(ContextPtr const& context, bool enabled)
     {
         context->pendingRecording.Queue(enabled, ::GetTickCount64());
+        RefreshFooter(context);
         if (!context->recordingActionTimer)
         {
             context->recordingActionTimer = PGX::DispatcherTimer();
@@ -610,7 +1062,7 @@ namespace vmex::tap::page
             {
                 const auto live = weak.lock();
                 if (!live) return;
-                if (Settings().page != 0 || !IsInLiveTree(live->list))
+                if (!live->active || Settings().page != 0 || !IsInLiveTree(live->list))
                 {
                     live->recordingActionTimer.Stop();
                     live->pendingRecording.Reset();
@@ -629,17 +1081,18 @@ namespace vmex::tap::page
 
     inline void QueueDeviceSelection(ContextPtr const& context, bool render, const std::wstring& deviceId)
     {
-        (render ? context->pendingRenderSelection : context->pendingCaptureSelection).Queue(deviceId, ::GetTickCount64());
+        (render ? context->pendingRenderSelection : context->pendingCaptureSelection).Queue(
+            deviceId, ::GetTickCount64(), presentation::kDeviceSelectionDelayMs);
         if (!context->deviceSelectionTimer)
         {
             context->deviceSelectionTimer = PGX::DispatcherTimer();
-            context->deviceSelectionTimer.Interval(std::chrono::milliseconds(200));
+            context->deviceSelectionTimer.Interval(std::chrono::milliseconds(presentation::kDeviceSelectionDelayMs));
             const std::weak_ptr<Context> weak = context;
             context->deviceSelectionTimer.Tick([weak](auto const&, auto const&)
             {
                 const auto live = weak.lock();
                 if (!live) return;
-                if (Settings().page != 0 || !IsInLiveTree(live->list))
+                if (!live->active || Settings().page != 0 || !IsInLiveTree(live->list))
                 {
                     live->deviceSelectionTimer.Stop();
                     live->pendingRenderSelection.Reset();
@@ -669,39 +1122,31 @@ namespace vmex::tap::page
         context->deviceSelectionTimer.Start();
     }
 
-    inline PGXC::Grid MakeRecordingRow(ContextPtr const& context)
+    inline void UpdateEndpointRows(PGXC::ListView const& list, const std::vector<audio::DeviceInfo>& devices)
     {
-        auto row = Row(44);
-        row.Margin(PGX::ThicknessHelper::FromLengths(12, 0, 12, 0));
-        auto icon = Glyph(L"\xE7C8", 14);
-        icon.Width(14);
-        PGXC::Grid::SetColumn(icon, 0);
-        row.Children().Append(icon);
-        auto name = NameBlock(text::Embedded().Resolve(L"page.checkbox.recordingMode"), std::wstring());
-        PGXC::Grid::SetColumn(name, 1);
-        row.Children().Append(name);
-        PGXC::Grid controls;
-        controls.Width(150);
-        PGXC::ToggleSwitch toggle;
-        toggle.MinWidth(0);
-        toggle.OnContent(nullptr);
-        toggle.OffContent(nullptr);
-        toggle.HorizontalAlignment(PGX::HorizontalAlignment::Right);
-        toggle.VerticalAlignment(PGX::VerticalAlignment::Center);
-        toggle.IsOn(context->pendingRecording.ValueOr(Settings().recordingMode));
-        toggle.IsEnabled(!context->recordingChanging);
-        PGXAU::AutomationProperties::SetName(toggle, winrt::hstring(text::Embedded().Resolve(L"page.checkbox.recordingMode")));
-        context->recordingToggle = toggle;
-        const std::weak_ptr<Context> weak = context;
-        toggle.Toggled([weak, toggle](auto const&, auto const&)
+        if (!list) return;
+        const auto items = list.Items();
+        int selected = -1;
+        bool moved = false;
+        for (std::uint32_t position = 0; position < devices.size(); ++position)
         {
-            if (const auto live = weak.lock(); live && !live->recordingChanging && !live->recordingSynchronizing)
-                QueueRecordingChange(live, toggle.IsOn());
-        });
-        controls.Children().Append(toggle);
-        PGXC::Grid::SetColumn(controls, 2);
-        row.Children().Append(controls);
-        return row;
+            const auto& device = devices[position];
+            if (device.isDefault && selected < 0) selected = static_cast<int>(position);
+            for (std::uint32_t index = position; index < items.Size(); ++index)
+            {
+                const auto item = items.GetAt(index).as<PGXC::ListViewItem>();
+                if (device.id != std::wstring_view(winrt::unbox_value<winrt::hstring>(item.Tag()))) continue;
+                if (index != position)
+                {
+                    items.RemoveAt(index);
+                    items.InsertAt(position, item);
+                    moved = true;
+                }
+                break;
+            }
+        }
+        if (list.SelectedIndex() != selected) list.SelectedIndex(selected);
+        if (moved) Log(L"Device rows reordered");
     }
 
     inline PGXC::ListView MakeEndpointList(ContextPtr const& context,
@@ -709,76 +1154,114 @@ namespace vmex::tap::page
                                             bool render)
     {
         PGXC::ListView list;
-        list.ItemContainerTransitions(PGX::Media::Animation::TransitionCollection());
-        list.Transitions(PGX::Media::Animation::TransitionCollection());
+        PGXA::TransitionCollection transitions;
+        PGXA::RepositionThemeTransition reposition;
+        reposition.IsStaggeringEnabled(false);
+        transitions.Append(reposition);
+        transitions.Append(PGXA::ReorderThemeTransition());
+        list.ItemContainerTransitions(transitions);
+        list.Transitions(PGXA::TransitionCollection());
         list.SelectionMode(PGXC::ListViewSelectionMode::Single);
         list.IsItemClickEnabled(false);
         list.Padding(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
         list.BorderThickness(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
         list.Background(nullptr);
 
-        PGXC::Grid firstRow{nullptr};
         for (const auto& device : devices)
         {
-            auto row = MakeEndpointRow(context, device);
-            if (!firstRow) firstRow = row;
+            PGXC::ListViewItem row;
+            row.Padding(PGX::ThicknessHelper::FromLengths(kAudioRowLeadingInset, 0, kAudioRowTrailingInset, 0));
+            row.HorizontalContentAlignment(PGX::HorizontalAlignment::Stretch);
+            row.Tag(winrt::box_value(winrt::hstring(device.id)));
+            row.Content(MakeEndpointRow(context, device));
             list.Items().Append(row);
         }
-        if (render && kRecordingModeEnabled && context->recordingAvailable)
-        {
-            auto recordingRow = MakeRecordingRow(context);
-            list.Footer(recordingRow);
-            if (firstRow)
-            {
-                auto align = [weakList = winrt::make_weak(list), weakFirst = winrt::make_weak(firstRow),
-                              weakRecording = winrt::make_weak(recordingRow)](auto const&, auto const&)
-                {
-                    auto owner = weakList.get();
-                    auto reference = weakFirst.get();
-                    auto footer = weakRecording.get();
-                    if (!owner || !reference || !footer || !reference.Parent() || !footer.Parent() ||
-                        reference.ActualWidth() <= 0 || footer.ActualWidth() <= 0 || owner.ActualWidth() <= 0) return;
-                    const auto start = reference.TransformToVisual(owner).TransformPoint(PGF::Point{0, 0});
-                    const auto current = footer.TransformToVisual(owner).TransformPoint(PGF::Point{0, 0});
-                    auto margin = footer.Margin();
-                    const double left = margin.Left + start.X - current.X;
-                    const double right = margin.Right + footer.ActualWidth() - reference.ActualWidth() + margin.Left - left;
-                    if (std::abs(margin.Left - left) < 0.5 && std::abs(margin.Right - right) < 0.5) return;
-                    margin.Left = left;
-                    margin.Right = right;
-                    footer.Margin(margin);
-                };
-                list.Loaded(align);
-                list.SizeChanged(align);
-                firstRow.SizeChanged(align);
-            }
-        }
 
-        auto initializing = std::make_shared<bool>(true);
-        const auto snapshot = devices;
-        list.SelectionChanged([context, snapshot, render, initializing](PGF::IInspectable const& sender,
-                                                                          PGXC::SelectionChangedEventArgs const&)
+        UpdateEndpointRows(list, devices);
+        list.SelectionChanged([weak = std::weak_ptr<Context>(context), render](PGF::IInspectable const& sender,
+            PGXC::SelectionChangedEventArgs const&)
         {
-            if (*initializing) return;
-            auto self = sender.try_as<PGXC::ListView>();
-            if (!self) return;
-            const int index = self.SelectedIndex();
-            if (index < 0 || static_cast<std::size_t>(index) >= snapshot.size()) return;
-
-            const std::wstring deviceId = snapshot[static_cast<std::size_t>(index)].id;
-            QueueDeviceSelection(context, render, deviceId);
+            const auto live = weak.lock();
+            if (!live || !live->active || live->updatingPage) return;
+            const auto self = sender.as<PGXC::ListView>();
+            if (const auto item = self.SelectedItem().try_as<PGXC::ListViewItem>())
+                QueueDeviceSelection(live, render, std::wstring(winrt::unbox_value<winrt::hstring>(item.Tag())));
         });
-
-        for (std::size_t i = 0; i < devices.size(); ++i)
-        {
-            if (devices[i].isDefault)
-            {
-                list.SelectedIndex(static_cast<int>(i));
-                break;
-            }
-        }
-        *initializing = false;
         return list;
+    }
+
+    inline PGXA::Storyboard MakeHeightAnimation(PGX::FrameworkElement const& element, double from, double to)
+    {
+        static thread_local winrt::Windows::UI::ViewManagement::UISettings ui;
+        if (!ui.AnimationsEnabled() || std::abs(from - to) < 0.5) return nullptr;
+
+        PGXA::DoubleAnimation height;
+        height.From(from);
+        height.To(to);
+        height.Duration(PGX::DurationHelper::FromTimeSpan(std::chrono::milliseconds(180)));
+        height.EnableDependentAnimation(true);
+        PGXA::CubicEase ease;
+        ease.EasingMode(PGXA::EasingMode::EaseOut);
+        height.EasingFunction(ease);
+        PGXA::Storyboard::SetTarget(height, element);
+        PGXA::Storyboard::SetTargetProperty(height, L"Height");
+
+        PGXA::Storyboard storyboard;
+        storyboard.Children().Append(height);
+        return storyboard;
+    }
+
+    inline void AnimateInputDevices(PGXC::Canvas const& viewport, PGXC::ListView const& rows,
+        const std::shared_ptr<PGXA::Storyboard>& active, bool expanded)
+    {
+        const double from = viewport.ActualHeight();
+        const double to = expanded ? rows.ActualHeight() : 0.0;
+        viewport.Height(from);
+        if (const auto previous = std::exchange(*active, nullptr)) previous.Stop();
+
+        const auto finish = [viewRef = winrt::make_weak(viewport), rowsRef = winrt::make_weak(rows), expanded]
+        {
+            const auto view = viewRef.get();
+            const auto content = rowsRef.get();
+            if (!view || !content) return;
+            view.Height(expanded ? content.ActualHeight() : 0.0);
+            view.IsHitTestVisible(expanded);
+            content.IsEnabled(expanded);
+        };
+
+        Log(L"Input device fold requested expanded={0} from={1} to={2}",
+            { expanded ? L"1" : L"0", std::to_wstring(from), std::to_wstring(to) });
+        try
+        {
+            const auto storyboard = MakeHeightAnimation(viewport, from, to);
+            if (!storyboard)
+            {
+                finish();
+                return;
+            }
+            viewport.IsHitTestVisible(false);
+            if (expanded) rows.IsEnabled(true);
+
+            storyboard.Completed([weak = std::weak_ptr<PGXA::Storyboard>(active), finish, expanded]
+                (PGF::IInspectable const& sender, PGF::IInspectable const&)
+            {
+                if (const auto current = weak.lock(); current && *current == sender.try_as<PGXA::Storyboard>())
+                {
+                    const auto completed = std::exchange(*current, nullptr);
+                    finish();
+                    completed.Stop();
+                    Log(L"Input device fold completed expanded={0}", { expanded ? L"1" : L"0" });
+                }
+            });
+            *active = storyboard;
+            storyboard.Begin();
+        }
+        catch (const winrt::hresult_error& error)
+        {
+            *active = nullptr;
+            finish();
+            Log(L"Input device animation failed detail={0}", { std::wstring(error.message()) });
+        }
     }
 
     inline PGXC::StackPanel BuildVolumeLayer(ContextPtr const& context)
@@ -788,8 +1271,10 @@ namespace vmex::tap::page
             Settings().recordingMode ? L"page.label.listenOutput" : L"page.section.volume")));
         layer.Children().Append(context->volumeLabel);
 
-        layer.Children().Append(MakeEndpointList(context, context->data->render, true));
+        context->renderRows = MakeEndpointList(context, context->data->render, true);
+        layer.Children().Append(context->renderRows);
 
+        context->captureRows = nullptr;
         if (context->data->capture.empty()) return layer;
 
         PGXC::Grid head = Row(44);
@@ -808,22 +1293,47 @@ namespace vmex::tap::page
         PGXC::Grid::SetColumn(arrow, 2);
         head.Children().Append(arrow);
 
-        PGXC::StackPanel body;
-        body.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
-        body.Visibility(Settings().inputExpanded ? PGX::Visibility::Visible : PGX::Visibility::Collapsed);
+        const auto rows = MakeEndpointList(context, context->data->capture, false);
+        context->captureRows = rows;
+        rows.Width(0.0);
+        rows.IsEnabled(Settings().inputExpanded);
 
-        body.Children().Append(MakeEndpointList(context, context->data->capture, false));
-
-        head.Tapped([arrow, body](PGF::IInspectable const&, PGX::Input::TappedRoutedEventArgs const&)
+        PGXC::Canvas viewport;
+        viewport.Height(0.0);
+        viewport.IsHitTestVisible(Settings().inputExpanded);
+        PGXM::RectangleGeometry clip;
+        viewport.Clip(clip);
+        viewport.SizeChanged([clip, rowsRef = winrt::make_weak(rows)]
+            (auto const&, PGX::SizeChangedEventArgs const& args)
         {
-            Settings().inputExpanded = !Settings().inputExpanded;
-            body.Visibility(Settings().inputExpanded ? PGX::Visibility::Visible : PGX::Visibility::Collapsed);
-            arrow.Text(Settings().inputExpanded ? L"\xE70E" : L"\xE70D");
+            const auto size = args.NewSize();
+            if (const auto content = rowsRef.get(); content && content.Width() != size.Width)
+                content.Width(size.Width);
+            clip.Rect({ 0.0f, 0.0f, size.Width, size.Height });
         });
+        const auto active = std::make_shared<PGXA::Storyboard>(nullptr);
+        rows.SizeChanged([viewRef = winrt::make_weak(viewport), weak = std::weak_ptr<PGXA::Storyboard>(active)]
+            (auto const&, PGX::SizeChangedEventArgs const& args)
+        {
+            const auto animation = weak.lock();
+            const auto view = viewRef.get();
+            if (view && animation && !*animation && Settings().inputExpanded)
+                view.Height(args.NewSize().Height);
+        });
+        viewport.Children().Append(rows);
 
         PGXC::StackPanel group;
         group.Children().Append(head);
-        group.Children().Append(body);
+        group.Children().Append(viewport);
+        head.Tapped([arrow, viewport, rows, active]
+            (PGF::IInspectable const&, PGX::Input::TappedRoutedEventArgs const&)
+        {
+            const bool expanded = !Settings().inputExpanded;
+            Settings().inputExpanded = expanded;
+            arrow.Text(expanded ? L"\xE70E" : L"\xE70D");
+            AnimateInputDevices(viewport, rows, active, expanded);
+        });
+
         layer.Children().Append(group);
         return layer;
     }
@@ -834,7 +1344,7 @@ namespace vmex::tap::page
     {
         if (!SendPipeLine(line))
         {
-            LogKey(L"log.page.commandDropped", { std::wstring(verb) });
+            Log(L"Pipe command dropped verb={0}", { std::wstring(verb) });
             return false;
         }
         return true;
@@ -862,7 +1372,6 @@ namespace vmex::tap::page
         PGXC::Grid holder;
         holder.Width(20);
         holder.Height(20);
-        holder.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 10, 0));
         holder.VerticalAlignment(PGX::VerticalAlignment::Center);
 
         PGXSH::Rectangle chip;
@@ -884,7 +1393,6 @@ namespace vmex::tap::page
         PGXC::Grid holder;
         holder.Width(20);
         holder.Height(20);
-        holder.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 10, 0));
         holder.VerticalAlignment(PGX::VerticalAlignment::Center);
 
         PGXSH::Path icon;
@@ -930,7 +1438,6 @@ namespace vmex::tap::page
 
             PGXMI::BitmapImage source;
             source.UriSource(PGF::Uri(winrt::hstring(uri)));
-            source.DecodePixelWidth(40);
 
             PGXC::Image image;
             image.Source(source);
@@ -938,7 +1445,6 @@ namespace vmex::tap::page
             image.Height(20);
             image.Stretch(PGXM::Stretch::Uniform);
             image.VerticalAlignment(PGX::VerticalAlignment::Center);
-            image.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 10, 0));
             return image;
         }
 
@@ -1027,7 +1533,7 @@ namespace vmex::tap::page
         line.name = name;
 
         line.Update(RedirectTargetName(context, appKey));
-        LogKey(L"log.page.appRoute", { appKey, std::wstring(line.name.Text()) });
+        Log(L"Application route app={0} target={1}", { appKey, std::wstring(line.name.Text()) });
         return line;
     }
 
@@ -1068,11 +1574,11 @@ namespace vmex::tap::page
         const std::wstring appKey = session.appKey;
         combo.DropDownOpened([appKey](PGF::IInspectable const&, PGF::IInspectable const&)
         {
-            LogKey(L"log.page.appRedirectOpened", { appKey });
+            Log(L"Application route menu opened app={0}", { appKey });
         });
         combo.DropDownClosed([appKey](PGF::IInspectable const&, PGF::IInspectable const&)
         {
-            LogKey(L"log.page.appRedirectClosed", { appKey });
+            Log(L"Application route menu closed app={0}", { appKey });
         });
         combo.SelectionChanged([snapshot, processId, appKey, context, onPicked](PGF::IInspectable const& sender,
                                                                              PGXC::SelectionChangedEventArgs const&)
@@ -1083,7 +1589,7 @@ namespace vmex::tap::page
                 if (index <= 0)
                 {
                     context->redirects[appKey] = std::wstring();
-                    LogKey(L"log.page.appRedirectPick", { std::to_wstring(processId), L"(默认)" });
+                    Log(L"Application route selected pid={0} target={1}", { std::to_wstring(processId), L"default" });
                     SendSetRedirect(processId, std::wstring());
                     ScheduleSettleSync(context);
                     onPicked(std::wstring());
@@ -1094,7 +1600,7 @@ namespace vmex::tap::page
                 if (position < snapshot.size())
                 {
                     context->redirects[appKey] = snapshot[position].id;
-                    LogKey(L"log.page.appRedirectPick", { std::to_wstring(processId), snapshot[position].friendlyName });
+                    Log(L"Application route selected pid={0} target={1}", { std::to_wstring(processId), snapshot[position].friendlyName });
                     SendSetRedirect(processId, snapshot[position].id);
                     ScheduleSettleSync(context);
                     onPicked(audio::DisplayDeviceName(snapshot[position], Settings().showDriverName));
@@ -1104,22 +1610,66 @@ namespace vmex::tap::page
         return combo;
     }
 
-    inline PGXC::StackPanel MakeAppRow(ContextPtr const& context, const audio::AppSessionInfo& session, audio::IAudioSessionHandle* handle)
+    inline void SetVisibilityButtonState(PGXC::Button const& button, bool hidden)
+    {
+        PGXC::Border content;
+        content.Width(32);
+        content.Height(28);
+        content.CornerRadius(PGX::CornerRadiusHelper::FromUniformRadius(5));
+        if (hidden)
+        {
+            const auto fill = AccentBrush();
+            fill.Opacity(0.25);
+            content.Background(fill);
+        }
+        const auto eye = Glyph(hidden ? L"\xED1A" : L"\xE7B3", 20);
+        eye.Margin(PGX::ThicknessHelper::FromUniformLength(0));
+        eye.HorizontalAlignment(PGX::HorizontalAlignment::Center);
+        content.Child(eye);
+        button.Content(content);
+        SetButtonLabel(button, hidden ? L"page.app.unhide" : L"page.app.hide");
+    }
+
+    inline PGXC::Button MakeVisibilityButton(ContextPtr const& context, const audio::AppSessionInfo& session, bool hidden)
+    {
+        const auto button = BareButton(L"");
+        button.MinWidth(0);
+        button.Padding(PGX::ThicknessHelper::FromUniformLength(0));
+        SetVisibilityButtonState(button, hidden);
+        button.Click([weak = std::weak_ptr<Context>(context), appKey = session.appKey, instanceId = session.instanceId]
+            (PGF::IInspectable const& sender, PGX::RoutedEventArgs const&)
+        {
+            const auto live = weak.lock();
+            if (!live || !live->active || !live->editing || Settings().page != 0) return;
+            const auto button = sender.as<PGXC::Button>();
+            const bool hidden = !settings::IsAudioSessionHidden(appKey, instanceId);
+            if (settings::SetAudioSessionHidden(appKey, instanceId, hidden))
+                SetVisibilityButtonState(button, hidden);
+            else
+                SetButtonLabel(button, L"page.app.visibilityFailed");
+        });
+        return button;
+    }
+
+    inline PGXC::StackPanel MakeAppRow(ContextPtr const& context, const audio::AppSessionInfo& session,
+                                      const std::shared_ptr<audio::IAudioSessionHandle>& handle, bool hidden)
     {
         const std::wstring appKey = session.appKey;
         const bool movable = session.processId != 0 && !appKey.empty() && appKey != L"#system";
         PGXC::Grid grid = Row(44);
-        grid.Margin(PGX::ThicknessHelper::FromLengths(0, 0, 12, 0));
+        grid.Margin(PGX::ThicknessHelper::FromLengths(0, 0, kAudioRowTrailingInset, 0));
 
         PGXC::Grid titleBand;
         PGXC::ColumnDefinition leading;
         PGXC::ColumnDefinition flexible;
-        leading.Width(PGX::GridLengthHelper::Auto());
+        leading.Width(PGX::GridLengthHelper::FromValueAndType(kAudioRowIconWidth + kAudioRowIconGap, PGX::GridUnitType::Pixel));
         flexible.Width(PGX::GridLengthHelper::FromValueAndType(1, PGX::GridUnitType::Star));
         titleBand.ColumnDefinitions().Append(leading);
         titleBand.ColumnDefinitions().Append(flexible);
 
         PGX::FrameworkElement icon = MakeAppIcon(session);
+        icon.HorizontalAlignment(PGX::HorizontalAlignment::Center);
+        icon.Margin(PGX::ThicknessHelper::FromLengths(0, 0, kAudioRowIconGap, 0));
         PGXC::Grid::SetColumn(icon, 0);
         titleBand.Children().Append(icon);
 
@@ -1133,7 +1683,7 @@ namespace vmex::tap::page
         block.Children().Append(name);
 
         RouteLine route{};
-        if (movable)
+        if (movable && !context->editing)
         {
             route = MakeRouteLine(context, appKey);
             block.Children().Append(route.row);
@@ -1160,11 +1710,13 @@ namespace vmex::tap::page
         {
             mute.Click([binding, mute, appKey](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
             {
+                const auto handle = binding->handle;
+                if (!binding->active || !handle) return;
                 float level = 0.0f;
                 bool muted = false;
-                if (!binding->handle->GetState(level, muted).IsOk()) return;
-                if (binding->handle->SetMuted(!muted).IsOk()) SetMuteGlyph(mute, !muted);
-                LogKey(L"log.page.appMute", { appKey, muted ? L"取消静音" : L"静音" });
+                if (!handle->GetState(level, muted).IsOk() || !binding->active) return;
+                if (handle->SetMuted(!muted).IsOk()) SetMuteGlyph(mute, !muted);
+                Log(L"Application mute changed app={0} action={1}", { appKey, muted ? L"unmute" : L"mute" });
             });
         }
         else
@@ -1178,22 +1730,24 @@ namespace vmex::tap::page
         {
             slider.ValueChanged([binding, appKey](PGF::IInspectable const& sender, PGXCP::RangeBaseValueChangedEventArgs const&)
             {
-                if (binding->synchronizing->load(std::memory_order_acquire)) return;
+                const auto handle = binding->handle;
+                if (!binding->active || !handle || binding->synchronizing->load(std::memory_order_acquire)) return;
                 if (auto s = sender.try_as<PGXC::Slider>())
                 {
-                    binding->handle->SetVolume(static_cast<float>(s.Value() / 100.0));
-                    LogKey(L"log.page.appVolume", { appKey, std::to_wstring(static_cast<int>(s.Value())) });
+                    handle->SetVolume(static_cast<float>(s.Value() / 100.0));
+                    Log(L"Application volume changed app={0} percent={1}", { appKey, std::to_wstring(static_cast<int>(s.Value())) });
                 }
             });
 
             auto refreshAfterDrag = [binding]()
             {
                 binding->dragging->store(false, std::memory_order_release);
-                if (!binding->handle) return;
+                const auto handle = binding->handle;
+                if (!binding->active || !handle) return;
 
                 float level = 0.0f;
                 bool muted = false;
-                if (!binding->handle->GetState(level, muted).IsOk()) return;
+                if (!handle->GetState(level, muted).IsOk() || !binding->active) return;
 
                 binding->synchronizing->store(true, std::memory_order_release);
                 binding->slider.Value(level * 100.0);
@@ -1208,37 +1762,37 @@ namespace vmex::tap::page
         context->rows.push_back(binding);
         StereoMeter meter = MakeStereoMeter();
         meter.layer.Children().Append(slider);
-        meter.layer.Children().Append(meter.left);
-        meter.layer.Children().Append(meter.right);
 
-        PGX::DispatcherTimer meterTimer;
-        meterTimer.Interval(std::chrono::milliseconds(50));
-        meterTimer.Tick([binding, meter, slider](PGF::IInspectable const&, PGF::IInspectable const&)
+        context->appMeters.push_back(std::make_shared<MeterUpdate>(
+            [binding, meter, slider, nextStatePoll = MeterClock::now() + std::chrono::milliseconds(200)]
+            (const presentation::MeterFrame& frame) mutable
         {
-            if (!binding->handle) return;
+            const auto handle = binding->handle;
+            if (!binding->active || !slider.IsLoaded()) return;
 
-            if (++binding->statePollTicks % 4 == 0 && !binding->dragging->load(std::memory_order_acquire))
+            if (handle && frame.now >= nextStatePoll && !binding->dragging->load(std::memory_order_acquire))
             {
+                nextStatePoll = frame.now + std::chrono::milliseconds(200);
                 float level = 0.0f;
                 bool muted = false;
-                if (binding->handle->GetState(level, muted).IsOk())
+                if (handle->GetState(level, muted).IsOk() && binding->active)
                 {
                     binding->synchronizing->store(true, std::memory_order_release);
                     slider.Value(level * 100.0);
-                    SetMuteGlyph(binding->mute, muted);
+                    if (binding->active) SetMuteGlyph(binding->mute, muted);
                     binding->synchronizing->store(false, std::memory_order_release);
                 }
             }
 
-            float left = 0.0f;
-            float right = 0.0f;
-            if (binding->handle->GetPeak(left, right).IsOk())
+            if (frame.sample && binding->active)
             {
-                UpdateStereoMeter(meter, slider, left, right);
+                float left = 0.0f;
+                float right = 0.0f;
+                if (handle) handle->GetPeak(left, right);
+                meter.Sample(left, right);
             }
-        });
-        meterTimer.Start();
-        context->meterTimers.push_back(meterTimer);
+            if (binding->active) UpdateStereoMeter(meter, slider, frame.elapsed);
+        }));
 
         PGXC::StackPanel volumeHost;
         volumeHost.Orientation(PGXC::Orientation::Horizontal);
@@ -1249,13 +1803,15 @@ namespace vmex::tap::page
         PGXC::Grid volumeHostGrid;
         volumeHostGrid.Children().Append(volumeHost);
 
-        PGXCP::ToggleButton routeButton{nullptr};
-        PGXC::Grid redirectPanel{nullptr};
-        auto comboRef = std::make_shared<PGXC::ComboBox>(nullptr);
-
-        if (movable)
+        if (context->editing)
         {
-            routeButton = PGXCP::ToggleButton();
+            trailing.Children().Append(MakeVisibilityButton(context, session, hidden));
+            trailing.Children().Append(volumeHostGrid);
+        }
+        else if (movable)
+        {
+            PGXCP::ToggleButton routeButton;
+            const auto comboRef = std::make_shared<PGXC::ComboBox>(nullptr);
             PGXC::TextBlock glyph = Text(winrt::hstring(L"\xE724"), 14);
             glyph.FontFamily(PGXM::FontFamily(L"Segoe MDL2 Assets"));
             routeButton.Content(glyph);
@@ -1264,7 +1820,7 @@ namespace vmex::tap::page
             routeButton.Background(nullptr);
             routeButton.BorderThickness(PGX::ThicknessHelper::FromLengths(0, 0, 0, 0));
 
-            redirectPanel = PGXC::Grid();
+            PGXC::Grid redirectPanel;
             redirectPanel.HorizontalAlignment(PGX::HorizontalAlignment::Stretch);
             redirectPanel.VerticalAlignment(PGX::VerticalAlignment::Center);
             redirectPanel.Visibility(PGX::Visibility::Collapsed);
@@ -1284,7 +1840,7 @@ namespace vmex::tap::page
                 volumeHost.Opacity(0);
                 volumeHost.IsHitTestVisible(false);
                 redirectPanel.Visibility(PGX::Visibility::Visible);
-                LogKey(L"log.page.appRowToggle", { L"展开" });
+                Log(L"Application list expanded");
             });
 
             routeButton.Unchecked([volumeHost, redirectPanel, comboRef](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
@@ -1296,7 +1852,7 @@ namespace vmex::tap::page
                 redirectPanel.Visibility(PGX::Visibility::Collapsed);
                 volumeHost.Opacity(1);
                 volumeHost.IsHitTestVisible(true);
-                LogKey(L"log.page.appRowToggle", { L"收起" });
+                Log(L"Application list collapsed");
             });
         }
         else
@@ -1312,27 +1868,193 @@ namespace vmex::tap::page
         return container;
     }
 
-    inline PGXC::StackPanel BuildAppLayer(ContextPtr const& context)
+    inline std::wstring AppRowKey(PGXC::Border const& row)
     {
-        PGXC::StackPanel layer;
-        layer.Children().Append(SectionLabel(winrt::hstring(text::Embedded().Resolve(L"page.section.mixer"))));
+        return std::wstring(winrt::unbox_value<winrt::hstring>(row.Tag()));
+    }
 
-        if (context->data->apps.empty())
+    inline void StopAppRowMotions(ContextPtr const& context)
+    {
+        const auto motions = std::exchange(context->appRowMotions, {});
+        for (const auto& [key, motion] : motions) motion.animation.Stop();
+    }
+
+    inline void AnimateAppRow(ContextPtr const& context, PGXC::Border const& row,
+        const std::wstring& key, bool removing)
+    {
+        const double from = row.IsLoaded() ? row.ActualHeight() : 0.0;
+        row.Height(from);
+        if (const auto found = context->appRowMotions.find(key); found != context->appRowMotions.end())
         {
-            PGXC::TextBlock none = Text(winrt::hstring(text::Embedded().Resolve(L"page.none.apps")), 12);
-            none.Opacity(0.5);
-            none.Margin(PGX::ThicknessHelper::FromLengths(8, 2, 4, 8));
-            layer.Children().Append(none);
-            LogKey(L"log.page.appsEmpty", { context->data->appsEndpoint });
+            const auto previous = found->second.animation;
+            context->appRowMotions.erase(found);
+            previous.Stop();
         }
 
+        const auto finish = [panelRef = winrt::make_weak(context->appRows), rowRef = winrt::make_weak(row), removing]
+        {
+            const auto item = rowRef.get();
+            if (!item) return;
+            if (removing)
+            {
+                item.Height(0.0);
+                if (const auto panel = panelRef.get())
+                {
+                    const auto children = panel.Children();
+                    std::uint32_t index = 0;
+                    if (children.IndexOf(item, index)) children.RemoveAt(index);
+                }
+            }
+            else
+            {
+                item.Height(std::numeric_limits<double>::quiet_NaN());
+                item.Clip(nullptr);
+                item.IsHitTestVisible(true);
+            }
+        };
+
+        try
+        {
+            const double width = context->appRows.ActualWidth();
+            if (width <= 0.0)
+            {
+                finish();
+                return;
+            }
+            double to = 0.0;
+            if (!removing)
+            {
+                const auto content = row.Child();
+                content.Measure({ static_cast<float>(width), std::numeric_limits<float>::infinity() });
+                to = content.DesiredSize().Height;
+            }
+            const auto storyboard = MakeHeightAnimation(row, from, to);
+            if (!storyboard)
+            {
+                finish();
+                return;
+            }
+
+            row.IsHitTestVisible(false);
+            PGXM::RectangleGeometry clip;
+            clip.Rect({ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(from) });
+            row.Clip(clip);
+            storyboard.Completed([weak = std::weak_ptr<Context>(context), key, finish]
+                (PGF::IInspectable const& sender, PGF::IInspectable const&)
+            {
+                const auto live = weak.lock();
+                if (!live) return;
+                const auto found = live->appRowMotions.find(key);
+                if (found == live->appRowMotions.end() || found->second.animation != sender.try_as<PGXA::Storyboard>()) return;
+                const auto completed = found->second.animation;
+                live->appRowMotions.erase(found);
+                finish();
+                completed.Stop();
+            });
+            context->appRowMotions.emplace(key, AppRowMotion{ storyboard, removing });
+            storyboard.Begin();
+        }
+        catch (const winrt::hresult_error& error)
+        {
+            context->appRowMotions.erase(key);
+            finish();
+            Log(L"Mixer row animation failed detail={0}", { std::wstring(error.message()) });
+        }
+    }
+
+    inline void UpdateAppRows(ContextPtr const& context)
+    {
+        std::vector<std::pair<std::wstring, PGX::UIElement>> desired;
+        desired.reserve(context->data->apps.size());
         for (std::size_t i = 0; i < context->data->apps.size(); ++i)
         {
-            audio::IAudioSessionHandle* handle =
-                (i < context->data->handles.size()) ? context->data->handles[i].get() : nullptr;
-            layer.Children().Append(MakeAppRow(context, context->data->apps[i], handle));
+            const auto& app = context->data->apps[i];
+            const bool hidden = settings::IsAudioSessionHidden(app.appKey, app.instanceId);
+            if (hidden && !context->editing) continue;
+            const auto handle = (i < context->data->handles.size()) ? context->data->handles[i] : nullptr;
+            desired.emplace_back(app.appKey, MakeAppRow(context, app, handle, hidden));
         }
-        return layer;
+        if (desired.empty())
+        {
+            const bool empty = context->data->apps.empty();
+            PGXC::TextBlock none = Text(winrt::hstring(text::Embedded().Resolve(
+                empty ? L"page.none.apps" : L"page.none.visibleApps")), 12);
+            none.Opacity(0.5);
+            none.Margin(PGX::ThicknessHelper::FromLengths(8, 2, 4, 8));
+            desired.emplace_back(std::wstring(), none);
+            if (empty) Log(L"Application session list empty endpoint={0}", { context->data->appsEndpoint });
+        }
+
+        const auto children = context->appRows.Children();
+        std::map<std::wstring, PGXC::Border> existing;
+        std::uint32_t removed = 0;
+        for (std::uint32_t index = children.Size(); index != 0; --index)
+        {
+            const auto row = children.GetAt(index - 1).as<PGXC::Border>();
+            const auto key = AppRowKey(row);
+            if (std::none_of(desired.begin(), desired.end(), [&](const auto& item) { return item.first == key; }))
+            {
+                const auto motion = context->appRowMotions.find(key);
+                if (motion == context->appRowMotions.end() || !motion->second.removing)
+                {
+                    AnimateAppRow(context, row, key, true);
+                    ++removed;
+                }
+            }
+            else existing.emplace(key, row);
+        }
+
+        std::uint32_t position = 0;
+        std::uint32_t added = 0;
+        std::uint32_t moved = 0;
+        for (const auto& [key, content] : desired)
+        {
+            while (position < children.Size())
+            {
+                const auto current = AppRowKey(children.GetAt(position).as<PGXC::Border>());
+                const auto motion = context->appRowMotions.find(current);
+                if (motion == context->appRowMotions.end() || !motion->second.removing || existing.contains(current)) break;
+                ++position;
+            }
+            content.as<PGX::FrameworkElement>().VerticalAlignment(PGX::VerticalAlignment::Top);
+            if (const auto found = existing.find(key); found != existing.end())
+            {
+                const auto& row = found->second;
+                row.Child(content);
+                std::uint32_t index = 0;
+                if (children.IndexOf(row, index) && index != position)
+                {
+                    children.RemoveAt(index);
+                    children.InsertAt(position, row);
+                    ++moved;
+                }
+                const auto motion = context->appRowMotions.find(key);
+                if (motion != context->appRowMotions.end() && motion->second.removing)
+                    AnimateAppRow(context, row, key, false);
+            }
+            else
+            {
+                PGXC::Border row;
+                row.Tag(winrt::box_value(winrt::hstring(key)));
+                row.Child(content);
+                row.SizeChanged([](PGF::IInspectable const& sender, PGX::SizeChangedEventArgs const& args)
+                {
+                    if (const auto clip = sender.as<PGXC::Border>().Clip().try_as<PGXM::RectangleGeometry>())
+                    {
+                        const auto size = args.NewSize();
+                        clip.Rect({ 0.0f, 0.0f, size.Width, size.Height });
+                    }
+                });
+                if (context->appRows.IsLoaded()) row.Height(0.0);
+                children.InsertAt(position, row);
+                if (context->appRows.IsLoaded()) AnimateAppRow(context, row, key, false);
+                ++added;
+            }
+            ++position;
+        }
+        if (added || removed || moved)
+            Log(L"Mixer rows updated added={0} removed={1} moved={2}",
+                { std::to_wstring(added), std::to_wstring(removed), std::to_wstring(moved) });
     }
 
     inline void SendSetDefault(bool render, const std::wstring& deviceId)
@@ -1354,12 +2076,65 @@ namespace vmex::tap::page
 
     inline void RefreshFooter(ContextPtr const& context)
     {
-        if (!context->slotLeft) return;
+        if (!context->active || !context->slotLeft) return;
 
         const bool custom = (Settings().page == 0);
-        const PGX::Visibility twoSlots = custom ? PGX::Visibility::Visible : PGX::Visibility::Collapsed;
-        context->slotLeft.Visibility(twoSlots);
-        context->slotMid.Visibility(twoSlots);
+        const bool recording = custom && kRecordingModeEnabled && context->recordingAvailable;
+        const bool enabled = context->pendingRecording.ValueOr(context->recordingTarget.value_or(Settings().recordingMode));
+        if (context->footerRow)
+        {
+            context->footerRow.Margin(PGX::ThicknessHelper::FromLengths(custom ? 4 : 0, 0, custom ? 4 : 0, 0));
+            const std::uint32_t count = custom ? (recording ? 5 : 4) : 0;
+            if (context->footerRow.ColumnDefinitions().Size() != count)
+            {
+                context->footerRow.ColumnDefinitions().Clear();
+                for (std::uint32_t index = 0; index < count; ++index)
+                {
+                    PGXC::ColumnDefinition column;
+                    column.Width(PGX::GridLengthHelper::FromValueAndType(1, PGX::GridUnitType::Star));
+                    context->footerRow.ColumnDefinitions().Append(column);
+                }
+            }
+            PGXC::Grid::SetColumn(context->slotLeft, 0);
+            PGXC::Grid::SetColumn(context->slotEdit, custom ? 1 : 0);
+            PGXC::Grid::SetColumn(context->slotMid, custom ? 2 : 0);
+            PGXC::Grid::SetColumn(context->slotRecording, recording ? 3 : 0);
+            PGXC::Grid::SetColumn(context->slotRight, custom ? count - 1 : 0);
+        }
+        const auto customVisibility = custom ? PGX::Visibility::Visible : PGX::Visibility::Collapsed;
+        context->slotLeft.Visibility(customVisibility);
+        context->slotEdit.Visibility(customVisibility);
+        context->slotMid.Visibility(customVisibility);
+        context->slotRecording.Visibility(recording ? PGX::Visibility::Visible : PGX::Visibility::Collapsed);
+        const double padding = custom ? (recording ? 0 : 6) : 11;
+        for (const auto& button : { context->slotLeft, context->slotEdit, context->slotMid, context->slotRecording, context->slotRight })
+        {
+            if (custom) button.MinWidth(0);
+            else button.ClearValue(PGX::FrameworkElement::MinWidthProperty());
+            button.HorizontalContentAlignment(PGX::HorizontalAlignment::Center);
+            button.HorizontalAlignment(custom ? PGX::HorizontalAlignment::Stretch : PGX::HorizontalAlignment::Right);
+            button.IsEnabled(!custom || !context->recordingChanging);
+            button.Padding(PGX::ThicknessHelper::FromLengths(padding, 0, padding, 0));
+        }
+        context->slotRecording.IsEnabled(recording && !context->recordingChanging);
+        static thread_local winrt::Windows::UI::ViewManagement::UISettings ui;
+        const auto accent = AccentBrush();
+        const auto foreground = PGXM::SolidColorBrush(ui.UIElementColor(
+            winrt::Windows::UI::ViewManagement::UIElementType::HighlightText));
+        for (const auto& [button, selected] : { std::pair{ context->slotRecording, enabled },
+                                              std::pair{ context->slotEdit, context->editing } })
+        {
+            button.Background(selected ? accent : nullptr);
+            if (selected) button.Foreground(foreground);
+            else button.ClearValue(PGXC::Control::ForegroundProperty());
+            for (auto key : { L"ButtonBackgroundPointerOver", L"ButtonBackgroundPressed" })
+            {
+                const auto boxed = winrt::box_value(key);
+                if (selected) button.Resources().Insert(boxed, accent);
+                else if (button.Resources().HasKey(boxed)) button.Resources().Remove(boxed);
+            }
+        }
+        SetButtonLabel(context->slotEdit, context->editing ? L"page.footer.exitEditMode" : L"page.footer.editMode");
         if (context->systemItem)
         {
             context->systemItem.Visibility(custom ? PGX::Visibility::Collapsed : PGX::Visibility::Visible);
@@ -1375,30 +2150,96 @@ namespace vmex::tap::page
         context->slotRight.Visibility(PGX::Visibility::Visible);
     }
 
+    inline void ReleaseEndpointWork(ContextPtr const& context)
+    {
+        CloseEndpointIconPicker(context);
+        context->endpointIcons.clear();
+        ++context->meterGeneration;
+        context->meterRendering.reset();
+        context->endpointMeters.clear();
+        context->endpointMonitors.clear();
+    }
+
     inline void ReleaseRowWork(ContextPtr const& context, bool keepEndpoints = false)
     {
-        for (auto& timer : context->meterTimers)
+        for (const auto& binding : context->rows)
         {
-            if (timer) timer.Stop();
+            binding->active = false;
+            binding->handle.reset();
+            binding->slider = nullptr;
+            binding->mute = nullptr;
         }
+        context->appMeters.clear();
+        if (!keepEndpoints) ReleaseEndpointWork(context);
+        context->rows.clear();
+    }
 
-        context->meterTimers.clear();
+    inline void UpdateVolumeLayer(ContextPtr const& context, bool keepEndpoints)
+    {
         if (!keepEndpoints)
         {
-            for (auto& timer : context->endpointMeterTimers)
-                if (timer) timer.Stop();
-            context->endpointMeterTimers.clear();
-            context->endpointMonitors.clear();
+            context->volumeLayer.Children().SetAt(0, BuildVolumeLayer(context));
+            Log(L"Device section rebuilt outputs={0} inputs={1}",
+                { std::to_wstring(context->data->render.size()), std::to_wstring(context->data->capture.size()) });
+            return;
         }
-        context->rows.clear();
+        context->volumeLabel.Text(winrt::hstring(text::Embedded().Resolve(
+            Settings().recordingMode ? L"page.label.listenOutput" : L"page.section.volume")));
+        UpdateEndpointRows(context->renderRows, context->data->render);
+        UpdateEndpointRows(context->captureRows, context->data->capture);
+    }
+
+    inline void StopPageWork(ContextPtr const& context)
+    {
+        if (!context->active) return;
+        context->active = false;
+        context->abandoned = true;
+        context->pendingRecording.Reset();
+        context->recordingTarget.reset();
+        context->pendingRenderSelection.Reset();
+        context->pendingCaptureSelection.Reset();
+        for (auto timer : { context->settleTimer, context->deviceTimer, context->recordingTimer,
+                            context->recordingActionTimer, context->deviceSelectionTimer })
+            if (timer) timer.Stop();
+        context->settleTimer = nullptr;
+        context->deviceTimer = nullptr;
+        context->recordingTimer = nullptr;
+        context->recordingActionTimer = nullptr;
+        context->deviceSelectionTimer = nullptr;
+        ReleaseRowWork(context);
+        StopAppRowMotions(context);
+        context->data->handles.clear();
+        context->customRoot = nullptr;
+        context->volumeLayer = nullptr;
+        context->renderRows = nullptr;
+        context->captureRows = nullptr;
+        context->appRows = nullptr;
+        context->volumeLabel = nullptr;
+        context->recordingFeedback = nullptr;
+        context->slotLeft = nullptr;
+        context->slotEdit = nullptr;
+        context->slotMid = nullptr;
+        context->slotRight = nullptr;
+        context->slotRecording = nullptr;
+        context->footerRow = nullptr;
+        context->systemItem = nullptr;
+        context->savedContent = nullptr;
+        context->list = nullptr;
+        context->footer = nullptr;
+        context->pageWindow = nullptr;
+        Log(L"Sound panel unloaded; timers, audio handles and subscriptions released");
     }
 
     inline void MountPage(ContextPtr const& context, int page, const presentation::DeviceSnapshot* snapshot)
     {
+        if (!context->active) return;
+        if (context->updatingPage) { ScheduleEnvironmentRefresh(context); return; }
+        const PageUpdate updating(context->updatingPage);
         Settings().page = page;
         if (!context->list) return;
         if (page != 0)
         {
+            context->editing = false;
             context->pendingRecording.Reset();
             context->pendingRenderSelection.Reset();
             context->pendingCaptureSelection.Reset();
@@ -1406,22 +2247,21 @@ namespace vmex::tap::page
             if (context->deviceSelectionTimer) context->deviceSelectionTimer.Stop();
         }
 
-        const bool keepEndpoints = page == 0 && snapshot && context->customRoot && context->renderedDevices &&
-            context->list.Content() == context->customRoot && presentation::SameVolumeRows(*snapshot, *context->renderedDevices);
+        const bool keepPage = page == 0 && context->customRoot && context->list.Content() == context->customRoot;
+        const bool keepEndpoints = keepPage && snapshot && context->renderedDevices &&
+            presentation::CanReuseVolumeRows(*snapshot, *context->renderedDevices);
         ReleaseRowWork(context, keepEndpoints);
+        if (!keepPage) StopAppRowMotions(context);
 
-        std::wstring name = text::Embedded().Resolve(L"log.page.name.system");
+        std::wstring name = L"system";
         if (page == 0)
         {
-            name = text::Embedded().Resolve(L"log.page.name.custom");
+            name = L"custom";
             LoadData(context, snapshot);
-            if (keepEndpoints)
+            if (keepPage)
             {
-                context->volumeLabel.Text(winrt::hstring(text::Embedded().Resolve(
-                    Settings().recordingMode ? L"page.label.listenOutput" : L"page.section.volume")));
-                auto apps = BuildAppLayer(context);
-                const auto children = context->customRoot.Children();
-                children.SetAt(children.Size() - 1, apps);
+                UpdateVolumeLayer(context, keepEndpoints);
+                UpdateAppRows(context);
             }
             else
             {
@@ -1430,38 +2270,75 @@ namespace vmex::tap::page
                 context->customRoot = root;
             }
             context->renderedDevices = static_cast<const presentation::DeviceSnapshot&>(*context->data);
+            StartMeterUpdates(context);
         }
         else
         {
             context->list.Content(context->savedContent);
             context->customRoot = nullptr;
+            context->volumeLayer = nullptr;
+            context->renderRows = nullptr;
+            context->captureRows = nullptr;
+            context->appRows = nullptr;
             context->volumeLabel = nullptr;
             context->renderedDevices.reset();
         }
         RefreshFooter(context);
 
-        LogKey(keepEndpoints ? L"log.page.reuseDevices" : L"log.page.mountPage", { std::to_wstring(page), name });
+        Log(keepEndpoints ? L"Device controls reused page={0} name={1}" : L"Page mounted page={0} name={1}", { std::to_wstring(page), name });
     }
 
     inline void InstallFooter(ContextPtr const& context)
     {
         context->slotLeft = FooterButton(winrt::hstring(text::Embedded().Resolve(L"page.footer.clearRedirect")));
+        context->slotEdit = FooterButton(L"");
         context->slotMid = FooterButton(winrt::hstring(text::Embedded().Resolve(L"page.footer.settings")));
         context->slotRight = FooterButton(L"SystemMixer");
+        context->slotRecording = FooterButton(L"");
+        const auto recordingGlyph = Glyph(L"\xECCB", 16);
+        recordingGlyph.Margin(PGX::ThicknessHelper::FromUniformLength(0));
+        context->slotRecording.Content(recordingGlyph);
+        const auto recordingName = winrt::hstring(text::Embedded().Resolve(L"page.checkbox.recordingMode"));
+        PGXC::ToolTipService::SetToolTip(context->slotRecording, winrt::box_value(recordingName));
+        PGXAU::AutomationProperties::SetName(context->slotRecording, recordingName);
+        context->slotRecording.MinWidth(0);
+        const std::weak_ptr<Context> weak = context;
+        const auto editGlyph = Glyph(L"\xE70F", 16);
+        editGlyph.Margin(PGX::ThicknessHelper::FromUniformLength(0));
+        context->slotEdit.Content(editGlyph);
+        context->slotEdit.Click([weak](auto const&, auto const&)
+        {
+            const auto live = weak.lock();
+            if (!live || !live->active || Settings().page != 0 || !live->customRoot ||
+                live->updatingPage || live->recordingChanging) return;
+            live->editing = !live->editing;
+            CloseEndpointIconPicker(live);
+            for (const auto& icon : live->endpointIcons) SetEndpointIconEditing(icon, live->editing);
+            ReleaseRowWork(live, true);
+            UpdateAppRows(live);
+            StartMeterUpdates(live);
+            RefreshFooter(live);
+        });
+        context->slotRecording.Click([weak](auto const&, auto const&)
+        {
+            if (const auto live = weak.lock(); live && live->active && Settings().page == 0 &&
+                live->recordingAvailable && !live->recordingChanging)
+                QueueRecordingChange(live, !live->pendingRecording.ValueOr(Settings().recordingMode));
+        });
 
         ContextPtr weakContext = context;
         context->slotLeft.Click([weakContext](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
         {
-            if (Settings().page == 0)
+            if (weakContext->active && Settings().page == 0)
             {
                 if (!SendClearRedirects()) return;
                 ScheduleSettleSync(weakContext);
-                LogKey(L"log.page.clearRedirects");
+                Log(L"Clear application routes requested");
             }
         });
         context->slotMid.Click([weakContext](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
         {
-            if (Settings().page == 0) SendOrLog("MANAGER\n", L"MANAGER");
+            if (weakContext->active && Settings().page == 0) SendOrLog("MANAGER\n", L"MANAGER");
         });
         context->slotRight.Click([weakContext](PGF::IInspectable const&, PGX::RoutedEventArgs const&)
         {
@@ -1501,31 +2378,23 @@ namespace vmex::tap::page
         const auto routes = context->manager->EnumerateRoutingDevices(Settings().recordingMode, data.routingRender);
         const auto inputs = context->manager->EnumerateDevices(audio::DataFlow::Capture, audio::DeviceState::Active, data.capture);
         data.recordingMode = Settings().recordingMode;
-        data.recordingAvailable = context->recordingAvailable;
         data.showDriverName = Settings().showDriverName;
         if (!outputs || !routes || !inputs) return false;
-        audio::DeviceInfo device;
-        if (context->manager->GetDefaultDevice(audio::DataFlow::Render, audio::DeviceRole::Multimedia, device))
-            data.defaultRender = device.id;
-        else if (!data.render.empty()) return false;
-        if (context->manager->GetDefaultDevice(audio::DataFlow::Capture, audio::DeviceRole::Multimedia, device))
-            data.defaultCapture = device.id;
-        else if (!data.capture.empty()) return false;
+        const auto& previous = *context->data;
+        presentation::SelectVisibleDefaults(data, previous, Settings().listenEndpoint);
         data.appsEndpoint = data.defaultRender;
         if (data.recordingMode)
         {
-            presentation::PrioritizeMonitor(data.render, Settings().listenEndpoint);
             audio::DeviceInfo virtualDevice;
-            if (!context->manager->FindVirtualDevice(virtualDevice) || data.defaultRender != virtualDevice.id) return false;
-            data.appsEndpoint = virtualDevice.id;
+            if (context->manager->FindVirtualDevice(virtualDevice)) data.appsEndpoint = std::move(virtualDevice.id);
+            else data.appsEndpoint = previous.recordingMode ? previous.appsEndpoint : std::wstring{};
         }
-        else if (!data.render.empty() && std::none_of(data.render.begin(), data.render.end(),
-            [&](const auto& item) { return item.id == data.defaultRender; })) return false;
         return true;
     }
 
     inline void LoadData(ContextPtr const& context, const presentation::DeviceSnapshot* snapshot)
     {
+        const auto started = MeterClock::now();
         Settings().showDriverName = settings::ReadBool(settings::kShowDriverName, true);
         PageData& data = *context->data;
         if (!context->manager) return;
@@ -1548,26 +2417,16 @@ namespace vmex::tap::page
             const auto scope = Settings().recordingMode ? std::wstring_view(data.appsEndpoint) : std::wstring_view();
             context->manager->EnumerateAppSessions(context->redirects, data.apps, scope);
             SeedRedirects(context);
-            context->manager->EnumerateAppSessions(context->redirects, data.apps, scope);
+            context->manager->EnumerateAppSessions(context->redirects, data.apps, scope, &data.handles,
+                Settings().recordingMode ? audio::SessionFollowMode::Endpoint : audio::SessionFollowMode::Application);
         }
 
-        data.handles.reserve(data.apps.size());
-        for (const auto& app : data.apps)
-        {
-            std::unique_ptr<audio::IAudioSessionHandle> handle;
-            if (context->manager->OpenSession(app.deviceId, app.instanceId, handle,
-                Settings().recordingMode ? audio::SessionFollowMode::Endpoint : audio::SessionFollowMode::Application).IsOk())
-            {
-                data.handles.push_back(std::move(handle));
-            }
-            else
-            {
-                data.handles.push_back(nullptr);
-            }
-        }
-
-        LogKey(L"log.page.snapshot", { std::to_wstring(data.render.size()), std::to_wstring(data.capture.size()),
-                                       std::to_wstring(data.apps.size()), data.appsEndpoint });
+        const auto handles = std::count_if(data.handles.begin(), data.handles.end(),
+            [](const auto& handle) { return static_cast<bool>(handle); });
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(MeterClock::now() - started);
+        Log(L"Panel snapshot outputs={0} inputs={1} applications={2} handles={3} elapsed={4}ms",
+            { std::to_wstring(data.render.size()), std::to_wstring(data.capture.size()),
+              std::to_wstring(data.apps.size()), std::to_wstring(handles), std::to_wstring(elapsed.count()) });
     }
 
     [[nodiscard]] inline bool IsInLiveTree(PGX::DependencyObject const& node)
@@ -1578,7 +2437,7 @@ namespace vmex::tap::page
 
     inline void SyncAppTargets(ContextPtr const& context)
     {
-        if (!context->manager || !context->data) return;
+        if (!context->active || !context->manager || !context->data) return;
         if (Settings().page != 0 || context->rows.empty()) return;
         if (!IsInLiveTree(context->list)) return;
 
@@ -1606,7 +2465,7 @@ namespace vmex::tap::page
             {
                 if (binding->handle->Rebind(match->deviceId, match->instanceId).IsOk())
                 {
-                    LogKey(L"log.page.appFollow", { binding->appKey, match->deviceName });
+                    Log(L"Application endpoint updated app={0} device={1}", { binding->appKey, match->deviceName });
                 }
             }
 
@@ -1634,7 +2493,6 @@ namespace vmex::tap::page
         if (previous != context->redirects)
         {
             context->environmentRefreshRequired = true;
-            context->deviceBuffer.Hold(::GetTickCount64());
             ScheduleEnvironmentRefresh(context);
             return;
         }
@@ -1663,64 +2521,83 @@ namespace vmex::tap::page
 
     inline void RefreshEnvironmentNow(ContextPtr const& context)
     {
-        if (!context->list) return;
+        if (!context->active || !context->list) return;
         if (context->deviceTimer) context->deviceTimer.Stop();
 
         if (!IsInLiveTree(context->list)) return;
-        if (context->recordingChanging || context->pendingRecording || context->pendingRenderSelection ||
-            context->pendingCaptureSelection || context->deviceBuffer.Waiting(::GetTickCount64()) ||
-            std::any_of(context->rows.begin(), context->rows.end(), [](const auto& row)
-                { return row->dragging->load(std::memory_order_acquire); }))
+        if (context->updatingPage)
         {
             ScheduleEnvironmentRefresh(context);
             return;
         }
+        if (context->pendingRenderSelection || context->pendingCaptureSelection) return;
 
         if (Settings().page == 0)
         {
             presentation::DeviceSnapshot candidate;
             if (!ReadDeviceLists(context, candidate))
             {
-                context->deviceBuffer.Hold(::GetTickCount64());
-                ScheduleEnvironmentRefresh(context);
+                ScheduleEnvironmentRefresh(context, std::chrono::milliseconds(150));
                 return;
             }
-            if (!context->deviceBuffer.Observe(candidate, ::GetTickCount64()))
+            if (context->renderedDevices && context->volumeLayer &&
+                !presentation::SameVolumeRows(candidate, *context->renderedDevices))
             {
-                ScheduleEnvironmentRefresh(context);
+                const PageUpdate updating(context->updatingPage);
+                auto& rendered = *context->renderedDevices;
+                const bool keepEndpoints = presentation::CanReuseVolumeRows(candidate, rendered);
+                if (!keepEndpoints) ReleaseEndpointWork(context);
+                context->data->render = candidate.render;
+                context->data->capture = candidate.capture;
+                context->data->defaultRender = candidate.defaultRender;
+                context->data->defaultCapture = candidate.defaultCapture;
+                UpdateVolumeLayer(context, keepEndpoints);
+                StartMeterUpdates(context);
+                rendered.render = std::move(candidate.render);
+                rendered.capture = std::move(candidate.capture);
+                rendered.showDriverName = candidate.showDriverName;
+                context->environmentRefreshRequired = true;
+                if (!context->recordingChanging) ScheduleEnvironmentRefresh(context);
                 return;
             }
-            if (!context->environmentRefreshRequired && context->renderedDevices &&
-                presentation::SameDeviceSnapshot(candidate, *context->renderedDevices))
+            if (context->recordingChanging) return;
+            if (std::any_of(context->rows.begin(), context->rows.end(), [](const auto& row)
+                { return row->dragging->load(std::memory_order_acquire); }))
             {
-                SyncAppTargets(context);
+                ScheduleEnvironmentRefresh(context, std::chrono::milliseconds(150));
                 return;
             }
-            context->environmentRefreshRequired = false;
-            MountPage(context, 0, &candidate);
+            if (context->environmentRefreshRequired || !context->renderedDevices ||
+                !presentation::SameDeviceSnapshot(candidate, *context->renderedDevices))
+            {
+                context->environmentRefreshRequired = false;
+                MountPage(context, 0, &candidate);
+            }
             return;
         }
 
         LoadData(context);
     }
 
-    inline void ScheduleEnvironmentRefresh(ContextPtr const& context)
+    inline void ScheduleEnvironmentRefresh(ContextPtr const& context, std::chrono::milliseconds delay)
     {
-        if (!context->list) return;
+        if (!context->active || !context->list) return;
 
         if (!context->deviceTimer)
         {
             context->deviceTimer = PGX::DispatcherTimer();
-            context->deviceTimer.Interval(std::chrono::milliseconds(150));
-
-            ContextPtr weakContext = context;
-            context->deviceTimer.Tick([weakContext](PGF::IInspectable const&, PGF::IInspectable const&)
+            const std::weak_ptr<Context> weak = context;
+            context->deviceTimer.Tick([weak](PGF::IInspectable const&, PGF::IInspectable const&)
             {
-                RefreshEnvironmentNow(weakContext);
+                if (const auto live = weak.lock()) RefreshEnvironmentNow(live);
             });
         }
-
-        context->deviceTimer.Stop();
+        if (context->deviceTimer.IsEnabled())
+        {
+            if (context->deviceTimer.Interval() <= delay) return;
+            context->deviceTimer.Stop();
+        }
+        context->deviceTimer.Interval(delay);
         context->deviceTimer.Start();
     }
 
@@ -1731,14 +2608,13 @@ namespace vmex::tap::page
 
         if (event.kind == audio::DeviceEventKind::DefaultChanged)
         {
-            LogKey(L"log.page.defaultDeviceChanged", { event.deviceId });
+            Log(L"Default endpoint changed device={0}", { event.deviceId });
         }
         else
         {
-            LogKey(L"log.page.deviceListChanged", { event.deviceId });
+            Log(L"Endpoint list changed device={0}", { event.deviceId });
         }
 
-        context->deviceBuffer.Hold(::GetTickCount64());
         ScheduleEnvironmentRefresh(context);
     }
 
@@ -1798,7 +2674,7 @@ namespace vmex::tap::page
     {
         Settings().expectSoundPage = true;
         Settings().expectTick = ::GetTickCount64();
-        LogKey(L"log.page.entryExpect");
+        Log(L"Sound page entry activated; awaiting content");
     }
 
     inline bool ConsumeSoundPageExpectation()
@@ -1879,7 +2755,7 @@ namespace vmex::tap::page
 
         if (!pageWindow)
         {
-            LogKey(L"log.page.noPageWindow");
+            Log(L"PageWindow missing; takeover deferred");
             return false;
         }
 
@@ -1887,7 +2763,7 @@ namespace vmex::tap::page
         PGXC::ScrollViewer scroller = listElement ? listElement.try_as<PGXC::ScrollViewer>() : nullptr;
         if (!scroller)
         {
-            LogKey(L"log.page.noListContent");
+            Log(L"List content missing; takeover deferred");
             return false;
         }
 
@@ -1899,6 +2775,11 @@ namespace vmex::tap::page
         context->list = scroller;
         context->data = std::make_shared<PageData>();
         context->startedTick = ::GetTickCount64();
+        const std::weak_ptr<Context> weak = context;
+        context->pageWindow.Unloaded([weak](auto const&, auto const&)
+        {
+            if (const auto live = weak.lock()) StopPageWork(live);
+        });
 
         InstallFooterWatch(context);
 
@@ -1908,18 +2789,28 @@ namespace vmex::tap::page
             return true;
         }
 
-        LogKey(L"log.page.waitContent");
+        Log(L"Waiting for sound page content");
         Settle(context, 0);
         return true;
     }
 
     inline void CommitTakeover(ContextPtr const& context)
     {
+        if (!context->active || context->committed) return;
         context->committed = true;
 
         Settings().showDriverName = settings::ReadBool(settings::kShowDriverName, true);
 
         try { context->savedContent = context->list.Content(); } catch (...) {}
+
+        context->recordingAvailable = Settings().recordingAvailable;
+        recording::PanelState panel;
+        if (recording::PanelStateCache::Read(panel))
+        {
+            context->recordingAvailable = Settings().recordingAvailable = panel.available;
+            Settings().recordingMode = panel.recording.enabled || panel.recording.cleanupPending;
+            Settings().listenEndpoint = panel.recording.monitorDevice;
+        }
 
         InstallFooter(context);
         MountPage(context, 0);
@@ -1927,14 +2818,12 @@ namespace vmex::tap::page
         if (kRecordingModeEnabled) RefreshRecording(context, L"status");
 
         MountFooter(context, 0);
-        LogKey(L"log.page.takeover", { context->savedContent
-                                           ? text::Embedded().Resolve(L"log.page.saved")
-                                           : text::Embedded().Resolve(L"log.page.empty") });
+        Log(L"Sound page takeover originalContent={0}", { context->savedContent ? L"saved" : L"empty" });
     }
 
     inline void Settle(ContextPtr const& context, int attempt)
     {
-        if (context->abandoned) return;
+        if (!context->active || context->abandoned) return;
 
         if (context->committed)
         {
@@ -1949,7 +2838,7 @@ namespace vmex::tap::page
             context->lastIdentifyTick = now;
             if (IsSoundPageContent(context->pageWindow))
             {
-                LogKey(L"log.page.contentDetected");
+                Log(L"Sound page content detected");
                 CommitTakeover(context);
                 return;
             }
@@ -1961,7 +2850,7 @@ namespace vmex::tap::page
         {
             context->abandoned = true;
             const std::wstring title = PageTitle(context->pageWindow);
-            LogKey(L"log.page.notSoundPage", { title, std::to_wstring(elapsed) });
+            Log(L"Unrelated page skipped title={0} elapsed={1}ms", { title, std::to_wstring(elapsed) });
             PGX::FrameworkElement list = FindByNameDeep(context->pageWindow, L"ListContent", 0);
             TapPageDumpTree(list ? list : context->pageWindow, 6);
             return;
@@ -1982,27 +2871,29 @@ namespace vmex::tap::page
 
     inline bool TryMountNow(ContextPtr const& context)
     {
+        if (!context->active) return false;
         if (context->mountDone) return true;
         if (context->mounting) return false;
 
         context->mounting = true;
         const FooterMount mount = TapPageMountFooterRow(
-            context->footer, { context->slotLeft, context->slotMid, context->slotRight });
+            context->footer, { context->slotLeft, context->slotEdit, context->slotMid, context->slotRecording, context->slotRight });
         context->mounting = false;
 
         if (mount.ok)
         {
             context->systemItem = mount.systemItem;
+            context->footerRow = mount.row;
             context->mountDone = true;
             RefreshFooter(context);
-            LogKey(L"log.page.footerMounted", { std::to_wstring(::GetTickCount64() - context->startedTick) });
+            Log(L"Footer mounted elapsed={0}ms", { std::to_wstring(::GetTickCount64() - context->startedTick) });
             return true;
         }
 
         const std::wstring state = TapPageDescribeNode(context->footer);
         if (state != context->lastFooterState)
         {
-            LogKey(L"log.page.footerMountFailed", { std::to_wstring(context->mountAttempts),
+            Log(L"Footer mount failed attempt={0} elapsed={1}ms detail={2} node={3}", { std::to_wstring(context->mountAttempts),
                                                     std::to_wstring(::GetTickCount64() - context->startedTick),
                                                     strings::ToWide(mount.reason), state });
             context->lastFooterState = state;
@@ -2013,6 +2904,7 @@ namespace vmex::tap::page
 
     inline void MountFooter(ContextPtr const& context, int attempt)
     {
+        if (!context->active || !context->footer) return;
         if (TryMountNow(context)) return;
 
         constexpr unsigned long long kBudgetMs = 6000;
@@ -2022,7 +2914,7 @@ namespace vmex::tap::page
             if (!context->mountGaveUp)
             {
                 context->mountGaveUp = true;
-                LogKey(L"log.page.footerGaveUp",
+                Log(L"Footer mounting deferred to event hook elapsed={0}ms attempts={1}",
                        { std::to_wstring(elapsed), std::to_wstring(context->mountAttempts) });
                 TapPageDumpTree(context->footer, 14);
             }
@@ -2032,7 +2924,7 @@ namespace vmex::tap::page
         auto dispatcher = context->footer.Dispatcher();
         if (!dispatcher)
         {
-            LogKey(L"log.page.noDispatcher");
+            Log(L"Footer dispatcher missing; mounting skipped");
             return;
         }
 
@@ -2052,7 +2944,7 @@ namespace vmex::tap::page
         catch (...)
         {
             context->mountChainRunning = false;
-            LogKey(L"log.page.dispatchFailed");
+            Log(L"Footer retry dispatch failed");
         }
     }
 
@@ -2064,7 +2956,7 @@ namespace vmex::tap::page
         {
             if (auto live = weak.lock())
             {
-                LogKey(L"log.page.footerSizeChanged", { strings::FromDouble(args.NewSize().Width, 0),
+                Log(L"Footer size changed width={0} height={1}", { strings::FromDouble(args.NewSize().Width, 0),
                                                         strings::FromDouble(args.NewSize().Height, 0) });
                 Settle(live, 0);
             }
@@ -2078,7 +2970,7 @@ namespace vmex::tap::page
                 live->layoutTicks += 1;
                 if (live->layoutTicks == 1)
                 {
-                    LogKey(L"log.page.footerFirstLayout");
+                    Log(L"Footer first layout completed");
                 }
                 Settle(live, 0);
             }
@@ -2087,84 +2979,104 @@ namespace vmex::tap::page
 
     inline winrt::fire_and_forget RefreshRecording(ContextPtr context, std::wstring action, std::wstring device)
     {
-        if (context->recordingBusy || !context->list) co_return;
-        context->recordingBusy = true;
-        const bool changing = action != L"status";
-        context->recordingChanging = changing;
-        if (changing) context->list.IsHitTestVisible(false);
-        const auto dispatcher = context->list.Dispatcher();
-        if (changing && context->recordingToggle) context->recordingToggle.IsEnabled(false);
-        recording::Snapshot state;
-        Status result;
-        bool available = context->recordingAvailable;
+        winrt::Windows::UI::Core::CoreDispatcher dispatcher{nullptr};
         try
         {
-            co_await winrt::resume_background();
-            result = recording::Request(action, device, state);
-            if (!result && action == L"status")
-                LogKey(L"log.page.recordingQueryFailed", { result.detail });
-            if (state.known)
-                available = recording::QueryRecordingReadiness(state.enabled || state.cleanupPending ?
-                    std::wstring_view(state.monitorDevice) : std::wstring_view()).IsOk();
-        }
-        catch (...) { result = Status::Failed(L"recording-request-exception"); }
-        co_await winrt::resume_foreground(dispatcher);
-        context->recordingBusy = false;
-        context->recordingChanging = false;
-        if (changing)
-        {
-            context->list.IsHitTestVisible(true);
-            context->deviceBuffer.Hold(::GetTickCount64(), 800);
-        }
-        if (!IsInLiveTree(context->list) || Settings().page != 0) co_return;
-        bool changed = action == L"monitor" || context->recordingAvailable != available || (state.known &&
-            (Settings().recordingMode != (state.enabled || state.cleanupPending) || Settings().listenEndpoint != state.monitorDevice));
-        if (context->recordingAvailable != available)
-            LogKey(L"log.page.recordingAvailable", { available ? L"1" : L"0" });
-        context->recordingAvailable = available;
-        if (state.known)
-        {
-            Settings().recordingMode = state.enabled || state.cleanupPending;
-            Settings().listenEndpoint = state.monitorDevice;
-        }
-        if (!changed && state.known && state.enabled && context->manager && context->data &&
-            !context->data->appsEndpoint.empty())
-        {
-            std::vector<audio::AppSessionInfo> live;
-            if (context->manager->EnumerateAppSessions(context->redirects, live, context->data->appsEndpoint).IsOk())
+            if (!context->active || context->recordingBusy || !context->list || Settings().page != 0) co_return;
+            context->recordingBusy = true;
+            const bool changing = action != L"status";
+            context->recordingChanging = changing;
+            if (action == L"on" || action == L"off") context->recordingTarget = action == L"on";
+            dispatcher = context->list.Dispatcher();
+            if (changing) context->list.IsHitTestVisible(false);
+            RefreshFooter(context);
+            recording::Snapshot state;
+            Status result;
+            bool available = context->recordingAvailable;
+            try
             {
-                changed = live.size() != context->data->apps.size();
-                for (const auto& session : live)
+                co_await winrt::resume_background();
+                recording::PanelState panel;
+                if (!changing && recording::PanelStateCache::Read(panel))
                 {
-                    if (std::none_of(context->data->apps.begin(), context->data->apps.end(), [&](const auto& old)
-                        { return old.instanceId == session.instanceId && old.deviceId == session.deviceId; }))
+                    state = panel.recording;
+                    available = panel.available;
+                }
+                else
+                {
+                    result = recording::Request(action, device, state);
+                    if (recording::PanelStateCache::Read(panel)) available = panel.available;
+                    else if (state.known)
+                        available = recording::QueryRecordingReadiness(state.enabled || state.cleanupPending ?
+                            std::wstring_view(state.monitorDevice) : std::wstring_view()).IsOk();
+                }
+            }
+            catch (...) { result = Status::Failed(L"recording-request-exception"); }
+            co_await winrt::resume_foreground(dispatcher);
+            context->recordingBusy = false;
+            context->recordingChanging = false;
+            context->recordingTarget.reset();
+            if (!context->active || !context->list || Settings().page != 0) co_return;
+            if (changing) context->list.IsHitTestVisible(true);
+            if (!IsInLiveTree(context->list)) co_return;
+            bool changed = action == L"monitor" || (state.known &&
+                (Settings().recordingMode != (state.enabled || state.cleanupPending) || Settings().listenEndpoint != state.monitorDevice));
+            if (context->recordingAvailable != available)
+                Log(L"Recording availability changed available={0}", { available ? L"1" : L"0" });
+            context->recordingAvailable = Settings().recordingAvailable = available;
+            if (state.known)
+            {
+                Settings().recordingMode = state.enabled || state.cleanupPending;
+                Settings().listenEndpoint = state.monitorDevice;
+            }
+            RefreshFooter(context);
+            if (!changed && state.known && state.enabled && context->manager && context->data &&
+                !context->data->appsEndpoint.empty())
+            {
+                std::vector<audio::AppSessionInfo> live;
+                if (context->manager->EnumerateAppSessions(context->redirects, live, context->data->appsEndpoint).IsOk())
+                {
+                    changed = live.size() != context->data->apps.size();
+                    for (const auto& session : live)
                     {
-                        changed = true;
-                        break;
+                        if (std::none_of(context->data->apps.begin(), context->data->apps.end(), [&](const auto& old)
+                            { return old.instanceId == session.instanceId && old.deviceId == session.deviceId; }))
+                        {
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+                if (changed && std::any_of(context->rows.begin(), context->rows.end(), [](const auto& row)
+                    { return row->dragging->load(std::memory_order_acquire); })) changed = false;
+            }
+            if (changed) context->environmentRefreshRequired = true;
+            if (changed || changing) ScheduleEnvironmentRefresh(context);
+            if (!result) Log(L"Recording state query failed detail={0}", { result.detail });
+            if (context->recordingFeedback)
+            {
+                context->recordingFeedback.Text(result ? L"" : winrt::hstring(text::Embedded().ResolveFormat(L"recording.failed", { result.detail })));
+                context->recordingFeedback.Visibility(result || !available ? PGX::Visibility::Collapsed : PGX::Visibility::Visible);
+            }
+        }
+        catch (...)
+        {
+            Log(L"Recording UI refresh failed; exception contained");
+            try
+            {
+                if (dispatcher && dispatcher.HasThreadAccess())
+                {
+                    context->recordingBusy = false;
+                    context->recordingChanging = false;
+                    context->recordingTarget.reset();
+                    if (context->active && context->list)
+                    {
+                        context->list.IsHitTestVisible(true);
+                        RefreshFooter(context);
                     }
                 }
             }
-            if (changed && std::any_of(context->rows.begin(), context->rows.end(), [](const auto& row)
-                { return row->dragging->load(std::memory_order_acquire); })) changed = false;
-        }
-        if (changed)
-        {
-            context->environmentRefreshRequired = true;
-            if (!changing) context->deviceBuffer.Hold(::GetTickCount64());
-            ScheduleEnvironmentRefresh(context);
-        }
-        if (context->recordingToggle)
-        {
-            context->recordingSynchronizing = true;
-            if (!context->pendingRecording && context->recordingToggle.IsOn() != Settings().recordingMode)
-                context->recordingToggle.IsOn(Settings().recordingMode);
-            context->recordingSynchronizing = false;
-            if (changing) context->recordingToggle.IsEnabled(true);
-        }
-        if (context->recordingFeedback)
-        {
-            context->recordingFeedback.Text(result ? L"" : winrt::hstring(text::Embedded().ResolveFormat(L"recording.failed", { result.detail })));
-            context->recordingFeedback.Visibility(result || !available ? PGX::Visibility::Collapsed : PGX::Visibility::Visible);
+            catch (...) {}
         }
     }
 
@@ -2172,7 +3084,6 @@ namespace vmex::tap::page
     {
         PGXC::StackPanel root;
         root.Padding(PGX::ThicknessHelper::FromLengths(kBodyInset, 0, kBodyInset, 0));
-        context->recordingToggle = nullptr;
         if (kRecordingModeEnabled)
         {
             const std::weak_ptr<Context> weak = context;
@@ -2194,8 +3105,17 @@ namespace vmex::tap::page
                 context->recordingTimer.Start();
             }
         }
-        root.Children().Append(BuildVolumeLayer(context));
-        root.Children().Append(BuildAppLayer(context));
+        context->volumeLayer = PGXC::Grid();
+        context->volumeLayer.Children().Append(BuildVolumeLayer(context));
+        root.Children().Append(context->volumeLayer);
+
+        PGXC::StackPanel mixer;
+        mixer.Children().Append(SectionLabel(winrt::hstring(text::Embedded().Resolve(L"page.section.mixer"))));
+        context->appRows = PGXC::StackPanel();
+        context->appRows.Margin(PGX::ThicknessHelper::FromLengths(kAudioRowLeadingInset, 0, 0, 0));
+        UpdateAppRows(context);
+        mixer.Children().Append(context->appRows);
+        root.Children().Append(mixer);
         return root;
     }
 

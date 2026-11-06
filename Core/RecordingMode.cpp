@@ -15,8 +15,8 @@ namespace vmex::recording
 
         Status Report(std::wstring_view action, Status result)
         {
-            log::Logger::Instance().WriteKeyFormat(result ? log::Level::Info : log::Level::Error,
-                L"recording", L"log.recording.result", { std::wstring(action), std::to_wstring(result.code), result.detail });
+            log::Logger::Instance().WriteFormat(result ? log::Level::Info : log::Level::Error,
+                L"recording", L"Operation {0} code={1} detail={2}", { std::wstring(action), std::to_wstring(result.code), result.detail });
             return result;
         }
     }

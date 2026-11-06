@@ -12,7 +12,8 @@ namespace vmex::inject
         ClearRedirect,
         Manager,
         Recording,
-        Exit
+        Exit,
+        UpdateExit
     };
 
     struct TapCommand final

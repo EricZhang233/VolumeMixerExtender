@@ -206,21 +206,21 @@ namespace vmex::inject
         public:
             Status FindTarget(TargetProcess& target) override
             {
-                log::Logger::Instance().WriteKey(log::Level::Debug, kChannel, L"log.inject.find_target");
+                log::Logger::Instance().Write(log::Level::Debug, kChannel, L"Searching for injection target");
 
                 const auto found = FindShellHost();
                 if (!found.has_value())
                 {
-                    log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.inject.target_missing");
+                    log::Logger::Instance().Write(log::Level::Warn, kChannel, L"ShellHost missing in current session; waiting");
                     target = {};
                     return Status::Failed(L"target-missing");
                 }
 
                 target = *found;
-                log::Logger::Instance().WriteKeyFormat(
+                log::Logger::Instance().WriteFormat(
                     log::Level::Info,
                     kChannel,
-                    L"log.inject.target_found",
+                    L"Injection target found pid={0} image={1}",
                     { std::to_wstring(target.processId), target.imageName });
                 return Status::Ok();
             }
@@ -237,10 +237,10 @@ namespace vmex::inject
 
                 if (!platform::FileExists(options.launcherModule))
                 {
-                    log::Logger::Instance().WriteKeyFormat(
+                    log::Logger::Instance().WriteFormat(
                         log::Level::Error,
                         kChannel,
-                        L"log.inject.launcher_missing",
+                        L"Injection payload missing path={0}",
                         { options.launcherModule.wstring() });
                     state = {};
                     return Status::Failed(L"launcher-missing");
@@ -254,18 +254,18 @@ namespace vmex::inject
                     if (!loaded.path.empty() &&
                         !strings::EqualsIgnoreCase(loaded.path, options.tapModule.wstring()))
                     {
-                        log::Logger::Instance().WriteKeyFormat(
+                        log::Logger::Instance().WriteFormat(
                             log::Level::Warn,
                             kChannel,
-                            L"log.inject.stale_tap",
+                            L"Stale TAP loaded; ShellHost restart required loaded={0} current={1}",
                             { loaded.path, options.tapModule.wstring() });
                     }
                     else
                     {
-                        log::Logger::Instance().WriteKeyFormat(
+                        log::Logger::Instance().WriteFormat(
                             log::Level::Info,
                             kChannel,
-                            L"log.inject.already_loaded",
+                            L"TAP already loaded; injection skipped pid={0}",
                             { std::to_wstring(target.processId) });
                     }
 
@@ -275,10 +275,10 @@ namespace vmex::inject
                     return Status::Ok();
                 }
 
-                log::Logger::Instance().WriteKeyFormat(
+                log::Logger::Instance().WriteFormat(
                     log::Level::Info,
                     kChannel,
-                    L"log.inject.payload",
+                    L"Injection payload launcher={0} tap={1}",
                     { options.launcherModule.wstring(), options.tapModule.wstring() });
 
                 const std::wstring coreName(kCoreDllName);
@@ -288,18 +288,18 @@ namespace vmex::inject
                     const auto coreStatus = InjectInto(target.processId, options.coreModule, options.timeoutMs, coreBase);
                     if (!coreStatus.IsOk())
                     {
-                        log::Logger::Instance().WriteKeyFormat(
+                        log::Logger::Instance().WriteFormat(
                             log::Level::Error,
                             kChannel,
-                            L"log.inject.core_failed",
+                            L"Core preload failed pid={0} detail={1}",
                             { std::to_wstring(target.processId), coreStatus.detail });
                         state = {};
                         return coreStatus;
                     }
-                    log::Logger::Instance().WriteKeyFormat(
+                    log::Logger::Instance().WriteFormat(
                         log::Level::Info,
                         kChannel,
-                        L"log.inject.core_loaded",
+                        L"Core preloaded pid={0}",
                         { std::to_wstring(target.processId) });
                 }
 
@@ -307,20 +307,20 @@ namespace vmex::inject
                 const auto status = InjectInto(target.processId, options.launcherModule, options.timeoutMs, remoteModule);
                 if (!status.IsOk())
                 {
-                    log::Logger::Instance().WriteKeyFormat(
+                    log::Logger::Instance().WriteFormat(
                         log::Level::Error,
                         kChannel,
-                        L"log.inject.failed",
+                        L"Injection failed pid={0} detail={1}",
                         { std::to_wstring(target.processId), status.detail });
                     state = {};
                     return status;
                 }
 
                 const bool tapLoaded = WaitForModule(target.processId, tapName, options.timeoutMs);
-                log::Logger::Instance().WriteKeyFormat(
+                log::Logger::Instance().WriteFormat(
                     tapLoaded ? log::Level::Info : log::Level::Warn,
                     kChannel,
-                    tapLoaded ? L"log.inject.tap_ready" : L"log.inject.tap_pending",
+                    tapLoaded ? L"TAP ready pid={0}" : L"TAP readiness timed out pid={0}",
                     { std::to_wstring(target.processId) });
 
                 state.target = target;

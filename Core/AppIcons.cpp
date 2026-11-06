@@ -1,5 +1,6 @@
 #include "AppIcons.h"
 
+#include "ApplicationIdentity.h"
 #include "Logger.h"
 #include "Platform.h"
 
@@ -33,36 +34,6 @@ namespace vmex::icons
             return buffer;
         }
 
-        std::wstring ProcessImagePath(std::uint32_t processId)
-        {
-            const HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
-            if (process == nullptr)
-            {
-                return {};
-            }
-
-            std::wstring buffer(MAX_PATH, L'\0');
-            for (;;)
-            {
-                DWORD size = static_cast<DWORD>(buffer.size());
-                if (::QueryFullProcessImageNameW(process, 0, buffer.data(), &size) != FALSE)
-                {
-                    buffer.resize(size);
-                    ::CloseHandle(process);
-                    return buffer;
-                }
-
-                if (::GetLastError() != ERROR_INSUFFICIENT_BUFFER)
-                {
-                    break;
-                }
-                buffer.resize(buffer.size() * 2);
-            }
-
-            ::CloseHandle(process);
-            return {};
-        }
-
         HICON LoadShellIcon(const std::wstring& image)
         {
             SHFILEINFOW info{};
@@ -81,7 +52,47 @@ namespace vmex::icons
             return nullptr;
         }
 
-        Status EncodePng(HICON icon, const std::filesystem::path& file)
+        Microsoft::WRL::ComPtr<IWICBitmap> LoadAppBitmap(IWICImagingFactory& factory, const std::wstring& image,
+            const std::wstring& applicationId)
+        {
+            auto item = application::FindRegisteredApplication(applicationId);
+            if (applicationId.empty())
+                ::SHCreateItemFromParsingName(image.c_str(), nullptr, IID_PPV_ARGS(&item));
+
+            Microsoft::WRL::ComPtr<IShellItemImageFactory> images;
+            if (item && SUCCEEDED(item.As(&images)))
+            {
+                for (const LONG edge : { 128, 64, 32 })
+                {
+                    HBITMAP icon = nullptr;
+                    const auto result = images->GetImage(SIZE{ edge, edge }, SIIGBF_ICONONLY, &icon);
+                    if (!icon) continue;
+                    Microsoft::WRL::ComPtr<IWICBitmap> bitmap;
+                    BITMAP dimensions{};
+                    if (SUCCEEDED(result) && ::GetObjectW(icon, sizeof(dimensions), &dimensions) &&
+                        dimensions.bmWidth == edge && dimensions.bmHeight == edge)
+                    {
+                        factory.CreateBitmapFromHBITMAP(icon, nullptr, WICBitmapUseAlpha, &bitmap);
+                    }
+                    ::DeleteObject(icon);
+                    if (bitmap) return bitmap;
+                }
+            }
+
+            if (applicationId.empty())
+            {
+                if (const HICON icon = LoadShellIcon(image))
+                {
+                    Microsoft::WRL::ComPtr<IWICBitmap> bitmap;
+                    factory.CreateBitmapFromHICON(icon, &bitmap);
+                    ::DestroyIcon(icon);
+                    return bitmap;
+                }
+            }
+            return {};
+        }
+
+        Status EncodePng(const std::wstring& image, const std::wstring& applicationId, const std::filesystem::path& file)
         {
             Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
             HRESULT result = ::CoCreateInstance(
@@ -91,11 +102,10 @@ namespace vmex::icons
                 return Status::FromHResult(L"wic-factory", result);
             }
 
-            Microsoft::WRL::ComPtr<IWICBitmap> bitmap;
-            result = factory->CreateBitmapFromHICON(icon, &bitmap);
-            if (FAILED(result))
+            const auto bitmap = LoadAppBitmap(*factory.Get(), image, applicationId);
+            if (!bitmap)
             {
-                return Status::FromHResult(L"wic-bitmap", result);
+                return Status::Failed(L"icon-missing");
             }
 
             Microsoft::WRL::ComPtr<IWICStream> stream;
@@ -159,10 +169,11 @@ namespace vmex::icons
             return Status::Ok();
         }
 
-        Status Extract(const std::wstring& image, const std::filesystem::path& cacheRoot, std::wstring& pngFile)
+        Status Extract(const std::wstring& image, const std::filesystem::path& cacheRoot, std::wstring& pngFile,
+            const std::wstring& applicationId = {})
         {
             pngFile.clear();
-            if (image.empty())
+            if (image.empty() && applicationId.empty())
             {
                 return Status::Failed(L"icon-no-image");
             }
@@ -175,34 +186,33 @@ namespace vmex::icons
                 return Status::Failed(L"icon-directory");
             }
 
-            const auto target = directory / (CacheKey(image) + L".png");
+            const auto source = applicationId.empty() ? image : L"app:" + applicationId + L"|" + image;
+            const auto target = directory / (CacheKey(L"icon-v2:" + source) + L".png");
             if (platform::FileExists(target))
             {
                 pngFile = target.wstring();
                 return Status::Ok();
             }
 
-            const HICON icon = LoadShellIcon(image);
-            if (icon == nullptr)
+            wchar_t temporary[MAX_PATH]{};
+            const bool hasTemporaryFile = ::GetTempFileNameW(directory.c_str(), L"ico", 0, temporary) != 0;
+            auto status = hasTemporaryFile ? EncodePng(image, applicationId, temporary) : Status::FromLastError(L"icon-temp-file");
+            if (status && !::MoveFileExW(temporary, target.c_str(), 0))
             {
-                log::Logger::Instance().WriteKeyFormat(
-                    log::Level::Debug, kChannel, L"log.icons.missing", { image });
-                return Status::Failed(L"icon-missing");
+                const auto moveStatus = Status::FromLastError(L"icon-cache-publish");
+                if (!platform::FileExists(target)) status = moveStatus;
             }
-
-            const auto status = EncodePng(icon, target);
-            ::DestroyIcon(icon);
+            if (hasTemporaryFile) std::filesystem::remove(temporary, error);
 
             if (!status.IsOk())
             {
-                log::Logger::Instance().WriteKeyFormat(
-                    log::Level::Debug, kChannel, L"log.icons.encode_failed", { image, status.detail });
-                std::filesystem::remove(target, error);
+                log::Logger::Instance().WriteFormat(
+                    log::Level::Debug, kChannel, L"Application icon extraction failed source={0} detail={1}", { source, status.detail });
                 return status;
             }
 
-            log::Logger::Instance().WriteKeyFormat(
-                log::Level::Debug, kChannel, L"log.icons.extracted", { image, target.wstring() });
+            log::Logger::Instance().WriteFormat(
+                log::Level::Debug, kChannel, L"Application icon extracted source={0} target={1}", { source, target.wstring() });
             pngFile = target.wstring();
             return Status::Ok();
         }
@@ -221,6 +231,13 @@ namespace vmex::icons
             return Status::Failed(L"icon-no-process");
         }
 
-        return Extract(ProcessImagePath(processId), cacheRoot, pngFile);
+        std::wstring applicationId;
+        const auto image = application::ProcessImagePath(processId, nullptr, &applicationId);
+        if (!applicationId.empty())
+        {
+            const auto status = Extract(image, cacheRoot, pngFile, applicationId);
+            if (status || image.empty()) return status;
+        }
+        return Extract(image, cacheRoot, pngFile);
     }
 }

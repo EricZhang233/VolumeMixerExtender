@@ -1,47 +1,8 @@
 app.name: VolumeMixerExtender
 app.short: VMExt
 app.description: 为 Windows 11 快速设置音量面板注入扩展入口与自定义声音页面
-cli.banner: VolumeMixerExtender CLI {0}
-cli.usage: 用法: vmex_cli <命令> [参数] [选项]
-cli.section.commands: 命令
-cli.section.groups: 命令分组
-cli.section.arguments: 参数
-cli.section.options: 选项
-cli.section.examples: 示例
-cli.section.exitcodes: 退出码
-cli.hint.skill: 运行 "vmex_cli skill" 获取完整接入文档
-cli.group.core: 基础
-cli.group.inject: 注入
-cli.group.audio: 音频
-cli.group.config: 配置
-cli.outcome.success: 完成
-cli.outcome.invalid_arguments: 参数错误
-cli.outcome.not_supported: 尚未实现
-cli.outcome.failed: 运行失败
-cli.error.unknown_command: 未知命令: {0}
-cli.error.missing_value: 缺少参数值: {0}
-cli.error.unknown_option: 未知选项: {0}
-cli.error.missing_required: 缺少必需参数: {0}
-cli.error.service_unavailable: 服务不可用: {0}
-cli.error.invalid_value: 无效取值: {0}
-cli.error.operation_failed: 操作失败: {0}
-cli.error.tap_not_ready: TAP 未就绪，请查看 launcher/tap 日志
-cli.error.host_running: 后台进程已在运行
-cli.error.host_failed: 后台进程启动失败
-cli.value.enabled: 已启用
-cli.value.disabled: 未启用
-cli.field.command: 命令
-cli.field.status: 状态
-cli.field.path: 路径
-cli.field.value: 值
-cli.field.count: 数量
-cli.field.missing: 缺失
-cli.field.id: 标识
-cli.field.state: 状态
-cli.field.default: 默认
-cli.value.yes: 是
-cli.value.no: 否
 manager.title: VolumeMixerExtender
+manager.version: v{0}
 manager.heading: VolumeMixerExtender
 manager.window.minimize: 最小化
 manager.window.maximize: 最大化或还原
@@ -58,14 +19,22 @@ manager.start: 启动程序
 manager.stop: 退出程序
 manager.refresh: 刷新
 manager.panel: 打开音量面板
-manager.panel.hint: 使用提示：可以由控制中心音量条右侧的按钮或[Win+Ctrl+V]快捷键打开。
+manager.panel.hint: 可从控制中心音量设置或快捷键[Win+Shift+V]进入。
+manager.panel.hint.icons: 可从控制中心 {0} 或快捷键[ {1}+{2}+V ]进入。
 manager.panel.pending: 面板尚未完成接管，请稍后重试。
-cmd.panel.summary: 启动后台程序并打开音量面板
 manager.settings: 设置
 manager.driver.hint: 下次打开音量面板时生效，无需重启程序。
 manager.maintenance: 维护
 manager.logs: 打开日志目录
 manager.project: 项目主页
+manager.state.running: 运行中
+manager.state.stopped: 未运行
+manager.update.check: 软件更新
+manager.update.checking: 正在检查软件更新…
+manager.update.download: 下载更新
+manager.update.available: 存在软件更新
+manager.update.restarting: 软件即将重启完成更新
+manager.update.installFailed: 更新未完成，请查看日志后重试。
 manager.startmenu: 注册到开始菜单
 manager.startmenu.done: 已注册到开始菜单，可在开始菜单中找到管理器。
 manager.uninstall: 卸载并清理
@@ -80,194 +49,19 @@ manager.stop.confirm: 将退出后台程序，系统声音面板可能短暂重�
 manager.uninstall.confirm: 将退出程序并清除开机启动、本程序配置、日志及缓存，同时清除当前用户全部应用的音频设备重定向与保存的音量偏好，包括其他工具设置的偏好。应用音量将恢复为 100%，系统主音量和设备总音量不变。系统声音面板可能短暂重启。程序文件保留。是否继续卸载？
 manager.uninstall.done: 卸载完成，程序文件已保留，可手动删除解压目录。
 manager.missing: 找不到管理器，请重新解压完整程序包。音量面板仍可正常使用。
-log.management.result: 管理操作 {0}，结果 {1}，详情 {2}
-log.audio.preferences_reset: 清除应用音频偏好，结果 {0}，详情 {1}
-cmd.start.summary: 启动后台主程序，已经运行时不重复启动。
-cmd.stop.summary: 退出后台主程序并停止接管，保留自启与数据。
-cmd.manager.summary: 打开或激活 VolumeMixerExtender 窗口，并自动启动后台程序。
-cmd.logs.summary: 打开本程序日志目录。
-cmd.project.summary: 打开项目主页。
-cmd.uninstall.summary: 卸载并清除自启、配置、缓存、全部应用重定向和音量偏好，保留程序文件。
-cmd.uninstall.yes: 明确确认清除全部应用音频偏好和本程序数据。
-cmd.uninstall.confirm: 卸载会清除所有应用的重定向及音量偏好。请使用 uninstall --yes 明确确认。
-cmd.show-driver-name.summary: 查询或设置是否显示驱动名，可选 on 或 off，下次打开面板生效。
+update.current: 当前没有可安装的更新
 audio.state.active: 活动
 audio.state.disabled: 已禁用
 audio.state.not-present: 不存在
 audio.state.unplugged: 未插入
 audio.state.all: 全部
-cli.field.host: 后台进程
-cli.field.pipe: 管道
-cli.field.inject: 注入
-cli.field.pid: 进程号
-cli.value.running: 运行中
-cli.value.stopped: 未运行
-cli.value.hosting: 已启动
-cli.value.injected: 已注入
-cli.value.pending: 待就绪
-cli.value.not_injected: 未注入
-skill.title: VolumeMixerExtender 接入文档
-skill.section.purpose: 用途
-skill.purpose.text: 通过命令行完整驱动快速设置音量面板的注入入口与自定义声音页面, 不依赖图形界面。
-skill.section.workflow: 工作流
-skill.workflow.text: 使用 start 启动后台程序、status 查询状态、stop 退出；manager 打开管理器，about 显示版本与许可；show-driver-name 与 autostart 接受 on/off；recording on/off/status 切换或查询录制模式，recording monitor --device=<id> 更换监听设备。待机时三个 VB-CABLE 端点均禁用，开关按配置完整性显示，包含已禁用的 CABLE Input；开启录制以原默认输出作为初始监听 R，仅临时启用 CABLE Input，监听就绪后切换默认输出；关闭时将当前监听 R 设为默认输出、清除指向 V 的应用重定向、停止监听，最后禁用 CABLE Input，失败保留待清理状态；V 仅录制时出现在重定向列表。driver status/install/uninstall 查询或打开官方安装器，安装卸载需要管理员权限并按提示重启；driver hide 退出录制并禁用三个端点，driver show 退出录制并恢复本程序有记录的禁用操作，用于诊断。clear-redirect 清除全部应用重定向与音量偏好；uninstall --yes 清除自启、配置、缓存及应用音频偏好并保留程序文件，驱动卸载使用 driver uninstall。host 可在当前终端常驻。
-skill.section.commands: 命令清单
-skill.section.exitcodes: 退出码
-skill.exitcode.text: 0 成功; 1 参数错误; 2 尚未实现; 3 运行失败
-cmd.payload.summary: 列出随附注入载荷
-cmd.payload.opt.extract: 复制载荷到指定目录
-cmd.help.summary: 显示帮助
-cmd.help.arg.command: 要查看的命令名
-cmd.version.summary: 显示版本号
-cmd.skill.summary: 输出完整接入文档
-cmd.inject.summary: 注入 TAP 到 ShellHost
-cmd.inject.opt.tap: TAP 模块路径
-cmd.inject.opt.wait: 等待目标就绪的超时毫秒数
-cmd.inject.example.run: 立即注入一次并报告结果
-cmd.status.summary: 查询注入状态
-cmd.host.summary: 以后台进程常驻, 接收页面操作命令
-cmd.host.example.run: 以后台进程方式运行 (开机自启使用此形式)
-cmd.devices.summary: 列出音频端点
-cmd.devices.opt.flow: 数据流 render 或 capture 或 all
-cmd.devices.opt.state: 端点状态 active 或 all
-cmd.devices.example.list: 列出渲染端点
-cmd.default.arg.device: 目标端点标识
-cmd.default.opt.role: 只设置指定角色 console 或 multimedia 或 communications, 省略则设置全部角色
-cmd.default.example.set: 把指定端点设为系统默认设备
-cmd.redirect.arg.process: 目标进程号
-cmd.redirect.arg.device: 目标端点标识, 省略或留空表示清除该应用的重定向
-cmd.redirect.opt.flow: 数据流 render 或 capture
-cmd.redirect.opt.role: 只设置指定角色, 省略则设置全部角色
-cmd.default.summary: 设置系统默认端点
-cmd.redirect.summary: 设置逐应用端点重定向
-cmd.clear-redirect.summary: 清除当前用户全部应用重定向与保存的音量偏好，应用音量恢复为 100%，设备总音量不变
-cmd.autostart.summary: 查询或设置开机自启
-cmd.autostart.arg.state: on 注册自启, off 取消自启, 省略则只查询
-log.app.init: 应用初始化, 配置={0}
-log.app.ready: 应用就绪, 文本项={0}
-log.app.shutdown: 应用关闭
-log.app.serve: 后台进程已启动, 管道={0}
-log.app.serve_stopped: 后台进程已停止
-log.app.serve_failed: 后台进程启动失败: 管道不可用
-log.app.serve_conflict: 后台进程已在运行, 本次启动被拒绝
-log.pipe.create_failed: 管道创建失败 (error={0})
-log.pipe.connect_failed: 管道连接失败 (error={0})
-log.pipe.unknown: 未知报文, 已忽略: {0}
-log.pipe.received: 收到报文 {0}: {1}
-log.pipe.handler_threw: 报文处理抛出异常, 已忽略
-log.pipe.invalid: 报文参数不合法, 已忽略: {0}
-log.pipe.set_default: 切换默认设备 flow={0} role={1} 结果={2}
-log.pipe.set_default_no_virtual: 未找到虚拟端点 V, 未切换默认设备 flow={0}
-log.pipe.set_redirect: 逐应用重定向 pid={0} role={1} 结果={2}
-log.pipe.redirect_not_applied: 逐应用重定向未生效(本机 RDP 限制?), 未记录状态 pid={0}
-log.pipe.clear_redirect: 清空逐应用重定向 结果={0}
-log.pipe.autostart_invalid: 自启指令参数不合法, 已忽略: {0}
-log.pipe.autostart_done: 开机自启已更新 state={0} 结果=成功
-log.pipe.autostart_failed: 开机自启更新失败 state={0} 原因={1}
-log.pipe.click_unhandled: 收到点击, 当前没有可点击条目: {0}
-log.pipe.uninstall_done: 已删除开机自启项并结束 ShellHost
-log.pipe.uninstall_failed: 卸载失败: {0}
-log.pipe.exit_done: 已结束 ShellHost, 程序即将退出
-log.pipe.exit_failed: 退出程序失败: {0}
-log.text.loaded: 文本资源载入完成, 共 {0} 项
-log.text.missing: 文本键缺失: {0}
-log.logger.sink: 已挂载日志接收器: {0}
-log.logger.level: 日志级别设为 {0}
-log.config.loaded: 配置载入完成: {0}
-log.config.saved: 配置已保存: {0}
-log.config.created: 配置不存在, 使用默认值: {0}
-log.audio.enumerate: 枚举音频端点 flow={0} state={1}
-log.audio.not_implemented: 音频设备服务尚未实现: {0}
-log.audio.policy_set_default_failed: 切换系统默认设备失败: {0} (hr=0x{1}, role={2})
-log.audio.policy_set_redirect_failed: 设置逐应用重定向失败 pid={0}
-log.audio.policy_clear_redirect_failed: 清空逐应用重定向失败
-log.app.monitor: 注入监视已启动, 载荷目录={0}
-log.app.monitor_failed: 注入监视启动失败: {0}
-log.inject.find_target: 查找注入目标进程
-log.inject.target_found: 找到目标进程 pid={0} ({1})
-log.inject.target_missing: 本会话没有 ShellHost.exe, 等待它出现
-log.inject.launcher_missing: 注入载荷不存在: {0}
-log.inject.already_loaded: pid={0} 已装载 TAP, 跳过重复注入
-log.inject.stale_tap: ShellHost 里是旧载荷, 需重启 ShellHost 才能换新: 已加载={0} 当前={1}
-log.inject.payload: 注入载荷 launcher={0} tap={1}
-log.inject.failed: 注入失败 pid={0} 原因={1}
-log.inject.core_failed: 预装载 Core 失败 pid={0} 原因={1}
-log.inject.core_loaded: Core 已预装载 pid={0}
-log.inject.launcher_loaded: 注入载荷已装载 pid={0}
-log.inject.tap_ready: TAP 已就绪 pid={0}
-log.inject.tap_pending: TAP 未在超时内就绪 pid={0} (看 launcher/tap 日志)
-log.monitor.started: 注入监视启动, 轮询间隔={0} ms
-log.monitor.stopped: 注入监视停止
-log.payload.deployed: 注入载荷已部署: {0}
-log.icons.extracted: 应用图标已提取 {0} -> {1}
-log.icons.missing: 应用没有可用图标: {0}
-log.icons.encode_failed: 应用图标编码失败 {0}: {1}
-log.redirect.stored: 记录应用重定向 app={0} device={1}
-log.redirect.store_failed: 记录应用重定向失败 app={0}: {1}
-log.redirect.clear_failed: 清除重定向记录失败: {0}
-log.cli.start: 命令行启动, 命令={0}
-log.cli.finish: 命令行结束, 命令={0} 结果={1}
-log.cli.unknown: 未知命令 {0}
-log.settings.reg_create_failed: 注册表键创建失败 (error={0})
-log.settings.reg_set_failed: 注册表值写入失败: {0} (error={1})
-log.settings.reg_delete_failed: 注册表键删除失败 (error={0})
-log.audio.state_ignored: 仅枚举活动状态的端点, 请求的状态被忽略
-log.audio.enumerated: 枚举音频端点完成 flow={0} 数量={1}
-log.audio.sessions: 枚举音频会话 device={0} 数量={1}
-log.audio.app_sessions: 枚举应用会话完成 应用数={0} 端点={1}
-log.audio.watch_started: 已开始监听音频端点变化
-log.audio.watch_failed: 监听音频端点变化失败（端点变化不再自动刷新）
 audio.session.system_sounds: 系统声音
 audio.session.unknown_app: 未知应用
-log.interop.rogetactivationfactory_unavailable: RoGetActivationFactory 取不到
-log.interop.policy_factory_activation_failed: Windows.Media.Internal.AudioPolicyConfig 激活失败（逐应用重定向不可用）
-log.interop.ipolicyconfig_unavailable: IPolicyConfig 取不到（不能切系统默认设备）
-log.interop.set_default_endpoint_failed_role: SetDefaultEndpoint 失败 role={0} hr=0x{1}
-log.autostart.missing: 自启项不存在 ⇒ 开关=关
-log.autostart.present: 自启项存在且已启用：{0} ⇒ 开关=开
-log.autostart.suppressed: 自启项存在但被系统标记为已禁用：{0} ⇒ 开关=关
-log.autostart.read_failed: 读取自启项失败 (error={0})，开关按「关」显示
-log.autostart.exe_missing: 找不到 {0}，拒绝注册（否则会得到一个永远跑不起来的自启项）
-log.autostart.write_failed: 自启项写入失败：{0} (error={1})
-log.autostart.approved_clear_failed: 清除系统禁用标记失败 (error={0})
-log.autostart.registered: 自启项已注册：{0}
-log.autostart.delete_failed: 自启项删除失败 (error={0})
-log.autostart.deleted: 自启项已删除
 autostart.error.exe_missing: 找不到 {0}，拒绝注册（否则会得到一个永远跑不起来的自启项）
 autostart.error.write_failed: 自启项写入失败 (error={0})
 autostart.error.delete_failed: 自启项删除失败 (error={0})
 startmenu.error.exe_missing: 找不到 {0}，拒绝注册开始菜单快捷方式。
 startmenu.error.write_failed: 开始菜单快捷方式写入失败 (error={0})
-log.startmenu.exe_missing: 找不到 {0}，拒绝注册开始菜单
-log.startmenu.write_failed: 开始菜单快捷方式写入失败：{0} (error={1})
-log.startmenu.registered: 开始菜单快捷方式已注册：{0}
-log.tap.class_request: DllGetClassObject 类对象请求 {0} {1}
-log.tap.guid.qi_ok: Tap::QueryInterface 返回接口 {0}
-log.tap.guid.qi_nointerface: Tap::QueryInterface 不支持的接口 E_NOINTERFACE {0}
-log.tap.guid.factory_ok: TapFactory::QueryInterface 返回 IClassFactory {0}
-log.tap.guid.factory_nointerface: TapFactory::QueryInterface 不支持的接口 E_NOINTERFACE {0}
-log.tap.guid.create_instance_riid: TapFactory::CreateInstance 请求接口 {0}
-log.tap.setsite_null: SetSite(nullptr) 站点已解除
-log.tap.setsite_site: SetSite(site) 收到站点
-log.tap.setsite_no_diagnostics: SetSite 未取得 IXamlDiagnostics
-log.tap.setsite_no_visual_tree_service: SetSite 未取得 IVisualTreeService
-log.tap.advise_visual_tree_change: 可视树变更订阅完成 {0}
-log.tap.footer_again: 同一活动页面再次出现 Footer, 已忽略
-log.tap.footer_appeared: Footer 出现
-log.tap.entry_hooked: VolumeL2Button 出现, 入口已挂钩
-log.tap.inspectable_failed: GetIInspectableFromHandle 失败
-log.tap.not_framework_element: 元素不是 FrameworkElement
-log.tap.takeover_threw_hr: 接管抛出异常 {0}
-log.tap.takeover_threw: 接管抛出异常
-log.tap.create_instance: TapFactory::CreateInstance 创建实例 {0}
-log.tap.footer_node: 页脚节点: {0}
-log.tap.ancestry_no_parent: 上级[{0}] 无父节点
-log.tap.ancestry_up: 上级[{0}] {1}
-log.tap.pipe_unavailable: 管道不可用, 命令已丢弃 (vmex.exe 是否在运行?)
-log.tap.tree_node: {0}{1}
-log.tap.tree_begin: ---- 页脚树 ----
-log.tap.tree_end: ---------------------
-log.tap.class_mismatch: 类 ID 不匹配, 期望 {0}
 page.section.volume: 音量
 page.section.mixer: 音量合成器
 page.section.general: 常规
@@ -275,11 +69,6 @@ page.label.defaultOutput: 默认输出设备
 page.label.listenOutput: 监听输出设备
 page.label.defaultInput: 默认输入设备
 page.checkbox.recordingMode: 录制模式
-log.recording.result: 录制模式操作 {0}，结果 {1}，详情 {2}
-log.recording.dropped: 监听缓冲溢出，丢弃 {0} 帧
-cmd.recording.summary: 查询或切换录制模式；录制时默认输出锁定为虚拟端点，其总音量锁定为 100%，通过实体设备监听
-cmd.recording.action: on、off、status 或 monitor（默认 status）
-cmd.recording.device: monitor 操作的监听输出设备标识
 recording.failed: 录制模式操作失败：{0}
 recording.unknown: 状态未知
 recording.available: 录制入口可用
@@ -289,20 +78,6 @@ recording.format.notReady: 无法打开音频端点或读取混音格式，请�
 recording.driver.missing: 未安装 VB-CABLE，请在管理器中打开官方安装器完成安装。
 recording.driver.notReady: VB-CABLE 的 CABLE Input 尚未就绪，请检查驱动状态并在安装后重启 Windows。
 recording.monitor.physicalRequired: 请先将实体输出设备设为默认，再开启录制模式。
-log.recording.routingCleared: 已清除指向录制虚拟端点的应用重定向：{0}
-log.recording.endpoint_hidden: 已禁用 VB-CABLE 端点：{0}
-log.recording.endpoint_shown: 已启用 VB-CABLE 端点：{0}
-log.recording.endpoint_failed: 隐藏或恢复 VB-CABLE 端点失败：{0}
-log.recording.endpoint_state_unconfirmed: VB-CABLE 端点操作返回后仍未确认目标状态：{0}，期望可见 {1}
-log.recording.endpoint_vendor_mismatch: 端点硬件 ID 不属于 VB-CABLE，已跳过：{0}
-log.recording.endpoint_vendor_unknown: 无法确认端点硬件 ID，已跳过：{0}
-log.recording.endpoint_identity: 虚拟端点身份 id={0} hardware={1} form={2} jack={3} role={4} state={5}
-log.recording.volume_locked: 已将录制虚拟输出总音量恢复为 100%
-log.recording.default_locked: 已将默认输出恢复为录制虚拟端点
-log.recording.endpoints_failed: 枚举音频端点失败，跳过 VB-CABLE 端点处理
-log.recording.endpoints_startup_failed: 启动时隐藏多余的 VB-CABLE 端点失败：{0}
-cmd.driver.summary: 查询、安装或卸载驱动；hide 退出录制并禁用三个虚拟端点，show 退出录制并恢复有记录的禁用操作
-cmd.driver.action: status、install、uninstall、hide 或 show（默认 status）
 driver.title: 录制模式驱动 · VB-CABLE
 driver.install: 打开安装器
 driver.uninstall: 打开卸载器
@@ -316,7 +91,7 @@ driver.query.failed: 无法查询录制模式驱动状态
 driver.operation.failed: 尚未确认驱动状态已改变。请在 VB-CABLE 官方安装器中完成对应操作并按提示重启 Windows。
 driver.restart: 驱动操作已完成，需要重启 Windows 后生效。
 driver.hint: 录制模式需要 VB-CABLE，安装或卸载后请重启 Windows。
-driver.endpoints.hint: 待机时三个虚拟端点均禁用；开启录制仅临时启用 CABLE Input，关闭后再次禁用。录制开关按配置完整性显示，待机禁用不影响显示。driver show 用于退出录制并恢复有记录的禁用操作。
+driver.endpoints.hint: 待机时三个虚拟端点均禁用；开启录制仅临时启用 CABLE Input，关闭后再次禁用。录制按钮按配置完整性显示，待机禁用不影响显示。卸载清理会先恢复本程序有记录的禁用操作。
 driver.signature.invalid: 驱动签名、证书或目录校验失败，已停止安装。
 driver.uninstall.confirm: 将先退出录制模式，再打开 VB-CABLE 官方安装器，请点击 Remove Driver。VB-CABLE 是共享设备，卸载也会影响使用它的其他程序；完成后请重启 Windows。是否继续？
 about.title: 关于
@@ -330,8 +105,6 @@ about.eartrumpet: EarTrumpet · File-New-Project\n逐应用音量与输出重定
 about.microsoft: Microsoft Windows XAML 诊断接口与 C++/WinRT\n用于系统面板接入与 XAML 渲染；随包 xamldiagnostics.dll 属于 Microsoft Windows SDK 组件，权利归 Microsoft，适用其原有许可。
 about.link.project: 项目主页
 about.link.project.url: https://github.com/EricZhang233/VolumeMixerExtender
-cmd.about.summary: 显示版本、开发信息、第三方组件来源与许可
-log.about.opened: 已读取关于与第三方许可信息
 page.toggle.autostart: 开机启动
 page.toggle.showDriverName: 显示驱动名
 page.button.uninstall: 从系统卸载
@@ -341,76 +114,59 @@ page.button.exit: 退出程序
 page.button.exiting: 正在退出…
 page.none.capture: （没有可用的输入设备）
 page.none.apps: （当前没有正在发声的应用）
+page.none.visibleApps: （当前没有可见的应用会话）
 page.app.redirect: 重定向到
 page.app.redirectDefault: 默认设备
+page.app.hide: 隐藏
+page.app.unhide: 取消隐藏
+page.app.visibilityFailed: 无法保存会话显示设置
 page.device.defaultSuffix: "  (默认)"
+page.device.icon.change: 更换设备图标
+page.device.icon.saveFailed: 无法保存设备图标
+page.device.icon.recommended: 系统推荐：{0}
+page.device.icon.volume: 喇叭
+page.device.icon.display: 显示器
+page.device.icon.speakers: 音响
+page.device.icon.headphones: 耳机（不带麦克风）
+page.device.icon.headset: 耳麦（带麦克风）
+page.device.icon.earbuds: 入耳式耳机
+page.device.icon.microphone: 话筒
+page.device.icon.handset: 电话听筒
+page.device.icon.audio: 音频接口
+page.device.icon.bluetooth: 蓝牙设备
+page.device.icon.laptop: 笔记本电脑
+page.device.icon.projector: 投影仪
+page.device.icon.console: 游戏机
+page.device.icon.singleEarbud: 单耳耳机
+page.device.icon.hearingAid: 助听器
+page.device.icon.usb: USB 音频
+page.device.icon.dock: 扩展坞
+page.device.icon.desktop: 台式电脑
+page.device.icon.mobile: 手机
+page.device.icon.mixer: 调音台
+page.device.icon.conference: 会议设备
+page.device.icon.casting: 无线投屏
+page.device.icon.mediaPlayer: 便携播放器
+page.device.icon.mediaRecorder: 媒体录制设备
+page.device.icon.megaphone: 扩音器
+page.device.icon.vrHeadset: 头戴式显示设备
+page.device.icon.camera: 摄像头
+page.device.icon.recordingMicrophone: 录音麦克风
+page.device.icon.equalizer: 均衡器
+page.device.icon.optical: 光盘播放器
+page.device.icon.networkAudio: 网络音频设备
+page.device.icon.streaming: 流媒体设备
+page.device.icon.audioShare: 共享音频
+page.device.icon.music: 音乐源
+page.device.icon.externalMonitor: 外接显示器
+page.device.icon.wiredUsb: 有线 USB 设备
+page.device.icon.wirelessUsb: 无线 USB 接收器
+page.device.icon.mediaReceiver: 数字媒体接收器
+page.device.icon.displayAudio: 显示器音频
 page.capture.caption: 输入设备（{0}）
 page.footer.github: GitHub
 page.footer.clearRedirect: 清除重定向
+page.footer.editMode: 编辑模式
+page.footer.exitEditMode: 退出编辑模式
 page.footer.back: 返回
 page.footer.settings: 打开管理器
-log.page.appsEmpty: 应用列表为空（端点 {0}）
-log.page.openUrlFailed: ShellExecuteW(open) 失败 code={0}
-log.page.mountPage: MountPage({0}={1}) 正文已重建，底栏已同步
-log.page.reuseDevices: MountPage({0}={1}) 保留设备控件与订阅，仅更新应用区，底栏已同步
-log.page.appRowToggle: 应用行{0}
-log.page.appMute: 应用静音 app={0} {1}
-log.page.appVolume: 应用音量 app={0} 值={1}
-log.page.appRedirectOpened: 重定向下拉已展开 app={0}
-log.page.appRedirectClosed: 重定向下拉已收起 app={0}
-log.page.appRedirectPick: 选择重定向 pid={0} 目标={1}
-log.page.appRoute: 重定向端点显示 app={0} 端点={1}
-log.page.appFollow: 应用控制已跟随端点 app={0} 端点={1}
-log.page.defaultDeviceChanged: 系统默认音频端点已变化 device={0}
-log.page.deviceListChanged: 音频端点列表已变化 device={0}
-log.page.commandDropped: 命令未送达宿主(后台进程未运行?), 已丢弃: {0}
-log.page.clearRedirects: 已清除全部重定向并重置列表
-log.page.snapshot: snapshot: render={0} capture={1} apps={2} (apps from {3})
-log.page.entryExpect: 入口「选择声音输出」被点击 -> 下一个声音页直接接管
-log.page.noPageWindow: PageWindow 没找到 -> 不接管（安全退出，绝不改树）
-log.page.noListContent: ListContent 不是 ScrollViewer -> 不接管（不是声音输出页）
-log.page.waitContent: 等页面内容出现再判断（入口按钮没被点过，可能是快捷键进来的）
-log.page.takeover: *** 自定义页已接管（原内容 {0}）***
-log.page.saved: 已保存
-log.page.empty: 为空
-log.page.contentDetected: 页面里有声音页自己的内容 -> 接管
-log.page.notSoundPage: 无法确认是声音页（标题="{0}"）-> 不接管，系统内容原样保留（{1} ms）
-log.page.footerMounted: 底栏三格已挂载（用时 {0} ms）
-log.page.footerMountFailed: 底栏挂载第 {0} 次失败（{1} ms）：{2} | {3}
-log.page.footerGaveUp: 底栏三格挂载放弃（{0} ms，共 {1} 次尝试；事件钩子仍会继续试）
-log.page.noDispatcher: 底栏没有 Dispatcher -> 放弃挂载
-log.page.dispatchFailed: 底栏重试派发失败 -> 放弃挂载
-log.page.footerSizeChanged: 底栏 SizeChanged -> {0}x{1}
-log.page.footerFirstLayout: 底栏 LayoutUpdated 首次触发
-log.page.recordingMode: 录制模式 -> {0}
-log.page.recordingAvailable: 录制模式入口可用性 -> {0}
-log.page.recordingQueryFailed: 录制状态查询失败：{0}
-log.page.redirect: 应用重定向 pid={0} device={1}
-log.page.autostart: 开机启动 -> {0}（{1}）
-log.page.autostartFailed: 开机启动：{0} 失败 —— {1}
-log.page.showDriverName: 显示驱动名 -> {0}（已写入 HKCU）
-log.page.autostart.enable: 注册自启项
-log.page.autostart.remove: 删除自启项
-log.page.autostart.enabled: 自启项已启用
-log.page.autostart.missing: 自启项已不存在
-log.page.autostart.enableShort: 注册
-log.page.autostart.removeShort: 删除
-log.page.name.system: 系统页
-log.page.name.custom: 自定义Mixer
-log.page.name.settings: 设置
-log.launcher.tap_load_failed: 加载 TAP 模块失败: {0} (error={1}, {2})
-log.launcher.attached: 启动器已挂载 pid={0} CoInitializeEx={1}
-log.launcher.tap_module_missing: TAP 模块不存在: {0} ({1})
-log.launcher.diag_missing: 找不到诊断模块 {0}, 路径={1} ({2})
-log.launcher.xaml_not_loaded: 等待 {0} 超时 ({1})
-log.launcher.xaml_export_missing: {0} 缺少导出 {1} ({2})
-log.launcher.class_id_invalid: 类 ID 无效: {0} ({1})
-log.launcher.payload_paths: 载荷路径 tap={0} diag={1}
-log.launcher.endpoint_success: 注入成功 endpoint={0} ({1})
-log.launcher.arguments_rejected: {0} 拒绝参数 endpoint={1} ({2})
-log.launcher.endpoint_probe: 探测 endpoint={0} ({1})
-log.launcher.endpoint_exhausted: 端点探测耗尽 ({0})
-log.payload.missing: 缺少注入载荷: {0}
-log.payload.extracted: 已复制 {0} -> {1} ({2} bytes)
-log.config.encoding: 配置编码为 [{0}], 期望 [utf-16le-bom]; 保存前非 ASCII 值可能不可靠
-cli.init_failed: 初始化失败：

@@ -4,6 +4,7 @@
 #include "TapCommand.h"
 
 #include <atomic>
+#include <mutex>
 #include <thread>
 
 namespace vmex::inject
@@ -45,6 +46,7 @@ namespace vmex::inject
         std::wstring m_pipeName;
         ITapCommandHandler& m_handler;
         std::atomic<bool> m_running{ false };
+        std::mutex m_listener;
         std::thread m_thread;
     };
 }

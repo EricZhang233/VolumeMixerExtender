@@ -42,5 +42,4 @@ namespace vmex::text
     [[nodiscard]] std::shared_ptr<ITextSource> CreateFileTextSource(const std::filesystem::path& file);
 
     [[nodiscard]] TextService& Embedded();
-    void AttachEmbeddedToLogger();
 }

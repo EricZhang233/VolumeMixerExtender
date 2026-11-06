@@ -35,7 +35,6 @@ namespace vmex::tap
     {
         std::call_once(g_logging, []()
         {
-            text::AttachEmbeddedToLogger();
             log::Logger::Instance().AddSink(log::CreateFileSink(log::SessionLogFile(L"tap")));
             log::Logger::Instance().SetMinimumLevel(log::Level::Trace);
         });
@@ -62,8 +61,8 @@ namespace vmex::tap
         ::StringFromGUID2(clsid, clsidText.data(), static_cast<int>(clsidText.size()));
         ::StringFromGUID2(iid, iidText.data(), static_cast<int>(iidText.size()));
 
-        log::Logger::Instance().WriteKeyFormat(
-            log::Level::Info, kChannel, L"log.tap.class_request",
+        log::Logger::Instance().WriteFormat(
+            log::Level::Info, kChannel, L"DllGetClassObject request {0} {1}",
             { L"clsid=" + std::wstring(clsidText.data()), L"iid=" + std::wstring(iidText.data()) });
     }
 
@@ -74,16 +73,16 @@ namespace vmex::tap
         return buffer;
     }
 
-    void LogKey(std::wstring_view key, std::vector<std::wstring> arguments = {})
+    void Log(std::wstring_view message, std::vector<std::wstring> arguments = {}, std::source_location location = std::source_location::current())
     {
-        log::Logger::Instance().WriteKeyFormat(log::Level::Info, kChannel, key, arguments);
+        log::Logger::Instance().WriteFormat(log::Level::Info, kChannel, message, arguments, location);
     }
 
-    void LogGuid(std::wstring_view key, const GUID& guid)
+    void LogGuid(std::wstring_view message, const GUID& guid, std::source_location location = std::source_location::current())
     {
         std::array<wchar_t, 48> text{};
         ::StringFromGUID2(guid, text.data(), static_cast<int>(text.size()));
-        LogKey(key, { std::wstring(text.data()) });
+        Log(message, { std::wstring(text.data()) }, location);
     }
 
     class Tap final : public IVisualTreeServiceCallback, public IObjectWithSite
@@ -98,7 +97,7 @@ namespace vmex::tap
             {
                 *ppv = static_cast<IVisualTreeServiceCallback*>(this);
                 AddRef();
-                LogGuid(L"log.tap.guid.qi_ok", riid);
+                LogGuid(L"Tap::QueryInterface accepted iid={0}", riid);
                 return S_OK;
             }
 
@@ -106,11 +105,11 @@ namespace vmex::tap
             {
                 *ppv = static_cast<IObjectWithSite*>(this);
                 AddRef();
-                LogGuid(L"log.tap.guid.qi_ok", riid);
+                LogGuid(L"Tap::QueryInterface accepted iid={0}", riid);
                 return S_OK;
             }
 
-            LogGuid(L"log.tap.guid.qi_nointerface", riid);
+            LogGuid(L"Tap::QueryInterface unsupported iid={0}", riid);
             return E_NOINTERFACE;
         }
 
@@ -128,8 +127,8 @@ namespace vmex::tap
 
         HRESULT STDMETHODCALLTYPE SetSite(IUnknown* site) override
         {
-            log::Logger::Instance().WriteKey(log::Level::Info, kChannel,
-                site == nullptr ? L"log.tap.setsite_null" : L"log.tap.setsite_site");
+            log::Logger::Instance().Write(log::Level::Info, kChannel,
+                site == nullptr ? L"SetSite detached" : L"SetSite attached");
 
             if (site == nullptr)
             {
@@ -141,20 +140,20 @@ namespace vmex::tap
             site->QueryInterface(__uuidof(IXamlDiagnostics), m_diag.put_void());
             if (!m_diag)
             {
-                log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.tap.setsite_no_diagnostics");
+                log::Logger::Instance().Write(log::Level::Warn, kChannel, L"SetSite: IXamlDiagnostics unavailable");
                 return E_NOINTERFACE;
             }
 
             m_vts = m_diag.try_as<IVisualTreeService>();
             if (!m_vts)
             {
-                log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.tap.setsite_no_visual_tree_service");
+                log::Logger::Instance().Write(log::Level::Warn, kChannel, L"SetSite: IVisualTreeService unavailable");
                 return E_NOINTERFACE;
             }
 
             const HRESULT hr = m_vts->AdviseVisualTreeChange(this);
-            log::Logger::Instance().WriteKeyFormat(log::Level::Info, kChannel,
-                L"log.tap.advise_visual_tree_change", { L"hr=" + std::to_wstring(static_cast<long>(hr)) });
+            log::Logger::Instance().WriteFormat(log::Level::Info, kChannel,
+                L"Visual tree subscription completed {0}", { L"hr=" + std::to_wstring(static_cast<long>(hr)) });
             return S_OK;
         }
 
@@ -192,11 +191,11 @@ namespace vmex::tap
 
             if (IsAttached(m_footer))
             {
-                log::Logger::Instance().WriteKey(log::Level::Debug, kChannel, L"log.tap.footer_again");
+                log::Logger::Instance().Write(log::Level::Debug, kChannel, L"Repeated active footer ignored");
                 return S_OK;
             }
 
-            log::Logger::Instance().WriteKey(log::Level::Info, kChannel, L"log.tap.footer_appeared");
+            log::Logger::Instance().Write(log::Level::Info, kChannel, L"Footer appeared");
             TakeOverOnUiThread(element.Handle);
             return S_OK;
         }
@@ -212,7 +211,7 @@ namespace vmex::tap
             auto button = inspectable.try_as<winrt::Windows::UI::Xaml::Controls::Button>();
             if (!button) return;
 
-            log::Logger::Instance().WriteKey(log::Level::Info, kChannel, L"log.tap.entry_hooked");
+            log::Logger::Instance().Write(log::Level::Info, kChannel, L"VolumeL2Button hooked");
 
             button.Click([](winrt::Windows::Foundation::IInspectable const&,
                             winrt::Windows::UI::Xaml::RoutedEventArgs const&)
@@ -226,7 +225,7 @@ namespace vmex::tap
             if (!element) return false;
             try
             {
-                return winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetParent(element) != nullptr;
+                return element.IsLoaded() && winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetParent(element) != nullptr;
             }
             catch (...)
             {
@@ -239,7 +238,7 @@ namespace vmex::tap
             const HRESULT hr = m_diag->GetIInspectableFromHandle(handle, &raw);
             if (FAILED(hr) || raw == nullptr)
             {
-                log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.tap.inspectable_failed");
+                log::Logger::Instance().Write(log::Level::Warn, kChannel, L"GetIInspectableFromHandle failed");
                 return;
             }
 
@@ -247,7 +246,7 @@ namespace vmex::tap
             auto footer = inspectable.try_as<winrt::Windows::UI::Xaml::FrameworkElement>();
             if (!footer)
             {
-                log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.tap.not_framework_element");
+                log::Logger::Instance().Write(log::Level::Warn, kChannel, L"Visual tree node is not a FrameworkElement");
                 return;
             }
 
@@ -260,12 +259,12 @@ namespace vmex::tap
             }
             catch (winrt::hresult_error const& error)
             {
-                log::Logger::Instance().WriteKeyFormat(log::Level::Error, kChannel,
-                    L"log.tap.takeover_threw_hr", { L"hr=" + std::to_wstring(static_cast<long>(error.code().value)) });
+                log::Logger::Instance().WriteFormat(log::Level::Error, kChannel,
+                    L"Page takeover exception {0}", { L"hr=" + std::to_wstring(static_cast<long>(error.code().value)) });
             }
             catch (...)
             {
-                log::Logger::Instance().WriteKey(log::Level::Error, kChannel, L"log.tap.takeover_threw");
+                log::Logger::Instance().WriteException(kChannel, L"Page takeover failed");
             }
 
             if (takenOver)
@@ -292,10 +291,10 @@ namespace vmex::tap
             {
                 *ppv = static_cast<IClassFactory*>(this);
                 AddRef();
-                LogGuid(L"log.tap.guid.factory_ok", riid);
+                LogGuid(L"TapFactory::QueryInterface accepted iid={0}", riid);
                 return S_OK;
             }
-            LogGuid(L"log.tap.guid.factory_nointerface", riid);
+            LogGuid(L"TapFactory::QueryInterface unsupported iid={0}", riid);
             return E_NOINTERFACE;
         }
 
@@ -313,7 +312,7 @@ namespace vmex::tap
 
         HRESULT STDMETHODCALLTYPE CreateInstance(IUnknown* outer, REFIID riid, void** ppv) override
         {
-            LogGuid(L"log.tap.guid.create_instance_riid", riid);
+            LogGuid(L"TapFactory::CreateInstance requested iid={0}", riid);
 
             if (ppv == nullptr) return E_POINTER;
             *ppv = nullptr;
@@ -324,7 +323,7 @@ namespace vmex::tap
 
             const HRESULT hr = tap->QueryInterface(riid, ppv);
             tap->Release();
-            LogKey(L"log.tap.create_instance", { L"hr=" + Hex(static_cast<std::uint32_t>(hr)) });
+            Log(L"TapFactory::CreateInstance completed {0}", { L"hr=" + Hex(static_cast<std::uint32_t>(hr)) });
             return hr;
         }
 
@@ -391,7 +390,7 @@ void LogFooterAncestry(winrt::Windows::UI::Xaml::FrameworkElement const& footer)
     using namespace winrt::Windows::UI::Xaml;
     using namespace winrt::Windows::UI::Xaml::Media;
 
-    vmex::tap::LogKey(L"log.tap.footer_node", { TapPageDescribeNode(footer) });
+    vmex::tap::Log(L"Footer node {0}", { TapPageDescribeNode(footer) });
 
     DependencyObject current = footer;
     for (int i = 0; i < 16; ++i)
@@ -400,11 +399,11 @@ void LogFooterAncestry(winrt::Windows::UI::Xaml::FrameworkElement const& footer)
         try { parent = VisualTreeHelper::GetParent(current); } catch (...) { break; }
         if (!parent)
         {
-            vmex::tap::LogKey(L"log.tap.ancestry_no_parent", { std::to_wstring(i) });
+            vmex::tap::Log(L"Footer ancestry ended depth={0}", { std::to_wstring(i) });
             break;
         }
 
-        vmex::tap::LogKey(L"log.tap.ancestry_up", { std::to_wstring(i), TapPageDescribeNode(parent) });
+        vmex::tap::Log(L"Footer ancestor depth={0} node={1}", { std::to_wstring(i), TapPageDescribeNode(parent) });
         current = parent;
     }
 }
@@ -417,7 +416,7 @@ int TapPageSendPipe(const char* line)
     HANDLE handle = ::CreateFileW(pipe.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
     {
-        vmex::log::Logger::Instance().WriteKey(vmex::log::Level::Warn, L"tap", L"log.tap.pipe_unavailable");
+        vmex::log::Logger::Instance().Write(vmex::log::Level::Warn, L"tap", L"Host pipe unavailable");
         return 0;
     }
 
@@ -430,14 +429,6 @@ int TapPageSendPipe(const char* line)
 
 namespace
 {
-    constexpr double kFooterInset = 4.0;
-
-    constexpr std::array<winrt::Windows::UI::Xaml::HorizontalAlignment, 3> kSlotAlignments{
-        winrt::Windows::UI::Xaml::HorizontalAlignment::Left,
-        winrt::Windows::UI::Xaml::HorizontalAlignment::Center,
-        winrt::Windows::UI::Xaml::HorizontalAlignment::Right,
-    };
-
     template <typename T>
     T FindDescendant(winrt::Windows::UI::Xaml::DependencyObject const& node, int depth)
     {
@@ -496,6 +487,7 @@ FooterMount TapPageMountFooterRow(const winrt::Windows::UI::Xaml::FrameworkEleme
     }
 
     Grid row;
+    mount.row = row;
 
     double rowHeight = 0;
     try { rowHeight = panel.ActualHeight(); } catch (...) {}
@@ -515,17 +507,14 @@ FooterMount TapPageMountFooterRow(const winrt::Windows::UI::Xaml::FrameworkEleme
     row.Children().Append(uiContainer);
     mount.systemItem = uiContainer;
 
-    for (std::size_t i = 0; i < items.size() && i < kSlotAlignments.size(); ++i)
+    for (std::size_t i = 0; i < items.size(); ++i)
     {
         auto item = items[i];
         if (itemHeight > 0) item.Height(itemHeight);
         item.VerticalAlignment(VerticalAlignment::Center);
-        item.HorizontalAlignment(kSlotAlignments[i]);
+        item.HorizontalAlignment(HorizontalAlignment::Stretch);
 
-        const bool leading = (i == 0);
-        const bool trailing = (i + 1 == items.size());
-        item.Margin(ThicknessHelper::FromLengths(leading ? kFooterInset : 0.0, 0,
-                                                 trailing ? kFooterInset : 0.0, 0));
+        item.Margin(ThicknessHelper::FromUniformLength(0));
 
         row.Children().Append(item);
     }
@@ -545,7 +534,7 @@ void TapPageDumpTree(const winrt::Windows::UI::Xaml::DependencyObject& root, int
     {
         if (!node || depth > maxDepth) return;
 
-        vmex::tap::LogKey(L"log.tap.tree_node",
+        vmex::tap::Log(L"Visual tree node depth={0} node={1}",
             { L"  " + std::wstring(static_cast<std::size_t>(depth * 2), L' '), TapPageDescribeNode(node) });
 
         UINT32 count = 0;
@@ -559,9 +548,9 @@ void TapPageDumpTree(const winrt::Windows::UI::Xaml::DependencyObject& root, int
         }
     };
 
-    vmex::tap::LogKey(L"log.tap.tree_begin");
+    vmex::tap::Log(L"Visual tree dump started");
     walk(root, 0);
-    vmex::tap::LogKey(L"log.tap.tree_end");
+    vmex::tap::Log(L"Visual tree dump ended");
 }
 
 extern "C" __declspec(dllexport) void __stdcall VmExtTapProvideInitData(const wchar_t* config)
@@ -582,8 +571,8 @@ extern "C" HRESULT __stdcall DllGetClassObject(const CLSID& clsid, const IID& ii
     const std::wstring id(vmex::inject::kTapClassId);
     if (FAILED(::CLSIDFromString(id.c_str(), &expected)) || clsid != expected)
     {
-        vmex::log::Logger::Instance().WriteKeyFormat(vmex::log::Level::Warn, vmex::tap::kChannelName,
-            L"log.tap.class_mismatch", { id });
+        vmex::log::Logger::Instance().WriteFormat(vmex::log::Level::Warn, vmex::tap::kChannelName,
+            L"DllGetClassObject class mismatch clsid={0}", { id });
         return CLASS_E_CLASSNOTAVAILABLE;
     }
 

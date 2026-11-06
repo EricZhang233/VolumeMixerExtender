@@ -86,8 +86,8 @@ namespace vmex::recording
             ::RegCloseKey(root);
             if (!result) return result;
         }
-        log::Logger::Instance().WriteKeyFormat(complete ? log::Level::Info : log::Level::Error, L"recording",
-            L"log.recording.routingCleared", { std::wstring(endpoint) });
+        log::Logger::Instance().WriteFormat(complete ? log::Level::Info : log::Level::Error, L"recording",
+            L"Application routes cleared endpoint={0}", { std::wstring(endpoint) });
         return complete ? Status::Ok() : Status::Failed(L"recording-redirect-cleanup");
     }
 }

@@ -30,7 +30,7 @@
   [![Windows 11](https://img.shields.io/badge/Windows-11%2026H2%2B-0078D4?logo=microsoft)](https://www.microsoft.com/windows)
   [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?logo=gnu)](https://www.gnu.org/licenses/gpl-3.0.html)
 
-<a href="#highlights">Highlights</a> • <a href="#quickstart">Quick Start</a> • <a href="#features">Features</a> • <a href="#cli">CLI</a> • <a href="#architecture">Architecture</a> • <a href="#faq">FAQ</a>
+<a href="#highlights">Highlights</a> • <a href="#quickstart">Quick Start</a> • <a href="#features">Features</a> • <a href="#architecture">Architecture</a> • <a href="#faq">FAQ</a>
 
 </div>
 
@@ -46,8 +46,8 @@
 *   🔀 **Per-app output redirection**: send a single app to a specific output device — "game to the headset, player to the speakers"; a redirected app always shows where its audio goes.
 *   🧹 **One-click clear**: the left footer slot returns all apps to the default device and clears saved application volume preferences, restoring them to 100%; endpoint volume stays unchanged.
 *   🪟 **Independent manager**: the footer gear opens a WPF manager; custom and system pages remain switchable, and the manager exits when closed.
-*   💻 **Command-line management**: `vmex_cli.exe` covers injection, status, endpoints, default devices, redirection and auto-start, with full documentation built into `-help` and `skill`.
 *   🚀 **Extract and run**: `vmex.exe` stays resident without a console, hooks in automatically and runs as a single instance — no window and no tray icon.
+*   🔄 **Silent updates**: the host checks GitHub for stable releases every 12 hours, downloads and verifies the complete package, stops integration, replaces files and resumes automatically, rolling back on failure without dialogs and preserving user settings.
 
 ---
 
@@ -60,7 +60,7 @@
 | Item | Requirement |
 | :--- | :--- |
 | Operating system | Windows 11 26H2 (Build 26300) or later, x64 |
-| Runtime dependencies | No extra runtime for the host or CLI; the WPF manager uses Windows 11’s built-in .NET Framework 4.8 without bundling a runtime |
+| Runtime dependencies | No extra runtime for the host; the WPF manager uses Windows 11’s built-in .NET Framework 4.8 without bundling a runtime |
 | Administrator rights | Not needed for normal operation; recording-driver installation and removal elevate separately |
 | Installation | Not required — extract the archive and run |
 
@@ -70,7 +70,7 @@
 2. **Run**: double-click `vmex.exe`. It has no console window; it stays resident in the background and hooks into the system shell automatically. To have it ready right after sign-in, click the footer gear and turn on **Manager → Start with Windows**; you can also run `vmex_manager.exe` directly.
 3. **Use it**: press `Win+A` to open Quick Settings and pick the audio output entry — what you see is the custom page.
 
-> 💡 Prefer the command line? `vmex_cli.exe -help` lists every command, and `vmex_cli.exe skill` prints the integration document for scripts and AI agents.
+> 💡 The manager provides running status, preferences, driver management and software updates in one place.
 
 ---
 
@@ -112,11 +112,11 @@ Recording mode appears as the last row in the output-device list, with a native 
 
 Recording mode uses VB-Audio's official VB-CABLE standard package, with only the original files needed for Windows 11 x64 shipped in `Driver/VBCABLE/`. After checking the original installer and Microsoft signature, the manager opens the official installer; click Install Driver or Remove Driver there. These operations require administrator privileges and a Windows restart afterwards. Test signing and self-signed certificate imports are unnecessary. Host startup and successful installation disable all three virtual endpoints for standby. Enabling recording temporarily enables only `CABLE Input`; `CABLE In 16 Ch` and `CABLE Output` remain disabled. Disabling recording restores default devices and application routes, stops monitoring, then disables `CABLE Input`. Failed cleanup remains pending for retry; the guard process also attempts recovery and disable after a host crash. Record system audio through the default output's desktop-audio/loopback and use physical microphones. VB-CABLE is shared, so these state changes also affect other applications using it. The driver is never modified. Physical-machine audio validation on the target Windows 11 26H2 remains pending.
 
-The recording-mode toggle depends on configuration: the driver must be installed and running, CABLE Input must exist with verified hardware identity, and a physical monitor output must be available. Enumeration includes disabled endpoints, so disabling CABLE Input for standby does not hide the toggle. Virtual audio streams are created after enabling the endpoint; startup failure rolls back. The entire row is hidden if installation or configuration is incomplete. Readiness is checked asynchronously when the panel opens and while it remains open. Installation, repair and diagnostics remain available through the manager and CLI. For manual diagnosis, `driver hide` exits recording and disables all three endpoints; `driver show` exits recording and reverses the program's recorded disable operations.
+The recording-mode button depends on configuration: the driver must be installed and running, CABLE Input must exist with verified hardware identity, and a physical monitor output must be available. Enumeration includes disabled endpoints, so disabling CABLE Input for standby does not hide the button. Virtual audio streams are created after enabling the endpoint; startup failure rolls back. Core prepares recording state before injection, the panel reads it on first display, and the host continues checking. Availability changes update only the footer, without rebuilding device and application lists. Installation, repair and status queries are available through the manager.
 
-Endpoint operations only affect standard VB-CABLE endpoints with verified hardware identity; unverified endpoints are skipped and logged. `driver show` reverses only this program's recorded hiding operations, preserving endpoints previously disabled by the user. Records are stored under `HiddenCableEndpoints` in the user configuration and survive program restarts. If the installer is cancelled, makes no effective change, or fails, endpoint state is restored. Program cleanup also restores its hidden endpoints before deleting configuration, retaining recovery records if restoration fails. Hidden states from older versions without ownership records must be restored manually in Windows sound settings.
+Endpoint operations only affect standard VB-CABLE endpoints with verified hardware identity; unverified endpoints are skipped and logged. Restoration reverses only this program's recorded hiding operations, preserving endpoints previously disabled by the user. Records are stored under `HiddenCableEndpoints` in the user configuration and survive program restarts. If the installer is cancelled, makes no effective change, or fails, endpoint state is restored. Program cleanup also restores its hidden endpoints before deleting configuration, retaining recovery records if restoration fails. Hidden states from older versions without ownership records must be restored manually in Windows sound settings.
 
-The manager, CLI and recording requests connect only to a host in the current session running from the same program directory. After moving or copying the program, exit the host from the old directory before starting the new copy.
+The manager and recording requests connect only to a host in the current session running from the same program directory. After moving or copying the program, exit the host from the old directory before starting the new copy.
 
 The About icon to the left of the manager's title-bar close button shows the current version, developer, project homepage and third-party references, with links to VB-CABLE's source website, licensing and donation/purchase page. VB-CABLE is donationware; supporting its authors is welcome. Professional use and distribution to businesses or organizations must follow [VB-Audio's official licensing terms](https://vb-audio.com/Services/licensing.htm), independently of this project's GPL license.
 
@@ -132,7 +132,10 @@ Click the footer gear or run `vmex_manager.exe` to open the WPF manager. The set
 | **Recording-mode driver** | Shows VB-CABLE status and opens its official installer or uninstaller; exits recording mode before either operation |
 | **About** | Title-bar icon opens version, developer and third-party source, licensing and support information |
 | **Open log folder** | Opens this program's log folder for troubleshooting |
+| **Software update** | Checks stable releases; when an update is found, opens its Release page and brings the manager to the foreground once, changing the button to Download update. Clicking again downloads and verifies the package, then closes the manager, stops integration, replaces files and restarts the host and manager |
 | **Uninstall and clean up** | After a standard confirmation dialog, stops integration and clears auto-start, configuration, logs, cache, all application redirections and volume preferences; keeps program files and leaves the window open with details if a step fails |
+
+Logs are stored in `%TEMP%\eric\VolumeMixerExtender\log` and use fixed English diagnostic text independently of UI translations. Entries include UTC time, level, module, process and thread, caller file and line, with correlation IDs for timed operations. A bounded asynchronous queue holds 4096 entries and writes batches of up to 256; overflow counts discarded low-priority entries while synchronously preserving warnings and errors in a separate critical log. Primary files roll at 5 MB, and startup removes logs older than 30 days or beyond a total of 100 MB. Output is UTF-8 without a BOM and redacts GitHub tokens. The host, injected modules, manager and standalone updater follow the same rules, draining queued entries during normal shutdown.
 
 ### Background host
 
@@ -141,34 +144,16 @@ Click the footer gear or run `vmex_manager.exe` to open the WPF manager. The set
 
 ---
 
-<a name="cli"></a>
-
-## CLI: the desktop and the terminal share one core
-
-`vmex_cli.exe` and `vmex.exe` link against the same Core (`vmex_core.dll`) and read and write the same state — change something from the command line and the panel shows the new value the next time it opens.
-
-Two documents ship inside the program, so there is nothing else to look up:
-
-```powershell
-vmex_cli.exe -help     # every command and argument
-vmex_cli.exe skill     # the integration document for scripts and AI agents
-```
-
-This version supports injection and status queries, the host (`start` / `stop` / `host`), the manager (`manager`), opening the panel (`panel`), logs (`logs`), the project page (`project`), driver-name display (`show-driver-name on|off`), endpoint enumeration (`devices`), default-device switching (`default`), application redirection and clearing (`redirect` / `clear-redirect`), recording (`recording`), driver management (`driver`, including hiding or restoring extra endpoints), auto-start (`autostart`) and uninstall cleanup (`uninstall --yes`). The full list and its arguments live in `-help`, which is updated together with the program.
-
----
-
 <a name="architecture"></a>
 
 ## Architecture
 
-Every line of business logic in **VolumeMixerExtender** exists exactly once: the host, CLI and WPF manager share a single Core. The manager renders the interface and does not run a resident service.
+Every line of business logic in **VolumeMixerExtender** exists exactly once: the host and WPF manager share a single Core. The manager renders the interface and does not run a resident service.
 
 ```mermaid
 flowchart TB
     subgraph Shell["Shells · no business logic"]
         HOST["vmex.exe<br/>console-less background host"]
-        CLI["vmex_cli.exe<br/>argument parsing / output formatting"]
         GUI["vmex_manager.exe<br/>WPF manager"]
     end
     subgraph Core["Core · the only business layer"]
@@ -178,15 +163,14 @@ flowchart TB
         TAP["vmex_tap.dll<br/>the custom page"]
     end
     HOST --> SVC
-    CLI --> SVC
     GUI --> SVC
     SVC -->|deploy and hook| TAP
     TAP -->|page actions · named pipe| SVC
     SVC --> OS["Windows audio APIs · registry · Startup folder"]
 ```
 
-*   **Implementation**: a C++20 Core and C# WPF manager, built through CMake; the archive contains `vmex.exe`, `vmex_cli.exe`, `vmex_manager.exe`, `vmex_core.dll`, `vmex_tap.dll`, `vmex_launcher.dll` and `xamldiagnostics.dll`. Extract all files into the same directory. The host and CLI do not depend on WPF.
-*   **One Core**: the background host and the command line share the business layer, so features stay aligned and logging is unified.
+*   **Implementation**: a C++20 Core and C# WPF manager, built through CMake; the archive contains `vmex.exe`, `vmex_manager.exe`, `vmex_core.dll`, `vmex_tap.dll`, `vmex_launcher.dll` and `xamldiagnostics.dll`. Extract all files into the same directory. The host does not depend on WPF.
+*   **One Core**: the background host and manager share the business layer and unified logging.
 *   **The page is the payload**: the interface is rendered by a module injected into the system shell, following the system light/dark theme and accent colour — no extra window and no tray presence.
 *   **Actions go through a local pipe**: write operations from the page are handed to the host over a named pipe, so the page itself never holds system handles for long.
 *   **Facts, not mirrors**: default devices and redirections are read straight from the current system state, with no local copy that could drift out of sync.
@@ -258,7 +242,7 @@ No. **Windows 11 26H2 (Build 26300)** or later is required; on older builds the 
 
 ### Build and self tests
 
-The build requires the Visual Studio C++ toolchain, Windows SDK, CMake, PowerShell 7 and .NET 10 SDK. global.json restricts the build SDK to stable .NET 10.0 releases; CI uses Visual Studio 2026. The first build obtains the x64 XAML diagnostics component from a pinned Windows SDK package on Microsoft's official NuGet feed, verifies its SHA-256 hash, Microsoft signature and architecture, and caches it in obj/sdk-deps; no separately installed local XAML diagnostics tools are required. The build also downloads the official VB-CABLE Pack45 with a pinned SHA-256 hash, caches it in obj/driver-deps/vbcable and extracts only the original files needed for Windows 11 x64 into Driver/VBCABLE in the output. The custom test driver is no longer built or distributed. The WPF manager targets .NET Framework 4.8, built into Windows 11. No .NET or Windows App SDK runtime is bundled. `vmex_cli.exe about` shows the same About information as the manager; see `-help` and `skill` for the complete `recording` and `driver` commands.
+The build requires the Visual Studio C++ toolchain, Windows SDK, CMake, PowerShell 7 and .NET 10 SDK. global.json restricts the build SDK to stable .NET 10.0 releases; CI uses Visual Studio 2026. The first build obtains the x64 XAML diagnostics component from a pinned Windows SDK package on Microsoft's official NuGet feed, verifies its SHA-256 hash, Microsoft signature and architecture, and caches it in obj/sdk-deps; no separately installed local XAML diagnostics tools are required. The build also downloads the official VB-CABLE Pack45 with a pinned SHA-256 hash, caches it in obj/driver-deps/vbcable and extracts only the original files needed for Windows 11 x64 into Driver/VBCABLE in the output. The custom test driver is no longer built or distributed. The WPF manager targets .NET Framework 4.8, built into Windows 11. No .NET or Windows App SDK runtime is bundled.
 
 ```powershell
 dotnet test
@@ -273,7 +257,7 @@ Releases automatically check out the matching tag, build and verify the package,
 We welcome contributions of any kind — bug reports, documentation improvements or code (PRs).
 
 *   Found a problem or have an idea? Open an [Issue](https://github.com/EricZhang233/VolumeMixerExtender/issues) with reproduction steps and the logs from `%TEMP%\eric\VolumeMixerExtender\log`, and it will be handled faster.
-*   Want to get involved in development? The project builds with CMake and Visual Studio, and the background host and the console share one Core, so a single change takes effect on both sides.
+*   Want to get involved in development? The project builds with CMake and Visual Studio, and the background host and manager share one Core, so a single change takes effect on both sides.
 
 If you find this project helpful, please give it a heart-felt ⭐️ **Star**!
 

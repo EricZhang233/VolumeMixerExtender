@@ -36,6 +36,7 @@ namespace vmex::audio
             info.description = endpoint.interfaceName;
             info.state = DeviceState::Active;
             info.isDefault = endpoint.isDefault;
+            info.recommendedIcon = detail::GetRecommendedDeviceIcon(endpoint);
             return info;
         }
 
@@ -216,7 +217,7 @@ namespace vmex::audio
 
                 if (state != DeviceState::Active)
                 {
-                    log::Logger::Instance().WriteKey(log::Level::Debug, kChannel, L"log.audio.state_ignored");
+                    log::Logger::Instance().Write(log::Level::Debug, kChannel, L"Only active endpoints are enumerated; requested state ignored");
                 }
 
                 std::vector<detail::Endpoint> endpoints;
@@ -227,13 +228,8 @@ namespace vmex::audio
 
                 devices.reserve(endpoints.size());
                 for (const auto& endpoint : endpoints) devices.push_back(ToDeviceInfo(endpoint));
-                std::stable_sort(devices.begin(), devices.end(),
-                    [](const DeviceInfo& left, const DeviceInfo& right)
-                    {
-                        return left.isDefault && !right.isDefault;
-                    });
 
-                log::Logger::Instance().WriteKeyFormat(log::Level::Debug, kChannel, L"log.audio.enumerated",
+                log::Logger::Instance().WriteFormat(log::Level::Debug, kChannel, L"Endpoints enumerated flow={0} count={1}",
                     { std::wstring(ToString(flow)), std::to_wstring(devices.size()) });
                 return Status::Ok();
             }
@@ -337,9 +333,23 @@ namespace vmex::audio
 
             Status GetPeak(std::wstring_view deviceId, float& left, float& right) override
             {
-                return detail::GetEndpointPeak(std::wstring(deviceId), left, right)
-                    ? Status::Ok()
-                    : Status::Failed(L"IAudioMeterInformation::GetPeakValue failed");
+                auto entry = m_endpointMeters.find(deviceId);
+                if (entry == m_endpointMeters.end())
+                    entry = m_endpointMeters.try_emplace(std::wstring(deviceId)).first;
+                auto& state = entry->second;
+                const auto now = ::GetTickCount64();
+                if (!state.meter && now >= state.nextOpen)
+                {
+                    state.nextOpen = now + 200;
+                    state.meter = detail::OpenEndpointMeter(entry->first);
+                }
+                if (detail::ReadMeterPeaks(state.meter.get(), left, right)) return Status::Ok();
+                if (state.meter)
+                {
+                    state.meter.reset();
+                    state.nextOpen = now + 200;
+                }
+                return Status::Failed(L"IAudioMeterInformation::GetPeakValue failed");
             }
 
             Status EnumerateSessions(std::wstring_view deviceId, std::vector<SessionInfo>& sessions) override
@@ -355,16 +365,19 @@ namespace vmex::audio
                 sessions.reserve(found.size());
                 for (const auto& session : found) sessions.push_back(ToSessionInfo(session));
 
-                log::Logger::Instance().WriteKeyFormat(log::Level::Debug, kChannel, L"log.audio.sessions",
+                log::Logger::Instance().WriteFormat(log::Level::Debug, kChannel, L"Audio sessions enumerated device={0} count={1}",
                     { std::wstring(deviceId), std::to_wstring(sessions.size()) });
 
                 return Status::Ok();
             }
 
             Status EnumerateAppSessions(const std::map<std::wstring, std::wstring>& preferredDevices,
-                                        std::vector<AppSessionInfo>& sessions, std::wstring_view deviceId) override
+                                        std::vector<AppSessionInfo>& sessions, std::wstring_view deviceId,
+                                        std::vector<std::shared_ptr<IAudioSessionHandle>>* handles,
+                                        SessionFollowMode followMode) override
             {
                 sessions.clear();
+                if (handles) handles->clear();
 
                 std::vector<detail::Endpoint> endpoints;
                 if (!detail::EnumEndpoints(eRender, endpoints, true))
@@ -375,19 +388,25 @@ namespace vmex::audio
                 std::wstring defaultId;
                 detail::GetDefaultEndpointId(eRender, defaultId);
 
-                std::vector<AppSessionInfo> candidates;
-                std::vector<AudioSessionState> states;
+                struct Candidate final
+                {
+                    AppSessionInfo info;
+                    AudioSessionState state;
+                    detail::Ptr<ISimpleAudioVolume> volume;
+                    detail::Ptr<IAudioMeterInformation> meter;
+                };
+                std::vector<Candidate> candidates;
                 for (const auto& endpoint : endpoints)
                 {
                     if (!deviceId.empty() && endpoint.id != deviceId) continue;
                     std::vector<detail::Session> found;
-                    if (!detail::EnumSessionsOnce(endpoint.id, found)) continue;
+                    if (!detail::EnumSessionsOnce(endpoint.id, found, handles != nullptr)) continue;
 
-                    for (const auto& session : found)
+                    for (auto& session : found)
                     {
                         if (session.state == AudioSessionStateExpired) continue;
-                        candidates.push_back(ToAppSessionInfo(session, endpoint));
-                        states.push_back(session.state);
+                        candidates.push_back({ ToAppSessionInfo(session, endpoint), session.state,
+                                               std::move(session.vol), std::move(session.meter) });
                     }
                 }
 
@@ -397,7 +416,7 @@ namespace vmex::audio
                     std::size_t slot = chosen.size();
                     for (std::size_t probe = 0; probe < chosen.size(); ++probe)
                     {
-                        if (candidates[chosen[probe]].appKey == candidates[index].appKey)
+                        if (candidates[chosen[probe]].info.appKey == candidates[index].info.appKey)
                         {
                             slot = probe;
                             break;
@@ -410,62 +429,48 @@ namespace vmex::audio
                         continue;
                     }
 
-                    if (Score(candidates[index], states[index], preferredDevices, defaultId) >
-                        Score(candidates[chosen[slot]], states[chosen[slot]], preferredDevices, defaultId))
+                    const auto& candidate = candidates[index];
+                    const auto& selected = candidates[chosen[slot]];
+                    if (Score(candidate.info, candidate.state, preferredDevices, defaultId) >
+                        Score(selected.info, selected.state, preferredDevices, defaultId))
                     {
                         chosen[slot] = index;
                     }
                 }
 
                 sessions.reserve(chosen.size());
-                for (const std::size_t index : chosen) sessions.push_back(std::move(candidates[index]));
+                if (handles) handles->reserve(chosen.size());
+                for (const std::size_t index : chosen)
+                {
+                    auto& candidate = candidates[index];
+                    auto& info = candidate.info;
+                    if (handles)
+                    {
+                        std::shared_ptr<IAudioSessionHandle> handle;
+                        if (candidate.volume)
+                            handle = std::make_shared<AudioSessionHandle>(info.deviceId, info.instanceId,
+                                info.processId, info.systemSounds, std::move(candidate.volume),
+                                std::move(candidate.meter), followMode);
+                        handles->push_back(std::move(handle));
+                    }
+                    sessions.push_back(std::move(info));
+                }
 
-                log::Logger::Instance().WriteKeyFormat(log::Level::Debug, kChannel, L"log.audio.app_sessions",
+                log::Logger::Instance().WriteFormat(log::Level::Debug, kChannel, L"Application sessions enumerated apps={0} endpoints={1}",
                     { std::to_wstring(sessions.size()), std::to_wstring(endpoints.size()) });
 
                 return Status::Ok();
             }
 
-            Status OpenSession(std::wstring_view deviceId, std::wstring_view instanceId,
-                               std::unique_ptr<IAudioSessionHandle>& handle, SessionFollowMode followMode) override
-            {
-                handle.reset();
-                if (deviceId.empty() || instanceId.empty())
-                {
-                    return Status::InvalidArguments(L"OpenSession: deviceId and instanceId are both required");
-                }
-
-                auto volume = detail::ResolveSessionVolume(std::wstring(deviceId), std::wstring(instanceId));
-                if (!volume)
-                {
-                    return Status::Failed(L"OpenSession: session not found (it may have exited)");
-                }
-
-                std::uint32_t processId = 0;
-                bool systemSounds = false;
-                {
-                    std::vector<detail::Session> found;
-                    if (detail::EnumSessions(std::wstring(deviceId), found))
-                    {
-                        for (const auto& session : found)
-                        {
-                            if (session.id == instanceId)
-                            {
-                                processId = session.pid;
-                                systemSounds = session.systemSounds;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                handle = std::make_unique<AudioSessionHandle>(
-                    std::wstring(deviceId), std::wstring(instanceId), processId, systemSounds, std::move(volume),
-                    detail::ResolveSessionMeter(std::wstring(deviceId), std::wstring(instanceId)), followMode);
-                return Status::Ok();
-            }
-
         private:
+            struct EndpointMeterState final
+            {
+                detail::Ptr<IAudioMeterInformation> meter;
+                ULONGLONG nextOpen = 0;
+            };
+
+            std::map<std::wstring, EndpointMeterState, std::less<>> m_endpointMeters;
+
             static int Score(const AppSessionInfo& info, AudioSessionState state,
                              const std::map<std::wstring, std::wstring>& preferredDevices,
                              const std::wstring& defaultId)
@@ -547,7 +552,7 @@ namespace vmex::audio
                 auto enumerator = detail::MakeEnumerator();
                 if (!enumerator)
                 {
-                    log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.audio.watch_failed");
+                    log::Logger::Instance().Write(log::Level::Warn, kChannel, L"Endpoint notification registration failed");
                     return Status::Failed(L"Start: no device enumerator");
                 }
 
@@ -562,12 +567,12 @@ namespace vmex::audio
                         std::lock_guard<std::mutex> guard(m_mutex);
                         m_handler = nullptr;
                     }
-                    log::Logger::Instance().WriteKey(log::Level::Warn, kChannel, L"log.audio.watch_failed");
+                    log::Logger::Instance().Write(log::Level::Warn, kChannel, L"Endpoint notification registration failed");
                     return Status::Failed(L"RegisterEndpointNotificationCallback failed");
                 }
 
                 m_enumerator = std::move(enumerator);
-                log::Logger::Instance().WriteKey(log::Level::Debug, kChannel, L"log.audio.watch_started");
+                log::Logger::Instance().Write(log::Level::Debug, kChannel, L"Endpoint notifications started");
                 return Status::Ok();
             }
 

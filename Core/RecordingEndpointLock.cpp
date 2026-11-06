@@ -17,7 +17,7 @@ namespace vmex::recording
         {
             result = actions.SetVolume(1.0f);
             if (!result) return result;
-            log::Logger::Instance().WriteKey(log::Level::Info, L"recording", L"log.recording.volume_locked");
+            log::Logger::Instance().Write(log::Level::Info, L"recording", L"Virtual endpoint volume restored to 100%");
         }
         for (unsigned role = 0; role < 2; ++role)
         {
@@ -26,7 +26,7 @@ namespace vmex::recording
             if (queried && current == endpoint) continue;
             result = actions.SetDefault(role, endpoint);
             if (!result) return result;
-            log::Logger::Instance().WriteKey(log::Level::Info, L"recording", L"log.recording.default_locked");
+            log::Logger::Instance().Write(log::Level::Info, L"recording", L"Default output restored to virtual endpoint");
         }
         return Status::Ok();
     }

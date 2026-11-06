@@ -74,15 +74,35 @@ if(MSVC)
     )
 endif()
 
+find_program(VMEX_DOTNET dotnet REQUIRED)
+set(VMEX_UPDATER_DIRECTORY "${CMAKE_BINARY_DIR}/updater/$<CONFIG>")
+set(VMEX_UPDATER_EXECUTABLE "${VMEX_UPDATER_DIRECTORY}/vmex_updater.exe")
+add_custom_target(vmex_updater
+    COMMAND "${VMEX_DOTNET}" publish "${CMAKE_SOURCE_DIR}/Components/updater/Updater.csproj"
+        -c $<CONFIG> "-p:Version=${VMEX_VERSION}" "-p:FileVersion=${VMEX_VERSION}"
+        "-p:AssemblyVersion=${VMEX_VERSION}" "-p:InformationalVersion=${VMEX_VERSION}"
+        -o "${VMEX_UPDATER_DIRECTORY}"
+    BYPRODUCTS "${VMEX_UPDATER_EXECUTABLE}"
+    VERBATIM)
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/generated/$<CONFIG>/UpdaterPayload.rc"
+    CONTENT "200 RCDATA \"${VMEX_UPDATER_EXECUTABLE}\"\n")
+
 add_subdirectory(Core)
+target_sources(vmex_core PRIVATE "${CMAKE_BINARY_DIR}/generated/$<CONFIG>/UpdaterPayload.rc")
+add_dependencies(vmex_core vmex_updater)
 vmex_add_version_resource(vmex_core "VolumeMixerExtender core" "vmex_core" "vmex_core.dll" VFT_DLL)
 add_subdirectory(Components/inject.launcher)
 add_subdirectory(Components/inject.tap)
 
 if(BUILD_TESTING)
     add_executable(vmex_tests Test/CoreTests.cpp)
+    add_executable(vmex_logging_tests Test/LoggingTests.cpp)
+    target_link_libraries(vmex_logging_tests PRIVATE vmex_core)
+    add_dependencies(vmex_tests vmex_logging_tests)
+    add_test(NAME core.logging COMMAND vmex_logging_tests)
+    set_tests_properties(core.logging PROPERTIES TIMEOUT 60)
     target_link_libraries(vmex_tests PRIVATE vmex_core)
-    foreach(suite uninstall audio recording guard endpoint-lock presentation commands resources config pipe)
+    foreach(suite uninstall audio recording guard endpoint-lock presentation commands resources config pipe update)
         add_test(NAME "core.${suite}" COMMAND vmex_tests "${suite}")
         set_tests_properties("core.${suite}" PROPERTIES TIMEOUT 15)
     endforeach()
@@ -91,6 +111,14 @@ if(BUILD_TESTING)
     target_link_libraries(vmex_foreign_host_tests PRIVATE vmex_core)
     set_target_properties(vmex_foreign_host_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/foreign-host/$<CONFIG>")
     add_dependencies(vmex_tests vmex_foreign_host_tests)
+    add_custom_target(vmex_update_tests
+        COMMAND "${VMEX_DOTNET}" build "${CMAKE_SOURCE_DIR}/Test/Updater/Updater.Tests.csproj"
+            -c $<CONFIG> -o "${CMAKE_BINARY_DIR}/updater-tests/$<CONFIG>"
+        VERBATIM)
+    add_dependencies(vmex_tests vmex_update_tests)
+    add_test(NAME update.transaction COMMAND "${CMAKE_BINARY_DIR}/updater-tests/$<CONFIG>/vmex_update_tests.exe"
+        "$<TARGET_FILE_DIR:vmex_core>")
+    set_tests_properties(update.transaction PROPERTIES TIMEOUT 60)
     add_test(NAME core.foreign-host COMMAND "${CMAKE_COMMAND}" -E env
         "PATH=$<TARGET_FILE_DIR:vmex_core>;$ENV{PATH}" "$<TARGET_FILE:vmex_foreign_host_tests>" "$<TARGET_FILE_DIR:vmex_core>")
     set_tests_properties(core.foreign-host PROPERTIES TIMEOUT 15)
@@ -121,19 +149,12 @@ add_executable(vmex WIN32
     "${CMAKE_SOURCE_DIR}/app.manifest"
 )
 
-add_executable(vmex_cli
-    CliService.cpp
-    CliProgram.cpp
-    "${CMAKE_SOURCE_DIR}/app.manifest"
-)
-
 add_custom_target(vmex_diagnostics
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${VMEX_DIAGNOSTICS_DLL}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/xamldiagnostics.dll"
     VERBATIM)
 add_dependencies(vmex vmex_diagnostics)
-add_dependencies(vmex_cli vmex_diagnostics)
 
 find_program(VMEX_DOTNET dotnet REQUIRED)
 set(VMEX_MANAGER_EXECUTABLE "${CMAKE_SOURCE_DIR}/bin/$<CONFIG>/vmex_manager.exe")
@@ -153,19 +174,15 @@ if(BUILD_TESTING)
 endif()
 
 set_target_properties(vmex PROPERTIES VS_DPI_AWARE "PerMonitor")
-set_target_properties(vmex_cli PROPERTIES OUTPUT_NAME "vmex_cli")
 
 add_dependencies(vmex vmex_launcher vmex_tap)
-add_dependencies(vmex_cli vmex_launcher vmex_tap)
 if(BUILD_TESTING)
-    add_dependencies(vmex_tests vmex_cli)
+    add_dependencies(vmex_tests vmex)
 endif()
 
 target_link_libraries(vmex PRIVATE vmex_core WindowsApp.lib)
-target_link_libraries(vmex_cli PRIVATE vmex_core WindowsApp.lib)
 
 vmex_add_version_resource(vmex "VolumeMixerExtender background host" "vmex" "vmex.exe" VFT_APP "${CMAKE_SOURCE_DIR}/ico.ico")
-vmex_add_version_resource(vmex_cli "VolumeMixerExtender command line interface" "vmex_cli" "vmex_cli.exe" VFT_APP)
 
 set(VMEX_PACKAGE_NAME "${VMEX_PRODUCT_NAME}_${VMEX_VERSION}")
 set(VMEX_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/output" CACHE PATH "Release package output directory")
@@ -196,7 +213,6 @@ add_custom_target(package ALL
         "-DVMEX_PACKAGE_DIR=${VMEX_PACKAGE_DIR}"
         "-DVMEX_PACKAGE_NAME=${VMEX_PACKAGE_NAME}"
         "-DVMEX_EXECUTABLE=$<TARGET_FILE:vmex>"
-        "-DVMEX_CLI_EXECUTABLE=$<TARGET_FILE:vmex_cli>"
         "-DVMEX_CORE_DLL=$<TARGET_FILE:vmex_core>"
         "-DVMEX_MANAGER_EXECUTABLE=${VMEX_MANAGER_EXECUTABLE}"
         "-DVMEX_TAP_DLL=$<TARGET_FILE:vmex_tap>"
@@ -205,7 +221,7 @@ add_custom_target(package ALL
         "-DVMEX_DRIVER_PACKAGE_DIR=${VMEX_DRIVER_PACKAGE_DIR}"
         "-DVMEX_CONFIG=$<CONFIG>"
         -P "${CMAKE_SOURCE_DIR}/cmake/Package.cmake"
-    DEPENDS vmex vmex_cli vmex_manager vmex_launcher vmex_tap
+    DEPENDS vmex vmex_manager vmex_launcher vmex_tap
     VERBATIM)
 if(VMEX_BUILD_RECORDING_DRIVER)
     add_dependencies(package vmex_recording_driver)

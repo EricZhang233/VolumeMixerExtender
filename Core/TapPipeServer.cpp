@@ -90,6 +90,7 @@ namespace vmex::inject
         const bool wasRunning = m_running.exchange(false);
         if (wasRunning)
         {
+            std::lock_guard lock(m_listener);
             const HANDLE wake = ::CreateFileW(m_pipeName.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
             if (wake != INVALID_HANDLE_VALUE)
             {
@@ -107,22 +108,27 @@ namespace vmex::inject
     {
         while (m_running.load())
         {
-            const HANDLE pipe = ::CreateNamedPipeW(
-                m_pipeName.c_str(),
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                1,
-                4096,
-                4096,
-                0,
-                nullptr);
+            HANDLE pipe;
+            {
+                std::lock_guard lock(m_listener);
+                if (!m_running.load()) break;
+                pipe = ::CreateNamedPipeW(
+                    m_pipeName.c_str(),
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                    1,
+                    4096,
+                    4096,
+                    0,
+                    nullptr);
+            }
 
             if (pipe == INVALID_HANDLE_VALUE)
             {
-                log::Logger::Instance().WriteKeyFormat(
+                log::Logger::Instance().WriteFormat(
                     log::Level::Warn,
                     kChannel,
-                    L"log.pipe.create_failed",
+                    L"Pipe creation failed error={0}",
                     { std::to_wstring(::GetLastError()) });
                 ::Sleep(1000);
                 continue;
@@ -142,10 +148,10 @@ namespace vmex::inject
                 }
                 else
                 {
-                    log::Logger::Instance().WriteKeyFormat(
+                    log::Logger::Instance().WriteFormat(
                         log::Level::Warn,
                         kChannel,
-                        L"log.pipe.connect_failed",
+                        L"Pipe connection failed error={0}",
                         { std::to_wstring(error) });
                 }
             }
@@ -221,26 +227,26 @@ namespace vmex::inject
         const auto command = ParseTapCommand(line);
         if (!command.has_value())
         {
-            log::Logger::Instance().WriteKeyFormat(
+            log::Logger::Instance().WriteFormat(
                 log::Level::Warn,
                 kChannel,
-                L"log.pipe.unknown",
+                L"Unknown pipe message ignored raw={0}",
                 { strings::ToWide(line) });
             return {};
         }
 
-        log::Logger::Instance().WriteKeyFormat(
+        log::Logger::Instance().WriteFormat(
             log::Level::Info,
             kChannel,
-            L"log.pipe.received",
+            L"Pipe message received verb={0} raw={1}",
             { std::wstring(ToString(command->verb)), strings::ToWide(line) });
 
         if (!command->argumentsValid)
         {
-            log::Logger::Instance().WriteKeyFormat(
+            log::Logger::Instance().WriteFormat(
                 log::Level::Warn,
                 kChannel,
-                L"log.pipe.invalid",
+                L"Invalid pipe arguments ignored raw={0}",
                 { strings::ToWide(line) });
             return {};
         }
@@ -251,7 +257,7 @@ namespace vmex::inject
         }
         catch (...)
         {
-            log::Logger::Instance().WriteKey(log::Level::Error, kChannel, L"log.pipe.handler_threw");
+            log::Logger::Instance().WriteException(kChannel, L"Pipe handler failed");
         }
         return {};
     }

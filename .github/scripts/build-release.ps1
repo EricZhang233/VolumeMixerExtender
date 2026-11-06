@@ -25,7 +25,7 @@ $packagePath = (Resolve-Path (Join-Path $packageRoot $packageName)).Path
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::OpenRead($packagePath)
 try {
-    $expected = @('vmex.exe', 'vmex_cli.exe', 'vmex_core.dll', 'vmex_manager.exe',
+    $expected = @('vmex.exe', 'vmex_core.dll', 'vmex_manager.exe',
         'vmex_tap.dll', 'vmex_launcher.dll', 'xamldiagnostics.dll')
     $cableFiles = Get-ChildItem -LiteralPath 'bin/Release/Driver/VBCABLE' -File
     if ($cableFiles.Count -lt 5) { throw 'Original VB-CABLE package is missing.' }

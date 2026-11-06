@@ -3,6 +3,7 @@
 #include "TextService.h"
 #include "RecordingDriverService.h"
 #include "AboutService.h"
+#include "UpdateService.h"
 #include <windows.h>
 #include <objbase.h>
 #include <algorithm>
@@ -49,6 +50,12 @@ extern "C" __declspec(dllexport) void VmexManagerAbout(wchar_t* buffer, int capa
     catch (...) { Copy(L"", buffer, capacity); }
 }
 
+extern "C" __declspec(dllexport) void VmexManagerVersion(wchar_t* buffer, int capacity) noexcept
+{
+    try { Copy(vmex::App::Instance().Version(), buffer, capacity); }
+    catch (...) { Copy(L"", buffer, capacity); }
+}
+
 extern "C" __declspec(dllexport) int VmexManagerQuery(int* values, int count) noexcept
 {
     if (!values || count != 6) return vmex::kCodeInvalidArguments;
@@ -88,6 +95,7 @@ extern "C" __declspec(dllexport) int VmexManagerExecute(int action, int value, w
         case 9: result = vmex::management::RegisterStartMenu(); break;
         case 10: result = vmex::recording::InstallDriver(); break;
         case 11: result = vmex::recording::UninstallDriver(); break;
+        case 12: result = vmex::management::StopHost(true); break;
         default: result = vmex::Status::InvalidArguments(L"management-action"); break;
         }
     }
@@ -108,4 +116,38 @@ extern "C" __declspec(dllexport) int VmexRecordingDriverQuery(int* values, int c
         return vmex::kCodeOk;
     }
     catch (...) { return vmex::kCodeFailed; }
+}
+
+extern "C" __declspec(dllexport) int VmexManagerUpdate(int action, int* available, wchar_t* error, int capacity) noexcept
+{
+    if (!available || action < 0 || action > 3) return vmex::kCodeInvalidArguments;
+    *available = 0;
+    struct Com final
+    {
+        HRESULT result = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        ~Com() { if (SUCCEEDED(result)) ::CoUninitialize(); }
+    } com;
+    if (FAILED(com.result)) return vmex::kCodeFailed;
+    try
+    {
+        static vmex::update::InteractiveSession session;
+        vmex::Status result;
+        if (action == 0)
+        {
+            bool found = false;
+            result = session.Check(found);
+            *available = found ? 1 : 0;
+        }
+        else if (action == 1) result = session.OpenRelease();
+        else if (action == 2) result = session.Install();
+        else
+        {
+            bool running = false;
+            result = session.Poll(running);
+            *available = running ? 1 : 0;
+        }
+        Copy(result.detail, error, capacity);
+        return result.code;
+    }
+    catch (...) { Copy(L"management-update", error, capacity); return vmex::kCodeFailed; }
 }

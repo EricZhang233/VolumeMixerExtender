@@ -18,8 +18,6 @@ add_library(vmex_core SHARED
     AudioMirror.cpp
     AudioRoutingCleanup.cpp
     AutostartEntry.cpp
-    CliTypes.cpp
-    CommandRegistry.cpp
     ConfigService.cpp
     EndpointPolicyService.cpp
     EndpointVisibility.cpp
@@ -36,6 +34,7 @@ add_library(vmex_core SHARED
     RecordingBackend.cpp
     RecordingGuard.cpp
     RecordingClient.cpp
+    RecordingPanelState.cpp
     RecordingDriverService.cpp
     RecordingEndpointLock.cpp
     PayloadDeployment.cpp
@@ -50,6 +49,7 @@ add_library(vmex_core SHARED
     TextService.cpp
     UninstallService.cpp
     UserSettings.cpp
+    UpdateService.cpp
 )
 
 set_target_properties(vmex_core PROPERTIES
@@ -68,6 +68,7 @@ target_link_libraries(vmex_core PUBLIC
     oleaut32
     mmdevapi
     shell32
+    shlwapi
     setupapi
     cfgmgr32
     crypt32
@@ -76,5 +77,6 @@ target_link_libraries(vmex_core PUBLIC
     uuid
     version
     windowscodecs
+    winhttp
     WindowsApp.lib
 )

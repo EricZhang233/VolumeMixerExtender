@@ -1,13 +1,17 @@
 #include "App.h"
 #include "Runtime.h"
+#include "RecordingGuard.h"
 
 #include <windows.h>
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
+    const auto arguments = vmex::runtime::Arguments();
+    if (!arguments.empty() && arguments.front() == L"--recording-guard")
+        return vmex::recording::RunGuard(arguments);
     const bool autorun = vmex::runtime::HasAutorunArgument();
     auto& app = vmex::App::Instance();
-    const auto initialized = app.Initialize(vmex::runtime::BuildOptions({}, autorun));
+    const auto initialized = app.Initialize(vmex::runtime::BuildOptions(autorun));
     if (!initialized.IsOk())
     {
         return vmex::kCodeFailed;

@@ -1,9 +1,9 @@
 if(NOT DEFINED VMEX_PACKAGE_DIR OR NOT DEFINED VMEX_PACKAGE_NAME OR
-   NOT DEFINED VMEX_EXECUTABLE OR NOT DEFINED VMEX_CLI_EXECUTABLE OR
+   NOT DEFINED VMEX_EXECUTABLE OR
    NOT DEFINED VMEX_CORE_DLL OR NOT DEFINED VMEX_MANAGER_EXECUTABLE OR
    NOT DEFINED VMEX_TAP_DLL OR NOT DEFINED VMEX_LAUNCHER_DLL OR
    NOT DEFINED VMEX_DIAGNOSTICS_DLL)
-    message(FATAL_ERROR "Package: package directory, name, vmex, vmex_cli, vmex_core, manager and payloads are required")
+    message(FATAL_ERROR "Package: package directory, name, host, core, manager and payloads are required")
 endif()
 
 if(DEFINED VMEX_CONFIG AND NOT VMEX_CONFIG STREQUAL "Release")
@@ -15,13 +15,12 @@ set(vmex_stage "${VMEX_PACKAGE_DIR}/${VMEX_PACKAGE_NAME}")
 file(REMOVE_RECURSE "${vmex_stage}")
 file(MAKE_DIRECTORY "${vmex_stage}")
 file(COPY "${VMEX_EXECUTABLE}" DESTINATION "${vmex_stage}")
-file(COPY "${VMEX_CLI_EXECUTABLE}" DESTINATION "${vmex_stage}")
 file(COPY "${VMEX_CORE_DLL}" DESTINATION "${vmex_stage}")
 file(COPY "${VMEX_MANAGER_EXECUTABLE}" DESTINATION "${vmex_stage}")
 file(COPY "${VMEX_TAP_DLL}" DESTINATION "${vmex_stage}")
 file(COPY "${VMEX_LAUNCHER_DLL}" DESTINATION "${vmex_stage}")
 file(COPY "${VMEX_DIAGNOSTICS_DLL}" DESTINATION "${vmex_stage}")
-set(vmex_members vmex.exe vmex_cli.exe vmex_core.dll vmex_manager.exe vmex_tap.dll vmex_launcher.dll xamldiagnostics.dll)
+set(vmex_members vmex.exe vmex_core.dll vmex_manager.exe vmex_tap.dll vmex_launcher.dll xamldiagnostics.dll)
 if(VMEX_DRIVER_PACKAGE_DIR)
     file(MAKE_DIRECTORY "${vmex_stage}/Driver/VBCABLE")
     file(COPY "${VMEX_DRIVER_PACKAGE_DIR}/" DESTINATION "${vmex_stage}/Driver/VBCABLE")

@@ -30,7 +30,7 @@
   [![Windows 11](https://img.shields.io/badge/Windows-11%2026H2%2B-0078D4?logo=microsoft)](https://www.microsoft.com/windows)
   [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?logo=gnu)](https://www.gnu.org/licenses/gpl-3.0.html)
 
-<a href="#highlights">亮点速览</a> • <a href="#quickstart">快速开始</a> • <a href="#features">功能详解</a> • <a href="#cli">命令行</a> • <a href="#architecture">技术架构</a> • <a href="#faq">常见问题</a>
+<a href="#highlights">亮点速览</a> • <a href="#quickstart">快速开始</a> • <a href="#features">功能详解</a> • <a href="#architecture">技术架构</a> • <a href="#faq">常见问题</a>
 
 </div>
 
@@ -46,8 +46,8 @@
 *   🔀 **逐应用输出重定向**：让某个应用单独走某台输出设备——「游戏走耳机、播放器走音箱」；已重定向的应用会常显它的去向。
 *   🧹 **一键清除重定向**：底栏左格把全部应用恢复为默认设备，同时清除保存的应用音量偏好，恢复到 100%；设备总音量不变。
 *   🪟 **独立管理器**：底栏齿轮打开 WPF 管理器；自定义页与系统页随时切换，管理器关闭即退出。
-*   💻 **命令行管理**：`vmex_cli.exe` 覆盖注入、状态、端点、默认设备、重定向与开机自启，`-help` 与 `skill` 内置完整文档。
 *   🚀 **双击即用**：`vmex.exe` 无控制台常驻、自动接入、单实例运行，不开窗口、不驻托盘。
+*   🔄 **静默更新**：后台每 12 小时检查 GitHub 正式版，下载并校验完整更新包后退出接管、替换文件并自动恢复，失败回滚；全程不弹窗，保留用户配置。
 
 ---
 
@@ -60,7 +60,7 @@
 | 项目 | 要求 |
 | :--- | :--- |
 | 操作系统 | Windows 11 26H2（Build 26300）或更高版本，x64 |
-| 运行依赖 | 主进程与 CLI 无额外运行依赖；WPF 管理器使用 Windows 11 自带的 .NET Framework 4.8，不携带运行时 |
+| 运行依赖 | 主进程无额外运行依赖；WPF 管理器使用 Windows 11 自带的 .NET Framework 4.8，不携带运行时 |
 | 管理员权限 | 普通运行不需要；安装或卸载录制模式驱动时单独提权 |
 | 安装 | 不需要，压缩包解压即用 |
 
@@ -70,7 +70,7 @@
 2. **运行**：双击 `vmex.exe`。它没有控制台窗口，会在后台常驻并自动接入系统外壳。希望它跟着登录自动就绪，就点自绘页底栏的齿轮，在 **管理器 → 开机启动** 打开开关；也可直接运行 `vmex_manager.exe`。
 3. **使用**：按 `Win+A` 打开快速设置，点「选择声音输出」，看到的就是自绘页面。
 
-> 💡 习惯命令行？`vmex_cli.exe -help` 看全部命令，`vmex_cli.exe skill` 取面向脚本与 AI Agent 的接入文档。
+> 💡 管理器集中提供运行状态、偏好设置、驱动管理和软件更新。
 
 ---
 
@@ -108,15 +108,15 @@
 
 ### 独立管理器
 
-录制模式位于输出设备列表末行，通过原生开关启用。开启后默认输出切到 VB-CABLE 的 CABLE Input（V），开启前的默认设备成为监听 R；逐应用混音区直接控制 V，应用音量和静音同时影响录制与监听，R 的总音量只影响监听。V 始终不出现在主设备列表中，仅开启录制时可在应用重定向菜单中选择。关闭时将当前监听 R 设为默认输出，并将所有单独重定向到 V 的应用恢复为跟随默认，保留指向其他设备的重定向与应用音量。录制状态不持久化；录制期间使用独立保护进程，在宿主崩溃或被结束时尝试将当前监听 R 设为默认输出并清理 V 重定向。开启失败时回滚到进入前的默认设备。
+录制模式按钮位于自定义面板底栏的设置按钮右侧。录制可用时底栏四等分，点击按钮开启录制并显示系统强调底色，再次点击退出并取消底色；不可用时底栏保留三栏，系统模式保持原布局。开启后默认输出切到 VB-CABLE 的 CABLE Input（V），开启前的默认设备成为监听 R；逐应用混音区直接控制 V，应用音量和静音同时影响录制与监听，R 的总音量只影响监听。V 始终不出现在主设备列表中，仅开启录制时可在应用重定向菜单中选择。关闭时将当前监听 R 设为默认输出，并将所有单独重定向到 V 的应用恢复为跟随默认，保留指向其他设备的重定向与应用音量。录制状态不持久化；录制期间使用独立保护进程，在宿主崩溃或被结束时尝试将当前监听 R 设为默认输出并清理 V 重定向。开启失败时回滚到进入前的默认设备。
 
 录制模式使用随包 `Driver/VBCABLE/` 中的 VB-Audio 官方 VB-CABLE 标准版，只保留 Windows 11 x64 所需的原版文件。管理器验证原版安装器及微软签名后打开官方安装窗口，请在其中点击 Install Driver 或 Remove Driver，操作需要管理员权限，完成后重启 Windows。无需测试签名或导入自签证书。后台宿主启动及安装完成后将三个虚拟端点全部置于禁用待机状态；开启录制仅临时启用 `CABLE Input`，`CABLE In 16 Ch` 和 `CABLE Output` 保持禁用。关闭录制先恢复默认设备及应用路由、停止监听，再禁用 `CABLE Input`；失败保留待清理状态供重试，宿主崩溃时保护进程也会尝试恢复和禁用。录制软件从默认输出（`CABLE Input`）的桌面音频或回环采集系统声，麦克风使用实体端点。VB-CABLE 是共享设备，这些启停操作也会影响使用它的其他程序；本程序不修改驱动。目标 Windows 11 26H2 的实体机音频验收尚未完成。
 
-录制模式开关按配置完整性显示：驱动已安装并正常启动、CABLE Input 存在且硬件归属已确认、实体监听输出可用即可显示。Windows 枚举包含已禁用端点，CABLE Input 的待机禁用不影响开关显示；实际虚拟音频流在启用端点后创建，失败自动回滚。未安装或配置未就绪时整行隐藏；面板打开时及打开期间异步复查。安装、修复与诊断仍可通过管理器和 CLI 进行。`driver hide` 先退出录制再将三个端点禁用，`driver show` 先退出录制再恢复本程序有记录的禁用操作，用于手动诊断。
+录制模式按钮按配置完整性显示：驱动已安装并正常启动、CABLE Input 存在且硬件归属已确认、实体监听输出可用即可显示。Windows 枚举包含已禁用端点，CABLE Input 的待机禁用不影响按钮显示；实际虚拟音频流在启用端点后创建，失败自动回滚。Core 在注入前准备录制状态，面板首次显示直接读取，后台继续复查；可用性变化仅更新底栏，不重建设备和应用列表。安装、修复和状态查询通过管理器进行。
 
-端点操作只处理已确认硬件归属的标准 VB-CABLE，无法确认时跳过并记录原因。`driver show` 仅恢复本程序有记录的隐藏操作，保留用户原本禁用的端点；记录存于用户配置下的 `HiddenCableEndpoints`，跨程序重启保留。安装器取消、操作未生效或失败时恢复操作前的端点状态；本程序卸载清理配置前也会先恢复自身隐藏的端点，恢复失败则保留记录供重试。旧版本未记录归属的隐藏状态需要通过 Windows 声音设置手动恢复。
+端点操作只处理已确认硬件归属的标准 VB-CABLE，无法确认时跳过并记录原因。恢复端点时仅撤销本程序有记录的隐藏操作，保留用户原本禁用的端点；记录存于用户配置下的 `HiddenCableEndpoints`，跨程序重启保留。安装器取消、操作未生效或失败时恢复操作前的端点状态；本程序卸载清理配置前也会先恢复自身隐藏的端点，恢复失败则保留记录供重试。旧版本未记录归属的隐藏状态需要通过 Windows 声音设置手动恢复。
 
-管理器、CLI 和录制请求统一只连接当前会话中同一程序目录下的宿主；移动或复制程序目录后，请先退出旧目录中的宿主再启动新目录中的程序。
+管理器和录制请求统一只连接当前会话中同一程序目录下的宿主；移动或复制程序目录后，请先退出旧目录中的宿主再启动新目录中的程序。
 
 管理器标题栏关闭按钮左侧的“关于”图标展示当前版本、开发者、项目主页与第三方引用信息，并提供 VB-CABLE 来源、许可及捐款/购买入口。VB-CABLE 是 Donationware，欢迎支持作者；专业使用与企业或组织分发须遵守 [VB-Audio 官方许可条款](https://vb-audio.com/Services/licensing.htm)，其许可独立于本项目的 GPL。
 
@@ -132,7 +132,10 @@
 | **录制模式驱动** | 查询 VB-CABLE 状态并打开官方安装器或卸载器；操作前退出录制模式 |
 | **关于** | 标题栏图标打开版本、开发者与第三方组件来源、许可及支持入口 |
 | **打开日志目录** | 打开本程序日志目录，方便排查问题 |
+| **软件更新** | 检查正式版更新；发现更新后打开对应 Release 页面并将管理器带回前台一次，按钮变为「下载更新」。再次点击下载并校验更新包，校验成功后关闭管理器、停止后台接管、替换文件，再重新启动后台和管理器 |
 | **卸载并清理** | 普通确认框确认后停止接管，清除自启、配置、日志、缓存、全部应用重定向和音量偏好，保留程序文件；失败保留窗口与详情供重试 |
+
+日志位于 `%TEMP%\eric\VolumeMixerExtender\log`，使用固定英文诊断文本，不参与界面翻译。日志包含 UTC 时间、级别、模块、进程与线程、调用文件和行号，耗时操作带关联 ID。写盘采用容量 4096 的异步队列、每批最多 256 条；队列满时低优先级记录计数丢弃，警告和错误同步写入独立关键日志。主日志按 5 MB 分卷，启动时清理超过 30 天或总量 100 MB 的旧日志；输出为无 BOM UTF-8，并脱敏 GitHub Token。后台、注入模块、管理器和独立更新器遵循同一日志规则，正常退出时排空待写队列。
 
 ### 后台常驻
 
@@ -141,34 +144,16 @@
 
 ---
 
-<a name="cli"></a>
-
-## 命令行：桌面端与终端共用同一份核心
-
-`vmex_cli.exe` 与 `vmex.exe` 链接同一个 Core（`vmex_core.dll`），读写同一份状态——命令行里改完，回到面板重新打开看到的就是新值。
-
-随程序内置两份文档，不必再去找别的说明：
-
-```powershell
-vmex_cli.exe -help     # 完整命令与参数说明
-vmex_cli.exe skill     # 面向脚本与 AI Agent 的接入文档
-```
-
-当前版本可以在命令行完成：注入与状态查询、后台进程（`start` / `stop` / `host`）、管理器（`manager`）、打开面板（`panel`）、日志目录（`logs`）、项目主页（`project`）、驱动名显示（`show-driver-name on|off`）、端点枚举（`devices`）、默认设备切换（`default`）、逐应用重定向与清除（`redirect` / `clear-redirect`）、录制模式（`recording`）、驱动管理（`driver`，含隐藏或恢复多余端点）、开机自启（`autostart`）及卸载清理（`uninstall --yes`）。完整清单与参数以 `-help` 为准，它随程序一起更新。
-
----
-
 <a name="architecture"></a>
 
 ## 技术架构
 
-**VolumeMixerExtender** 的每一行业务逻辑都只存在一份：后台宿主、命令行与 WPF 管理器共用同一个 Core。管理器只负责界面，不承担常驻服务。
+**VolumeMixerExtender** 的每一行业务逻辑都只存在一份：后台宿主与 WPF 管理器共用同一个 Core。管理器只负责界面，不承担常驻服务。
 
 ```mermaid
 flowchart TB
     subgraph Shell["壳层 · 零业务逻辑"]
         HOST["vmex.exe<br/>无控制台后台宿主"]
-        CLI["vmex_cli.exe<br/>参数解析 / 输出格式化"]
         GUI["vmex_manager.exe<br/>WPF 管理器"]
     end
     subgraph Core["Core · 唯一业务层"]
@@ -178,15 +163,14 @@ flowchart TB
         TAP["vmex_tap.dll<br/>自绘页面"]
     end
     HOST --> SVC
-    CLI --> SVC
     GUI --> SVC
     SVC -->|部署并接入| TAP
     TAP -->|页面动作 · 命名管道| SVC
     SVC --> OS["Windows 音频 API · 注册表 · 启动文件夹"]
 ```
 
-*   **实现**：C++20 Core + C# WPF 管理器，由 CMake 统一构建；发布包含 `vmex.exe`、`vmex_cli.exe`、`vmex_manager.exe`、`vmex_core.dll`、`vmex_tap.dll`、`vmex_launcher.dll` 和 `xamldiagnostics.dll`，请完整解压到同一目录。主进程和 CLI 不依赖 WPF。
-*   **单一 Core 原则**：后台宿主与命令行共用业务层，功能天然对齐，日志统一记录。
+*   **实现**：C++20 Core + C# WPF 管理器，由 CMake 统一构建；发布包含 `vmex.exe`、`vmex_manager.exe`、`vmex_core.dll`、`vmex_tap.dll`、`vmex_launcher.dll` 和 `xamldiagnostics.dll`，请完整解压到同一目录。主进程不依赖 WPF。
+*   **单一 Core 原则**：后台宿主与管理器共用业务层，日志统一记录。
 *   **页面即载荷**：界面由注入到系统外壳内的模块渲染，跟随系统浅色/深色主题与强调色，不额外开窗、不驻留托盘。
 *   **动作走本机管道**：页面上的写操作经命名管道交给宿主执行，页面自身不长期持有系统句柄。
 *   **如实呈现事实**：默认设备与重定向都直接读系统当前状态，不另存一份本地镜像，也就不会出现「界面说的和系统做的不一致」。
@@ -258,7 +242,7 @@ flowchart TB
 
 ### 构建与自测
 
-需要 Visual Studio C++ 工具链、Windows SDK、CMake、PowerShell 7 与 .NET 10 SDK。global.json 将构建 SDK 约束为 .NET 10.0 正式版；CI 使用 Visual Studio 2026。首次构建从微软官方 NuGet 获取固定版本 Windows SDK 中的 x64 XAML 诊断组件，校验 SHA-256、微软签名与架构，缓存于 obj/sdk-deps；无需依赖本机额外安装的 XAML 诊断工具。构建同时下载固定 SHA-256 的 VB-CABLE 官方 Pack45，缓存于 obj/driver-deps/vbcable，只把 Windows 11 x64 所需的原版文件解压到产物的 Driver/VBCABLE；不再构建或分发自研测试驱动。管理器编译为 .NET Framework 4.8，使用 Windows 11 自带的运行时，发布不携带 .NET 或 Windows App SDK。`vmex_cli.exe about` 显示与管理器相同的关于信息，`recording` 和 `driver` 的完整用法见 `-help` 与 `skill`。
+需要 Visual Studio C++ 工具链、Windows SDK、CMake、PowerShell 7 与 .NET 10 SDK。global.json 将构建 SDK 约束为 .NET 10.0 正式版；CI 使用 Visual Studio 2026。首次构建从微软官方 NuGet 获取固定版本 Windows SDK 中的 x64 XAML 诊断组件，校验 SHA-256、微软签名与架构，缓存于 obj/sdk-deps；无需依赖本机额外安装的 XAML 诊断工具。构建同时下载固定 SHA-256 的 VB-CABLE 官方 Pack45，缓存于 obj/driver-deps/vbcable，只把 Windows 11 x64 所需的原版文件解压到产物的 Driver/VBCABLE；不再构建或分发自研测试驱动。管理器编译为 .NET Framework 4.8，使用 Windows 11 自带的运行时，发布不携带 .NET 或 Windows App SDK。
 
 ```powershell
 dotnet test
@@ -273,7 +257,7 @@ CTest 验证卸载中途失败的保护行为、音频重置部分失败的结�
 欢迎任何形式的贡献——无论是提交 Bug、改进文档，还是提交代码（PR）。
 
 *   发现异常或有功能建议？前往 [Issues](https://github.com/EricZhang233/VolumeMixerExtender/issues) 反馈，附上复现步骤与 `%TEMP%\eric\VolumeMixerExtender\log` 里的日志会更快被处理。
-*   想参与开发？工程使用 CMake + Visual Studio 构建，后台宿主与控制台共用同一套 Core，改一处即可两端生效。
+*   想参与开发？工程使用 CMake + Visual Studio 构建，后台宿主与管理器共用同一套 Core，改一处即可两端生效。
 
 如果你觉得这个项目对你有帮助，请给它由衷的一颗 ⭐️ **Star**！
 

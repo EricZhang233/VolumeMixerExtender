@@ -124,7 +124,7 @@ namespace vmex::recording
                     ::Sleep(3);
                 }
                 if (dropped)
-                    log::Logger::Instance().WriteKeyFormat(log::Level::Warn, L"recording", L"log.recording.dropped", { std::to_wstring(dropped) });
+                    log::Logger::Instance().WriteFormat(log::Level::Warn, L"recording", L"Monitor frames dropped count={0}", { std::to_wstring(dropped) });
             }
             catch (HRESULT error) { result = Status::FromHResult(L"audio-mirror", error); }
             catch (...) { result = Status::Failed(L"audio-mirror-exception"); }
@@ -134,7 +134,7 @@ namespace vmex::recording
             }
             if (!announced) ready.set_value(result);
             if (!result)
-                log::Logger::Instance().WriteKeyFormat(log::Level::Error, L"recording", L"log.recording.result",
+                log::Logger::Instance().WriteFormat(log::Level::Error, L"recording", L"Operation {0} code={1} detail={2}",
                     { L"mirror", std::to_wstring(result.code), result.detail });
         });
         return started.get();

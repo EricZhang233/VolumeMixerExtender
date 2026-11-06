@@ -2,16 +2,90 @@
 
 #include "AudioTypes.h"
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <optional>
 #include <utility>
 
 namespace vmex::presentation
 {
+    inline constexpr std::uint64_t kDeviceSelectionDelayMs = 32;
+
+    using MeterClock = std::chrono::steady_clock;
+    inline constexpr auto kMeterFrameInterval = std::chrono::nanoseconds(16'666'667);
+    inline constexpr auto kMeterSampleInterval = 2 * kMeterFrameInterval;
+
+    struct MeterFrame final
+    {
+        MeterClock::time_point now;
+        MeterClock::duration elapsed;
+        bool sample;
+    };
+
+    class MeterCadence final
+    {
+    public:
+        std::optional<MeterFrame> Tick(MeterClock::time_point now)
+        {
+            constexpr auto tolerance = std::chrono::milliseconds(1);
+            if (m_lastFrame && now + tolerance < m_nextFrame) return {};
+            const auto elapsed = m_lastFrame ? now - *m_lastFrame : kMeterFrameInterval;
+            if (!m_lastFrame) m_nextFrame = m_nextSample = now;
+            m_lastFrame = now;
+            Advance(m_nextFrame, now, kMeterFrameInterval);
+            const bool sample = now + tolerance >= m_nextSample;
+            if (sample) Advance(m_nextSample, now, kMeterSampleInterval);
+            return MeterFrame{ now, elapsed, sample };
+        }
+
+    private:
+        static void Advance(MeterClock::time_point& deadline, MeterClock::time_point now, MeterClock::duration interval)
+        {
+            deadline += interval;
+            if (deadline <= now) deadline = now + interval;
+        }
+
+        std::optional<MeterClock::time_point> m_lastFrame;
+        MeterClock::time_point m_nextFrame;
+        MeterClock::time_point m_nextSample;
+    };
+
+    class MeterLevel final
+    {
+    public:
+        void Sample(float peak)
+        {
+            constexpr float deadband = 0.008f;
+            const float floor = m_target > 0.0f ? 0.004f : 0.008f;
+            const float next = std::isfinite(peak) && peak > floor ? std::min(peak, 1.0f) : 0.0f;
+            if (next == 0.0f || next == 1.0f || m_target == 0.0f || std::abs(next - m_target) >= deadband)
+                m_target = next;
+        }
+
+        float Advance(MeterClock::duration elapsed)
+        {
+            if (m_level == m_target) return m_level;
+            const float seconds = std::chrono::duration<float>(elapsed).count();
+            const float timeConstant = m_target > m_level ? 0.025f : 0.14f;
+            m_level += (m_target - m_level) * -std::expm1(-seconds / timeConstant);
+            if (std::abs(m_target - m_level) <= 0.001f) m_level = m_target;
+            return m_level;
+        }
+
+    private:
+        float m_target = 0.0f;
+        float m_level = 0.0f;
+    };
+
     template<class T>
     class PendingSelection final
     {
     public:
-        void Queue(T value, std::uint64_t now) { m_value = std::move(value); m_due = now + 200; }
+        void Queue(T value, std::uint64_t now, std::uint64_t delay = 200)
+        {
+            m_value = std::move(value);
+            m_due = now + delay;
+        }
         [[nodiscard]] bool Due(std::uint64_t now) const { return m_value && now >= m_due; }
         [[nodiscard]] explicit operator bool() const { return m_value.has_value(); }
         [[nodiscard]] T ValueOr(T value) const { return m_value.value_or(std::move(value)); }
@@ -34,11 +108,17 @@ namespace vmex::presentation
             { return left.isDefault && !right.isDefault; });
     }
 
+    inline bool SameDeviceControl(const audio::DeviceInfo& left, const audio::DeviceInfo& right)
+    {
+        return left.id == right.id && left.friendlyName == right.friendlyName &&
+            left.description == right.description && left.state == right.state &&
+            left.recommendedIcon == right.recommendedIcon;
+    }
+
     inline bool SameDeviceRows(const std::vector<audio::DeviceInfo>& left, const std::vector<audio::DeviceInfo>& right)
     {
         return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(), [](const auto& a, const auto& b)
-            { return a.id == b.id && a.friendlyName == b.friendlyName && a.description == b.description &&
-                a.state == b.state && a.isDefault == b.isDefault; });
+            { return SameDeviceControl(a, b) && a.isDefault == b.isDefault; });
     }
 
     struct DeviceSnapshot
@@ -50,48 +130,45 @@ namespace vmex::presentation
         std::wstring defaultCapture;
         std::wstring appsEndpoint;
         bool recordingMode = false;
-        bool recordingAvailable = false;
         bool showDriverName = true;
     };
 
+    inline void SelectVisibleDefaults(DeviceSnapshot& snapshot, const DeviceSnapshot& previous, std::wstring_view monitor)
+    {
+        const auto select = [](std::vector<audio::DeviceInfo>& devices, std::wstring_view preferred)
+        {
+            PrioritizeMonitor(devices, preferred);
+            return !devices.empty() && devices.front().isDefault ? devices.front().id : std::wstring{};
+        };
+        const auto current = [](const std::vector<audio::DeviceInfo>& devices, std::wstring_view fallback)
+        {
+            const auto found = std::find_if(devices.begin(), devices.end(), [](const auto& device) { return device.isDefault; });
+            return found != devices.end() ? std::wstring_view(found->id) : fallback;
+        };
+        snapshot.defaultRender = select(snapshot.render,
+            snapshot.recordingMode ? monitor : current(snapshot.render, previous.defaultRender));
+        snapshot.defaultCapture = select(snapshot.capture, current(snapshot.capture, previous.defaultCapture));
+    }
+
     inline bool SameVolumeRows(const DeviceSnapshot& left, const DeviceSnapshot& right)
     {
-        return left.recordingAvailable == right.recordingAvailable &&
-            left.showDriverName == right.showDriverName && SameDeviceRows(left.render, right.render) &&
+        return left.showDriverName == right.showDriverName && SameDeviceRows(left.render, right.render) &&
             SameDeviceRows(left.capture, right.capture);
+    }
+
+    inline bool CanReuseVolumeRows(const DeviceSnapshot& left, const DeviceSnapshot& right)
+    {
+        return left.showDriverName == right.showDriverName &&
+            std::is_permutation(left.render.begin(), left.render.end(), right.render.begin(), right.render.end(), SameDeviceControl) &&
+            std::is_permutation(left.capture.begin(), left.capture.end(), right.capture.begin(), right.capture.end(), SameDeviceControl);
     }
 
     inline bool SameDeviceSnapshot(const DeviceSnapshot& left, const DeviceSnapshot& right)
     {
         return left.recordingMode == right.recordingMode && SameVolumeRows(left, right) &&
-            SameDeviceRows(left.routingRender, right.routingRender) &&
+            std::equal(left.routingRender.begin(), left.routingRender.end(),
+                right.routingRender.begin(), right.routingRender.end(), SameDeviceControl) &&
             left.defaultRender == right.defaultRender && left.defaultCapture == right.defaultCapture &&
             left.appsEndpoint == right.appsEndpoint;
     }
-
-    class DeviceSnapshotBuffer final
-    {
-    public:
-        bool Waiting(std::uint64_t now) const { return now < m_due; }
-        void Hold(std::uint64_t now, std::uint64_t delay = 400)
-        {
-            m_due = std::max(m_due, now + delay);
-            m_candidate.reset();
-        }
-        bool Observe(const DeviceSnapshot& snapshot, std::uint64_t now)
-        {
-            if (now < m_due) return false;
-            if (!m_candidate || !SameDeviceSnapshot(*m_candidate, snapshot))
-            {
-                m_candidate = snapshot;
-                m_since = now;
-                return false;
-            }
-            return now - m_since >= 250;
-        }
-    private:
-        std::optional<DeviceSnapshot> m_candidate;
-        std::uint64_t m_due = 0;
-        std::uint64_t m_since = 0;
-    };
 }
