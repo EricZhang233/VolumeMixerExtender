@@ -35,7 +35,7 @@ namespace vmex::recording
             const auto changed = actions.SetDefault(role, fallback);
             if (!changed) result = changed;
             else log::Logger::Instance().WriteFormat(log::Level::Info, L"recording.driver",
-                L"Pending driver removal default output restored role={0} endpoint={1}", { std::to_wstring(role), fallback });
+                L"Physical default output restored role={0} endpoint={1}", { std::to_wstring(role), fallback });
         }
         return result;
     }

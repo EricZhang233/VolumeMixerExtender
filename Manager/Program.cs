@@ -83,6 +83,7 @@ internal sealed class ManagerWindow : Window
     private readonly StackPanel body = new();
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly DispatcherTimer releaseFocusTimer = new() { Interval = TimeSpan.FromSeconds(10) };
+    private readonly DispatcherTimer feedbackTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private Task? stateRefresh;
     private bool busy, updating, running, modal, retryInjection;
     private bool updateAvailable, updateLaunched, releaseFocusPending;
@@ -246,8 +247,9 @@ internal sealed class ManagerWindow : Window
         Closing += (_, args) => { if (busy || modal || stateRefresh is { IsCompleted: false }) args.Cancel = true; };
         Deactivated += (_, _) => ReturnFromRelease();
         releaseFocusTimer.Tick += (_, _) => ClearReleaseFocus();
-        Closed += (_, _) => { timer.Stop(); ClearReleaseFocus(); };
-        if (updateFailed) feedback.Text = Core.Text("manager.update.installFailed");
+        feedbackTimer.Tick += (_, _) => SetFeedback(string.Empty);
+        Closed += (_, _) => { timer.Stop(); feedbackTimer.Stop(); ClearReleaseFocus(); };
+        if (updateFailed) SetFeedback(Core.Text("manager.update.installFailed"));
         Loaded += async (_, _) =>
         {
             if (test)
@@ -313,22 +315,29 @@ internal sealed class ManagerWindow : Window
                     if (softwareUpdate.Content.ToString() != Core.Text("manager.update.download") ||
                         feedback.Text != Core.Text("manager.update.available"))
                         throw new InvalidOperationException("An available update must offer download and retain feedback");
-                    PresentUpdate(false); feedback.Text = string.Empty;
+                    PresentUpdate(false); SetFeedback(string.Empty);
                     if (ActualWidth < 580 || status.Text.Length == 0 || host.Template is null || autostart.Template is null) throw new InvalidOperationException("WPF layout or resources unavailable");
-                    feedback.Text = Core.Text("manager.done"); UpdateLayout();
+                    SetFeedback(Core.Text("manager.done")); UpdateLayout();
                     await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
                     double compactHeight = ActualHeight;
-                    feedback.Text = string.Join("\n", Enumerable.Repeat(Core.Text("driver.restart.required"), 6));
+                    SetFeedback(string.Join("\n", Enumerable.Repeat(Core.Text("driver.restart.required"), 6)));
                     UpdateLayout();
                     await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
                     if (SizeToContent != SizeToContent.Height || ActualHeight < compactHeight + 60 ||
                         feedback.TranslatePoint(new Point(0, feedback.ActualHeight), layout).Y > layout.ActualHeight)
                         throw new InvalidOperationException("Long feedback must expand the window to fit its content");
                     Preview("long-message");
-                    feedback.Text = string.Empty; UpdateLayout();
+                    await Task.Delay(3000);
+                    SetFeedback(feedback.Text);
+                    await Task.Delay(2300);
+                    if (feedback.Text.Length == 0) throw new InvalidOperationException("New feedback must restart its five-second lifetime");
+                    await Task.Delay(2900);
+                    UpdateLayout();
                     await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
-                    if (Math.Abs(ActualHeight - compactHeight) > 1)
-                        throw new InvalidOperationException("Clearing feedback must restore the compact window height");
+                    if (feedback.Text.Length != 0 || feedbackTimer.IsEnabled || Math.Abs(ActualHeight - compactHeight) > 1)
+                        throw new InvalidOperationException("Feedback must expire after five seconds and restore the compact window height");
+                    if (panel.FocusVisualStyle is null || host.FocusVisualStyle is null)
+                        throw new InvalidOperationException("Buttons must retain keyboard focus visuals");
                     if (!frame.HasTransparentCaptionArea) throw new InvalidOperationException("Native caption buttons are covered by the client background");
                     var aboutWindow = CreateAbout();
                     aboutWindow.Show(); await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
@@ -485,13 +494,20 @@ internal sealed class ManagerWindow : Window
         host.Content = Core.Text(running ? "manager.stop" : "manager.start");
     }
 
-    private void Error(string message) => feedback.Text = Core.Text("manager.failed").Replace("{0}", message);
+    private void SetFeedback(string message)
+    {
+        feedbackTimer.Stop();
+        feedback.Text = message;
+        if (message.Length != 0) feedbackTimer.Start();
+    }
+
+    private void Error(string message) => SetFeedback(Core.Text("manager.failed").Replace("{0}", message));
 
     private void PresentUpdate(bool available)
     {
         updateAvailable = available;
         softwareUpdate.Content = Core.Text(available ? "manager.update.download" : "manager.update.check");
-        feedback.Text = Core.Text(available ? "manager.update.available" : "update.current");
+        SetFeedback(Core.Text(available ? "manager.update.available" : "update.current"));
     }
 
     private void ClearReleaseFocus()
@@ -522,7 +538,7 @@ internal sealed class ManagerWindow : Window
             var error = new StringBuilder(4096);
             if (!updateAvailable)
             {
-                feedback.Text = Core.Text("manager.update.checking");
+                SetFeedback(Core.Text("manager.update.checking"));
                 int available = 0;
                 int result = await Task.Run(() => Core.VmexManagerUpdate(0, out available, error, error.Capacity));
                 if (result != 0) { Error(error.ToString()); return; }
@@ -536,7 +552,7 @@ internal sealed class ManagerWindow : Window
             else
             {
                 ClearReleaseFocus();
-                feedback.Text = Core.Text("manager.update.restarting");
+                SetFeedback(Core.Text("manager.update.restarting"));
                 int result = await Task.Run(() => Core.VmexManagerUpdate(2, out _, error, error.Capacity));
                 if (result != 0) { Error(error.ToString()); return; }
                 updateLaunched = true;
@@ -663,7 +679,7 @@ internal sealed class ManagerWindow : Window
     private async Task Execute(int action, int value = 0)
     {
         if (busy || modal || test) return;
-        busy = true; body.IsEnabled = false; feedback.Text = Core.Text(action == 13 ? "manager.reinjecting" : "manager.working");
+        busy = true; body.IsEnabled = false; SetFeedback(Core.Text(action == 13 ? "manager.reinjecting" : "manager.working"));
         try
         {
             if (stateRefresh is Task pending) await pending;
@@ -672,7 +688,7 @@ internal sealed class ManagerWindow : Window
             if (result != 0) Error(error.ToString());
             else
             {
-                feedback.Text = error.ToString();
+                SetFeedback(error.ToString());
                 if (action is 2 or 7)
                 {
                     if (action == 7) MessageBox.Show(this, Core.Text("manager.uninstall.done"), Title, MessageBoxButton.OK, MessageBoxImage.Information);

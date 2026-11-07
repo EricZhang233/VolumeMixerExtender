@@ -52,6 +52,16 @@ namespace vmex::recording
         return result;
     }
 
+    Status MaintainStandbyVisibility(IVisibilityActions& actions, bool recordingActive, bool restartRequired,
+        const std::function<Status()>& protectDefaults)
+    {
+        if (recordingActive) return Status::Ok();
+        const auto protectedDefaults = protectDefaults();
+        if (!protectedDefaults || restartRequired) return protectedDefaults;
+        std::vector<VisibilityState> changes;
+        return ChangeVisibility(actions, false, changes);
+    }
+
     Status MaintainDriverVisibility(IVisibilityActions& actions, bool install,
         const std::function<Status()>& operation, const std::function<bool()>& restartRequired)
     {

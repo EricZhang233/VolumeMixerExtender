@@ -733,6 +733,35 @@ namespace
         Require(MaintainDriverVisibility(visibility, true, [] { return vmex::Status::Ok(); }, [&] { return pendingRestart; }) &&
             !visibility.endpoints[0].visible && visibility.endpoints[0].owned,
             "A completed driver install must enter isolated standby");
+        visibility.endpoints.clear();
+        unsigned protectedDefaults = 0;
+        const auto protectDefaults = [&]
+        {
+            ++protectedDefaults;
+            return vmex::Status::Ok();
+        };
+        Require(MaintainStandbyVisibility(visibility, false, false, protectDefaults).IsOk(),
+            "Standby maintenance must tolerate endpoints not yet published by installation");
+        visibility.endpoints = { {L"late-playback", true, false}, {L"late-capture", true, false}, {L"user-disabled", false, false} };
+        Require(MaintainStandbyVisibility(visibility, false, false, [&]
+        {
+            Require(visibility.endpoints[0].visible, "Defaults must be protected before virtual playback is hidden");
+            return protectDefaults();
+        }) && !visibility.endpoints[0].visible && !visibility.endpoints[1].visible && !visibility.endpoints[2].owned,
+            "Repeated standby maintenance must isolate late endpoints while preserving user-disabled ownership");
+        visibility.endpoints[0].visible = true;
+        Require(MaintainStandbyVisibility(visibility, false, false, protectDefaults) && !visibility.endpoints[0].visible,
+            "Standby must re-isolate a virtual endpoint enabled externally");
+        visibility.endpoints[0].visible = true;
+        const auto beforeRecording = protectedDefaults;
+        Require(MaintainStandbyVisibility(visibility, true, false, protectDefaults) &&
+            visibility.endpoints[0].visible && protectedDefaults == beforeRecording,
+            "Recording or pending cleanup must exclude standby visibility and default changes");
+        Require(MaintainStandbyVisibility(visibility, false, true, protectDefaults) &&
+            visibility.endpoints[0].visible && protectedDefaults == beforeRecording + 1,
+            "Pending restart must protect defaults without mutating virtual endpoint visibility");
+        Require(!MaintainStandbyVisibility(visibility, false, false, [] { return vmex::Status::Failed(L"defaults"); }) &&
+            visibility.endpoints[0].visible, "Failed default protection must not hide the current output");
         Require(vmex::management::IsHostImage(L"C:\\App\\vmex.exe", L"C:\\App") &&
             vmex::management::IsHostImage(L"C:\\APP\\vmex.exe", L"c:\\app"), "The same-directory background host must be recognized");
         Require(!vmex::management::IsHostImage(L"C:\\Other\\vmex.exe", L"C:\\App") &&

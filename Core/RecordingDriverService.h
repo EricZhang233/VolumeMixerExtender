@@ -24,6 +24,7 @@ namespace vmex::recording
     Status DisableCableEndpoints();
     Status RestoreCableEndpoints();
     Status ProtectPendingDriverDefaults();
+    Status MaintainCableStandby(bool recordingActive);
     Status InstallDriver();
     Status UninstallDriver();
     int RunDriverMaintenance(bool install);

@@ -183,7 +183,10 @@ namespace vmex::recording
 
         class VisibilityActions final : public IVisibilityActions
         {
+            bool m_diagnostics;
         public:
+            explicit VisibilityActions(bool diagnostics = true) : m_diagnostics(diagnostics) {}
+
             Status Enumerate(std::vector<VisibilityState>& result) override
             {
                 for (const auto flow : { eRender, eCapture })
@@ -197,7 +200,8 @@ namespace vmex::recording
                         const auto role = audio::detail::GetCableEndpointRole(endpoint);
                         std::array<wchar_t, 40> subtype{};
                         ::StringFromGUID2(endpoint.jackSubType, subtype.data(), static_cast<int>(subtype.size()));
-                        log::Logger::Instance().WriteFormat(role == audio::detail::CableEndpointRole::Unknown ?
+                        if (m_diagnostics || role == audio::detail::CableEndpointRole::Unknown)
+                            log::Logger::Instance().WriteFormat(role == audio::detail::CableEndpointRole::Unknown ?
                             log::Level::Warn : log::Level::Info, kChannel, L"Cable endpoint id={0} hardware={1} form={2} jack={3} role={4} state={5}",
                             { endpoint.id, endpoint.hardwareId, std::to_wstring(endpoint.formFactor), subtype.data(),
                               std::to_wstring(static_cast<int>(role)), std::to_wstring(endpoint.state) });
@@ -466,6 +470,8 @@ namespace vmex::recording
             return ERROR_SUCCESS_REBOOT_REQUIRED;
         }
 
+        Status ProtectCableDefaults();
+
         Status RunDriverOperation(bool install)
         {
             const auto action = install ? L"driver-install" : L"driver-uninstall";
@@ -504,6 +510,8 @@ namespace vmex::recording
                     return Status::Failed(text::Embedded().Resolve(L"driver.signature.invalid"));
                 if (code != ERROR_SUCCESS && code != ERROR_SUCCESS_REBOOT_REQUIRED)
                     return Status::Failed(text::Embedded().ResolveFormat(L"driver.operation.failed", { std::to_wstring(code) }));
+                const auto protectedDefaults = ProtectCableDefaults();
+                if (!protectedDefaults) return protectedDefaults;
                 return { kCodeOk, text::Embedded().Resolve(
                     code == ERROR_SUCCESS_REBOOT_REQUIRED ? L"driver.restart" : L"driver.done") };
             }, [] { return CheckDriverRestart() == ERROR_FAIL_REBOOT_REQUIRED; });
@@ -630,31 +638,51 @@ namespace vmex::recording
         const auto restart = CheckDriverRestart();
         if (restart == ERROR_SUCCESS) return Status::Ok();
         if (restart != ERROR_FAIL_REBOOT_REQUIRED) return Status::FromWin32(L"driver-restart-check", restart);
-        std::vector<audio::detail::Endpoint> outputs;
-        if (!audio::detail::EnumEndpoints(eRender, outputs, true)) return Status::Failed(L"driver-pending-output-enumeration");
-        std::vector<std::wstring> virtualEndpoints, physicalEndpoints;
-        for (const auto& endpoint : outputs)
-            (audio::detail::IsOurVirtualDevice(endpoint) ? virtualEndpoints : physicalEndpoints).push_back(endpoint.id);
-        struct Defaults final : IOutputDefaultActions
+        return ProtectCableDefaults();
+    }
+
+    Status MaintainCableStandby(bool recordingActive)
+    {
+        if (recordingActive) return Status::Ok();
+        EndpointOperation operation;
+        if (!operation.locked) return Status::Ok();
+        const auto restart = CheckDriverRestart();
+        if (restart != ERROR_SUCCESS && restart != ERROR_FAIL_REBOOT_REQUIRED)
+            return Status::FromWin32(L"driver-restart-check", restart);
+        VisibilityActions actions(false);
+        return MaintainStandbyVisibility(actions, false, restart == ERROR_FAIL_REBOOT_REQUIRED, ProtectCableDefaults);
+    }
+
+    namespace
+    {
+        Status ProtectCableDefaults()
         {
-            Status ReadDefault(unsigned role, std::wstring& endpoint) override
+            std::vector<audio::detail::Endpoint> outputs;
+            if (!audio::detail::EnumEndpoints(eRender, outputs, true)) return Status::Failed(L"driver-output-enumeration");
+            std::vector<std::wstring> virtualEndpoints, physicalEndpoints;
+            for (const auto& endpoint : outputs)
+                (audio::detail::IsOurVirtualDevice(endpoint) ? virtualEndpoints : physicalEndpoints).push_back(endpoint.id);
+            struct Defaults final : IOutputDefaultActions
             {
-                auto enumerator = audio::detail::MakeEnumerator();
-                if (!enumerator) return Status::Failed(L"driver-pending-default-enumerator");
-                audio::detail::Ptr<IMMDevice> device;
-                auto result = enumerator->GetDefaultAudioEndpoint(eRender, static_cast<ERole>(role), device.put());
-                LPWSTR id = nullptr;
-                if (SUCCEEDED(result)) result = device->GetId(&id);
-                endpoint = audio::detail::TakeDeviceId(id);
-                return SUCCEEDED(result) ? Status::Ok() : Status::FromHResult(L"driver-pending-default-query", result);
-            }
-            Status SetDefault(unsigned role, std::wstring_view endpoint) override
-            {
-                const auto result = audio::detail::SetSystemDefaultEndpointForRoleResult(std::wstring(endpoint), static_cast<ERole>(role));
-                return SUCCEEDED(result) ? Status::Ok() : Status::FromHResult(L"driver-pending-default-restore", result);
-            }
-        } actions;
-        return ProtectPhysicalDefaults(actions, virtualEndpoints, physicalEndpoints);
+                Status ReadDefault(unsigned role, std::wstring& endpoint) override
+                {
+                    auto enumerator = audio::detail::MakeEnumerator();
+                    if (!enumerator) return Status::Failed(L"driver-default-enumerator");
+                    audio::detail::Ptr<IMMDevice> device;
+                    auto result = enumerator->GetDefaultAudioEndpoint(eRender, static_cast<ERole>(role), device.put());
+                    LPWSTR id = nullptr;
+                    if (SUCCEEDED(result)) result = device->GetId(&id);
+                    endpoint = audio::detail::TakeDeviceId(id);
+                    return SUCCEEDED(result) ? Status::Ok() : Status::FromHResult(L"driver-default-query", result);
+                }
+                Status SetDefault(unsigned role, std::wstring_view endpoint) override
+                {
+                    const auto result = audio::detail::SetSystemDefaultEndpointForRoleResult(std::wstring(endpoint), static_cast<ERole>(role));
+                    return SUCCEEDED(result) ? Status::Ok() : Status::FromHResult(L"driver-default-restore", result);
+                }
+            } actions;
+            return ProtectPhysicalDefaults(actions, virtualEndpoints, physicalEndpoints);
+        }
     }
 
     Status InstallDriver() { return RunDriverOperation(true); }

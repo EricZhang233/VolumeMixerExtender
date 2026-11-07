@@ -322,10 +322,11 @@ namespace vmex
                     const bool refresh = ++ticks % 10 == 0;
                     if (refresh)
                     {
-                        const auto protectedDefaults = recording::ProtectPendingDriverDefaults();
+                        const auto state = impl->recordingMode->State();
+                        const auto protectedDefaults = recording::MaintainCableStandby(state.enabled || state.cleanupPending);
                         if (!protectedDefaults)
                             log::Logger::Instance().WriteFormat(log::Level::Warn, kChannel,
-                                L"Pending driver default output protection failed detail={0}", { protectedDefaults.detail });
+                                L"Standby virtual endpoint protection failed detail={0}", { protectedDefaults.detail });
                     }
                     impl->PublishRecordingPanel(refresh);
                 }
