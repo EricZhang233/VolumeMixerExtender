@@ -172,11 +172,15 @@ internal static class Program
                 Require(UpdateTransaction.RecoverPending(root, null), "Interrupted installation must recover before reading the installed version");
             Require(File.ReadAllText(Path.Combine(UpdateRuntime.ResolveRoot(root), "vmex_core.dll")) == "old:vmex_core.dll",
                 "The restored core must be accessible through its resolved volume path");
+            var retiredCableInstaller = Path.Combine(root, "Driver", "VBCABLE", "VBCABLE_Setup_x64.exe");
+            Directory.CreateDirectory(Path.GetDirectoryName(retiredCableInstaller)!);
+            File.WriteAllText(retiredCableInstaller, "old driver installer");
             calls.Clear();
             using (var package = Package(UpdateTransaction.RequiredFiles.Concat(new[] { "Driver/VBCABLE/old.inf" })))
                 UpdateTransaction.InstallVerified(package, Digest(package), root, version, stop, restart, validate: fixture);
             Require(calls.SequenceEqual(new[] { "stop", "restart" }), "Successful installation must stop once and restart once");
             Require(!File.Exists(Path.Combine(root, "vmex_cli.exe")), "Successful upgrades must remove the retired command-line executable");
+            Require(!File.Exists(retiredCableInstaller), "Successful upgrades must remove loose legacy driver files without an update manifest");
             calls.Clear();
             using (var package = Package())
                 UpdateTransaction.InstallVerified(package, Digest(package), root, version, stop, restart, validate: fixture);

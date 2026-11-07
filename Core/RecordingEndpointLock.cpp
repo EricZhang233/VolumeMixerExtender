@@ -4,9 +4,42 @@
 #include "AudioInterop.h"
 #include "Logger.h"
 #include <future>
+#include <algorithm>
+#include <array>
 
 namespace vmex::recording
 {
+    Status ProtectPhysicalDefaults(IOutputDefaultActions& actions, std::span<const std::wstring> virtualEndpoints,
+        std::span<const std::wstring> physicalEndpoints)
+    {
+        if (virtualEndpoints.empty()) return Status::Ok();
+        std::array<std::wstring, 3> defaults;
+        std::wstring fallback;
+        Status result;
+        for (unsigned role = 0; role < defaults.size(); ++role)
+        {
+            const auto read = actions.ReadDefault(role, defaults[role]);
+            if (!read) { result = read; continue; }
+            if (fallback.empty() && std::find(physicalEndpoints.begin(), physicalEndpoints.end(), defaults[role]) != physicalEndpoints.end() &&
+                std::find(virtualEndpoints.begin(), virtualEndpoints.end(), defaults[role]) == virtualEndpoints.end())
+                fallback = defaults[role];
+        }
+        if (fallback.empty())
+            for (const auto& endpoint : physicalEndpoints)
+                if (!endpoint.empty() && std::find(virtualEndpoints.begin(), virtualEndpoints.end(), endpoint) == virtualEndpoints.end())
+                { fallback = endpoint; break; }
+        for (unsigned role = 0; role < defaults.size(); ++role)
+        {
+            if (std::find(virtualEndpoints.begin(), virtualEndpoints.end(), defaults[role]) == virtualEndpoints.end()) continue;
+            if (fallback.empty()) return Status::Failed(L"driver-pending-physical-output-missing");
+            const auto changed = actions.SetDefault(role, fallback);
+            if (!changed) result = changed;
+            else log::Logger::Instance().WriteFormat(log::Level::Info, L"recording.driver",
+                L"Pending driver removal default output restored role={0} endpoint={1}", { std::to_wstring(role), fallback });
+        }
+        return result;
+    }
+
     Status EnforceRecordingEndpoint(IEndpointLockActions& actions, std::wstring_view endpoint)
     {
         if (endpoint.empty()) return Status::InvalidArguments(L"recording-lock-endpoint");

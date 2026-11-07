@@ -14,4 +14,7 @@
     <DebugType>none</DebugType>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\ico.png" LogicalName="Vmex.Manager.ProjectLogo.png" />
+  </ItemGroup>
 </Project>

@@ -51,4 +51,31 @@ namespace vmex::recording
         }
         return result;
     }
+
+    Status MaintainDriverVisibility(IVisibilityActions& actions, bool install,
+        const std::function<Status()>& operation, const std::function<bool()>& restartRequired)
+    {
+        std::vector<VisibilityState> changes;
+        const auto rollback = [&](Status result)
+        {
+            if (restartRequired()) return result;
+            const auto restored = RestoreVisibility(actions, changes);
+            return restored ? result : Status::Failed(result.detail + L"; " + restored.detail);
+        };
+        if (!install)
+        {
+            const auto hidden = ChangeVisibility(actions, false, changes);
+            if (!hidden) return rollback(hidden);
+        }
+        Status result;
+        try { result = operation(); }
+        catch (...) { result = Status::Failed(L"driver-operation-exception"); }
+        if (!result) return rollback(result);
+        if (install && !restartRequired())
+        {
+            const auto hidden = ChangeVisibility(actions, false, changes);
+            if (!hidden) return rollback(hidden);
+        }
+        return result;
+    }
 }

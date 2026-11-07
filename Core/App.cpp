@@ -319,7 +319,15 @@ namespace vmex
                 {
                     std::lock_guard lock(impl->recordingMutex);
                     impl->recordingMode->CheckHealth();
-                    impl->PublishRecordingPanel(++ticks % 10 == 0);
+                    const bool refresh = ++ticks % 10 == 0;
+                    if (refresh)
+                    {
+                        const auto protectedDefaults = recording::ProtectPendingDriverDefaults();
+                        if (!protectedDefaults)
+                            log::Logger::Instance().WriteFormat(log::Level::Warn, kChannel,
+                                L"Pending driver default output protection failed detail={0}", { protectedDefaults.detail });
+                    }
+                    impl->PublishRecordingPanel(refresh);
                 }
                 catch (...)
                 {

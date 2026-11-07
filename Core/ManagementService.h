@@ -37,6 +37,7 @@ namespace vmex::management
     Status StopHost(bool forUpdate = false);
     Status OpenManager();
     Status OpenPanel();
+    Status RetryInjection();
     Status OpenLogs();
     Status OpenProject();
     Status SetAutostart(bool enabled);

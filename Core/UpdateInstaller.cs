@@ -23,7 +23,12 @@ public static class UpdateTransaction
 {
     public const string ManifestName = ".vmex-update-manifest.json";
     private const string BackupName = ".vmex-update-backup";
-    private static readonly string[] RetiredFiles = { "vmex_cli.exe" };
+    private static readonly string[] RetiredFiles = {
+        "vmex_cli.exe", "Driver/VBCABLE/vbMmeCable64_win10.inf", "Driver/VBCABLE/vbaudio_cable64_win10.cat",
+        "Driver/VBCABLE/vbaudio_cable64_win10.sys", "Driver/VBCABLE/vbaudio_cable64arm_win10.sys",
+        "Driver/VBCABLE/VBCABLE_Setup_x64.exe", "Driver/VBCABLE/VBCABLE_ControlPanel.exe",
+        "Driver/VBCABLE/pin_in.ico", "Driver/VBCABLE/pin_out.ico", "Driver/VBCABLE/readme.txt"
+    };
     public static readonly string[] RequiredFiles = {
         "vmex.exe", "vmex_core.dll", "vmex_manager.exe",
         "vmex_launcher.dll", "vmex_tap.dll", "xamldiagnostics.dll"

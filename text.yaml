@@ -7,9 +7,8 @@ manager.heading: VolumeMixerExtender
 manager.window.minimize: 最小化
 manager.window.maximize: 最大化或还原
 manager.window.close: 关闭
-manager.panel.ready: 音量面板已就绪
-manager.panel.preparing: 正在准备音量面板…
-manager.panel.stopped: 打开音量面板时将自动启动程序。
+manager.panel.ready: 已就绪
+manager.panel.preparing: 未就绪
 manager.subtitle: 管理后台运行与偏好设置
 manager.autostart.hint: 登录 Windows 时自动运行。
 manager.cancel: 取消
@@ -17,8 +16,11 @@ manager.done: 完成
 manager.loading: 正在读取运行状态…
 manager.start: 启动程序
 manager.stop: 退出程序
-manager.refresh: 刷新
 manager.panel: 打开音量面板
+manager.reinject: 尝试重新注入
+manager.reinjecting: 正在重新注入，请稍候…
+manager.reinject.done: 音量面板已重新就绪。
+manager.reinject.hint: 会先退出录制模式，重新启动后台程序并重试面板接管。系统声音面板可能短暂重启。
 manager.panel.hint: 可从控制中心音量设置或快捷键[Win+Shift+V]进入。
 manager.panel.hint.icons: 可从控制中心 {0} 或快捷键[ {1}+{2}+V ]进入。
 manager.panel.pending: 面板尚未完成接管，请稍后重试。
@@ -27,7 +29,6 @@ manager.driver.hint: 下次打开音量面板时生效，无需重启程序。
 manager.maintenance: 维护
 manager.logs: 打开日志目录
 manager.project: 项目主页
-manager.state.running: 运行中
 manager.state.stopped: 未运行
 manager.update.check: 软件更新
 manager.update.checking: 正在检查软件更新…
@@ -41,7 +42,7 @@ manager.uninstall: 卸载并清理
 manager.ready: 关闭窗口后仍可使用音量面板。
 manager.working: 正在完成操作，请稍候…
 manager.failed: 操作未完成：{0}
-manager.unresponsive: 未能连接，请刷新重试
+manager.unresponsive: 暂时无法连接后台程序，请稍候重试。
 manager.injection: 面板接管
 manager.injected: 已就绪
 manager.pending: 未接管或正在等待系统面板
@@ -70,41 +71,51 @@ page.label.listenOutput: 监听输出设备
 page.label.defaultInput: 默认输入设备
 page.checkbox.recordingMode: 录制模式
 recording.failed: 录制模式操作失败：{0}
+recording.info.title: 录制模式说明
+recording.info: 部分录制软件可能将当前输出设备的音量和音效处理一并录入，造成音量或音效的重复叠加。录制模式通过 VB-CABLE 提供未经实体输出设备 APO 后期处理的纯净音频流。\n\n开启后，系统默认输出切换到 VB-CABLE，声音仍会通过当前实体设备供你监听。实体设备的音量和 APO 音效只影响监听，不进入录制链路。\n\n如果录制软件支持选择音频设备，请将录制源设为 VB-CABLE。麦克风继续选择实体输入设备。\n\n关闭录制模式后，会恢复默认输出设备及相关应用的音频路由。
 recording.unknown: 状态未知
 recording.available: 录制入口可用
 recording.unavailableReason: 不可用原因
 recording.endpoint.notReady: CABLE Input 不可用或无法确认其硬件归属，请检查 VB-CABLE 配置。
 recording.format.notReady: 无法打开音频端点或读取混音格式，请检查音频服务和设备配置。
-recording.driver.missing: 未安装 VB-CABLE，请在管理器中打开官方安装器完成安装。
+recording.driver.missing: 未安装 VB-CABLE，请在管理器中安装录制驱动。
 recording.driver.notReady: VB-CABLE 的 CABLE Input 尚未就绪，请检查驱动状态并在安装后重启 Windows。
 recording.monitor.physicalRequired: 请先将实体输出设备设为默认，再开启录制模式。
 driver.title: 录制模式驱动 · VB-CABLE
-driver.install: 打开安装器
-driver.uninstall: 打开卸载器
+driver.install: 安装驱动
+driver.uninstall: 卸载驱动
 driver.absent: 未安装
 driver.ready: 已就绪
 driver.notStarted: 已安装，尚未运行
-driver.package: 驱动包完整
-driver.package.missing: 缺少完整驱动包
+driver.package.missing: 缺少内嵌驱动包
 driver.problem: 设备问题代码
 driver.query.failed: 无法查询录制模式驱动状态
-driver.operation.failed: 尚未确认驱动状态已改变。请在 VB-CABLE 官方安装器中完成对应操作并按提示重启 Windows。
+driver.operation.failed: 驱动操作失败，系统错误代码 {0}。
+driver.done: 驱动操作已完成。
 driver.restart: 驱动操作已完成，需要重启 Windows 后生效。
-driver.hint: 录制模式需要 VB-CABLE，安装或卸载后请重启 Windows。
+driver.restart.required: 请先重启 Windows，再继续安装、卸载或使用录制驱动。
+driver.hint: 安装、卸载需管理员权限，卸载后须重启 Windows。
 driver.endpoints.hint: 待机时三个虚拟端点均禁用；开启录制仅临时启用 CABLE Input，关闭后再次禁用。录制按钮按配置完整性显示，待机禁用不影响显示。卸载清理会先恢复本程序有记录的禁用操作。
 driver.signature.invalid: 驱动签名、证书或目录校验失败，已停止安装。
-driver.uninstall.confirm: 将先退出录制模式，再打开 VB-CABLE 官方安装器，请点击 Remove Driver。VB-CABLE 是共享设备，卸载也会影响使用它的其他程序；完成后请重启 Windows。是否继续？
+driver.uninstall.confirm: 将先退出录制模式，再卸载 VB-CABLE。卸载后必须重启 Windows。VB-CABLE 是共享设备，卸载会影响使用它的其他程序。是否继续？
 about.title: 关于
 about.version: 版本 {0}
-about.developer: 开发者：EricZhang233\nC++20 核心与 XAML 音量面板；C# / WPF 管理器。
+about.developer: 开发者 EricZhang233\nC++20 核心、XAML 音量面板和 C# / WPF 管理器。
 about.project: 项目主页：https://github.com/EricZhang233/VolumeMixerExtender
-about.license: 本项目许可证：GNU GPL v3。第三方组件遵循各自许可，不因随包分发而改为 GPL。
-about.thirdParty: 第三方组件与参考项目
-about.vbcable: VB-CABLE 标准版 · VB-Audio Software\nCopyright V.Burel 2010–2024，保留所有权利。\n来源：https://www.vb-cable.com/\n许可：https://vb-audio.com/Services/licensing.htm
-about.eartrumpet: EarTrumpet · File-New-Project\n逐应用音量与输出重定向的交互参考。\nhttps://github.com/File-New-Project/EarTrumpet
-about.microsoft: Microsoft Windows XAML 诊断接口与 C++/WinRT\n用于系统面板接入与 XAML 渲染；随包 xamldiagnostics.dll 属于 Microsoft Windows SDK 组件，权利归 Microsoft，适用其原有许可。
+about.license: 本项目采用 GNU GPL v3。第三方组件适用各自的许可。
+about.thirdParty: 第三方组件
+about.microsoft.title: XAML 诊断组件
+about.microsoft: Windows SDK 的 XAML 诊断组件与 C++/WinRT 用于接入和渲染系统音量面板。组件适用微软许可。
+about.vbcable.title: VB-CABLE
+about.vbcable: VB-Audio Software 的标准版虚拟音频驱动，用于录制模式。\n© V.Burel 2010–2024，保留所有权利。
 about.link.project: 项目主页
 about.link.project.url: https://github.com/EricZhang233/VolumeMixerExtender
+about.link.microsoft: Windows 开发文档
+about.link.microsoft.url: https://learn.microsoft.com/windows/apps/
+about.link.vbcable: 官方网站
+about.link.vbcable.url: https://www.vb-cable.com/
+about.link.vbcable.license: 许可与捐款
+about.link.vbcable.license.url: https://vb-audio.com/Services/licensing.htm
 page.toggle.autostart: 开机启动
 page.toggle.showDriverName: 显示驱动名
 page.button.uninstall: 从系统卸载

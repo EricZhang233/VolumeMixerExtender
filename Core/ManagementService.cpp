@@ -75,7 +75,7 @@ namespace vmex::management
             return IsHostImage(image, platform::GetApplicationDirectory());
         }
 
-        Status StopUnlocked(bool forUpdate = false)
+        Status StopUnlocked(bool forUpdate = false, DWORD timeoutMs = 10000)
         {
             if (host::HostPresence::IsRunning())
             {
@@ -83,20 +83,17 @@ namespace vmex::management
                 if (forUpdate && recording::PanelStateCache::Read(state) &&
                     (state.recording.enabled || state.recording.cleanupPending))
                     return Status::Failed(L"update-recording-active");
-                Handle pipe{ Connect() };
-                if (pipe.value == INVALID_HANDLE_VALUE) return Status::FromLastError(L"host-connect");
-                DWORD pid = 0;
-                if (!Identify(pipe.value, pid)) return Status::Failed(L"host-identity");
-                Handle process{ ::OpenProcess(SYNCHRONIZE, FALSE, pid) };
+                auto link = ConnectHost();
+                if (!link.Valid()) return Status::Failed(L"host-connect");
+                Handle process{ ::OpenProcess(SYNCHRONIZE, FALSE, link.processId) };
                 if (!process.value) return Status::FromLastError(L"host-process");
                 const std::string_view command = forUpdate ? "UPDATEEXIT\n" : "EXIT\n";
                 DWORD written = 0;
-                if (!::WriteFile(pipe.value, command.data(), static_cast<DWORD>(command.size()), &written, nullptr) ||
+                if (!::WriteFile(static_cast<HANDLE>(link.pipe), command.data(), static_cast<DWORD>(command.size()), &written, nullptr) ||
                     written != command.size())
                     return Status::FromLastError(L"host-exit-write");
-                ::CloseHandle(pipe.value);
-                pipe.value = nullptr;
-                if (::WaitForSingleObject(process.value, 10000) != WAIT_OBJECT_0)
+                link.Reset();
+                if (::WaitForSingleObject(process.value, timeoutMs) != WAIT_OBJECT_0)
                     return Status::Failed(L"host-exit-timeout");
             }
             return StopInjection();
@@ -122,6 +119,34 @@ namespace vmex::management
             const auto result = reinterpret_cast<INT_PTR>(::ShellExecuteW(nullptr, L"open", std::wstring(target).c_str(),
                                                                          nullptr, nullptr, SW_SHOWNORMAL));
             return result > 32 ? Status::Ok() : Status::Failed(L"shell-open:" + std::to_wstring(result));
+        }
+
+        Status StartUnlocked()
+        {
+            if (host::HostPresence::IsRunning())
+            {
+                auto link = ConnectHost();
+                return Report(L"start", link.Valid() ? Status::Ok() : Status::Failed(L"host-identity"));
+            }
+            const auto launched = Launch(L"vmex.exe");
+            if (!launched) return Report(L"start", launched);
+            for (int attempt = 0; attempt < 100; ++attempt)
+            {
+                if (host::HostPresence::IsRunning()) return Report(L"start", Status::Ok());
+                ::Sleep(100);
+            }
+            return Report(L"start", Status::Failed(L"host-start-timeout"));
+        }
+
+        Status WaitForPanel()
+        {
+            for (int attempt = 0; attempt < 100; ++attempt)
+            {
+                inject::State state;
+                if (App::Instance().Injection().QueryState(state) && state.tapLoaded) return Status::Ok();
+                ::Sleep(100);
+            }
+            return Status::Failed(App::Instance().Text().Resolve(L"manager.panel.pending"));
         }
 
         Status RemovePath(const std::filesystem::path& path, bool directory)
@@ -242,7 +267,7 @@ namespace vmex::management
         inject::State state;
         const auto queried = app.Injection().QueryState(state);
         if (!queried) return queried;
-        if (!state.tapLoaded) return Status::Ok();
+        if (!state.tapLoaded && !state.launcherLoaded) return Status::Ok();
         const auto result = uninstall::TerminateShellHost(state.target.processId);
         return result.ok ? Status::Ok() : Status::Failed(result.detail);
     }
@@ -250,19 +275,7 @@ namespace vmex::management
     {
         Operation operation;
         if (!operation.Locked()) return Status::Failed(L"management-busy");
-        if (host::HostPresence::IsRunning())
-        {
-            auto link = ConnectHost();
-            return Report(L"start", link.Valid() ? Status::Ok() : Status::Failed(L"host-identity"));
-        }
-        const auto launched = Launch(L"vmex.exe");
-        if (!launched) return Report(L"start", launched);
-        for (int attempt = 0; attempt < 100; ++attempt)
-        {
-            if (host::HostPresence::IsRunning()) return Report(L"start", Status::Ok());
-            ::Sleep(100);
-        }
-        return Report(L"start", Status::Failed(L"host-start-timeout"));
+        return StartUnlocked();
     }
 
     Status StopHost(bool forUpdate)
@@ -278,14 +291,26 @@ namespace vmex::management
     {
         const auto started = StartHost();
         if (!started) return started;
-        for (int attempt = 0; attempt < 100; ++attempt)
+        const auto ready = WaitForPanel();
+        return Report(L"panel", ready ? Open(L"ms-actioncenter:controlcenter/volume") : ready);
+    }
+    Status RetryInjection()
+    {
+        log::OperationTimer timing(L"management", L"RetryInjection");
+        if (!App::Instance().IsReady()) return Report(L"reinject", Status::Failed(L"not-ready"));
+        Operation operation;
+        if (!operation.Locked()) return Report(L"reinject", Status::Failed(L"management-busy"));
+        const auto state = Query();
+        if (!state.running || !state.injected)
         {
-            inject::State state;
-            if (App::Instance().Injection().QueryState(state) && state.tapLoaded)
-                return Report(L"panel", Open(L"ms-actioncenter:controlcenter/volume"));
-            ::Sleep(100);
+            const auto stopped = StopUnlocked(false, 70000);
+            if (!stopped) return Report(L"reinject", stopped);
+            const auto started = StartUnlocked();
+            if (!started) return Report(L"reinject", started);
+            const auto ready = WaitForPanel();
+            if (!ready) return Report(L"reinject", ready);
         }
-        return Report(L"panel", Status::Failed(App::Instance().Text().Resolve(L"manager.panel.pending")));
+        return Report(L"reinject", { kCodeOk, App::Instance().Text().Resolve(L"manager.reinject.done") });
     }
     Status OpenLogs() { return Report(L"logs", Open((platform::GetCacheDirectory() / L"log").wstring())); }
     Status OpenProject() { return Open(L"https://github.com/EricZhang233/VolumeMixerExtender"); }

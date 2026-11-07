@@ -27,11 +27,7 @@ $archive = [IO.Compression.ZipFile]::OpenRead($packagePath)
 try {
     $expected = @('vmex.exe', 'vmex_core.dll', 'vmex_manager.exe',
         'vmex_tap.dll', 'vmex_launcher.dll', 'xamldiagnostics.dll')
-    $cableFiles = Get-ChildItem -LiteralPath 'bin/Release/Driver/VBCABLE' -File
-    if ($cableFiles.Count -lt 5) { throw 'Original VB-CABLE package is missing.' }
-    $expected += @($cableFiles | ForEach-Object { 'Driver/VBCABLE/' + $_.Name })
     foreach ($entry in $archive.Entries) {
-        if ($entry.FullName -cin @('Driver/', 'Driver/VBCABLE/')) { continue }
         if ($entry.FullName -cnotin $expected) {
             throw "Unexpected package member $($entry.FullName)."
         }
@@ -42,7 +38,7 @@ try {
         if ($entry.Count -ne 1 -or $entry[0].Length -eq 0) { throw "Missing or empty package member $name." }
         $built = Get-Item "bin/Release/$name"
         if (($name.EndsWith('.exe') -or $name.EndsWith('.dll')) -and
-            -not $name.StartsWith('Driver/') -and $name -cne 'xamldiagnostics.dll' -and $built.VersionInfo.ProductVersion -cne $version) { throw "Version mismatch in $name." }
+            $name -cne 'xamldiagnostics.dll' -and $built.VersionInfo.ProductVersion -cne $version) { throw "Version mismatch in $name." }
         $memberStream = $entry[0].Open()
         $builtStream = $built.OpenRead()
         $algorithm = [Security.Cryptography.SHA256]::Create()
@@ -58,7 +54,7 @@ try {
     }
 } finally { $archive.Dispose() }
 & "$PSScriptRoot/../../Test/DiagnosticsPackageTests.ps1" -Path 'bin/Release/xamldiagnostics.dll'
-& "$PSScriptRoot/../../Test/DriverPackageTests.ps1" -Path 'bin/Release/Driver/VBCABLE'
+& "$PSScriptRoot/../../Test/DriverPackageTests.ps1" -Path 'bin/Release/vmex_core.dll'
 $digest = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash
 Write-Output "Built $packageName SHA256=$digest"
 if ($env:GITHUB_OUTPUT) {

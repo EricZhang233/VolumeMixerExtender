@@ -21,11 +21,6 @@ file(COPY "${VMEX_TAP_DLL}" DESTINATION "${vmex_stage}")
 file(COPY "${VMEX_LAUNCHER_DLL}" DESTINATION "${vmex_stage}")
 file(COPY "${VMEX_DIAGNOSTICS_DLL}" DESTINATION "${vmex_stage}")
 set(vmex_members vmex.exe vmex_core.dll vmex_manager.exe vmex_tap.dll vmex_launcher.dll xamldiagnostics.dll)
-if(VMEX_DRIVER_PACKAGE_DIR)
-    file(MAKE_DIRECTORY "${vmex_stage}/Driver/VBCABLE")
-    file(COPY "${VMEX_DRIVER_PACKAGE_DIR}/" DESTINATION "${vmex_stage}/Driver/VBCABLE")
-    list(APPEND vmex_members "Driver")
-endif()
 
 file(REMOVE "${VMEX_PACKAGE_DIR}/${VMEX_PACKAGE_NAME}.zip")
 

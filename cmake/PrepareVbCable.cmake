@@ -4,12 +4,7 @@ set(vmex_cable_files
     vbMmeCable64_win10.inf
     vbaudio_cable64_win10.cat
     vbaudio_cable64_win10.sys
-    vbaudio_cable64arm_win10.sys
-    VBCABLE_ControlPanel.exe
-    VBCABLE_Setup_x64.exe
-    pin_in.ico
-    pin_out.ico
-    readme.txt)
+    vbaudio_cable64arm_win10.sys)
 file(MAKE_DIRECTORY "${VMEX_CABLE_CACHE}")
 set(vmex_cable_cached "")
 if(EXISTS "${vmex_cable_archive}")
@@ -23,8 +18,14 @@ if(NOT vmex_cable_cached STREQUAL vmex_cable_hash)
         message(FATAL_ERROR "VB-CABLE download failed: ${vmex_cable_download}")
     endif()
 endif()
-file(REMOVE_RECURSE "${VMEX_CABLE_DESTINATION}")
 file(MAKE_DIRECTORY "${VMEX_CABLE_DESTINATION}")
 file(ARCHIVE_EXTRACT INPUT "${vmex_cable_archive}" DESTINATION "${VMEX_CABLE_DESTINATION}"
     PATTERNS ${vmex_cable_files})
-message(STATUS "VB-CABLE: Windows 11 x64 files prepared from the original Pack45 package")
+set(vmex_cable_resource_id 201)
+set(vmex_cable_resource "")
+foreach(vmex_cable_file IN LISTS vmex_cable_files)
+    string(APPEND vmex_cable_resource "${vmex_cable_resource_id} RCDATA \"${VMEX_CABLE_DESTINATION}/${vmex_cable_file}\"\n")
+    math(EXPR vmex_cable_resource_id "${vmex_cable_resource_id} + 1")
+endforeach()
+file(WRITE "${VMEX_CABLE_DESTINATION}/DriverPayload.rc" "${vmex_cable_resource}")
+message(STATUS "VB-CABLE: original Pack45 driver files prepared for embedding")

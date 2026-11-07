@@ -22,5 +22,7 @@ namespace vmex::recording
 
     Status ChangeVisibility(IVisibilityActions& actions, bool visible, std::vector<VisibilityState>& changes);
     Status RestoreVisibility(IVisibilityActions& actions, const std::vector<VisibilityState>& changes);
+    Status MaintainDriverVisibility(IVisibilityActions& actions, bool install,
+        const std::function<Status()>& operation, const std::function<bool()>& restartRequired);
     bool IsCableHardwareId(std::wstring_view id);
 }

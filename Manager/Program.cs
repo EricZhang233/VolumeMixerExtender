@@ -74,24 +74,24 @@ internal static class Program
 
 internal sealed class ManagerWindow : Window
 {
-    private readonly TextBlock status = new(), injection = new(), feedback = new();
-    private readonly Button host = new(), refresh = new();
+    private readonly TextBlock status = new(), feedback = new();
+    private readonly Button host = new(), panel = new();
     private readonly Button softwareUpdate = new();
-    private readonly TextBlock driverStatus = new();
+    private readonly TextBlock driverStatus = new(), driverRestart, driverHint;
     private readonly Button installDriver = new(), uninstallDriver = new();
     private readonly CheckBox autostart = new(), driver = new();
     private readonly StackPanel body = new();
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly DispatcherTimer releaseFocusTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private Task? stateRefresh;
-    private bool busy, updating, running, modal;
+    private bool busy, updating, running, modal, retryInjection;
     private bool updateAvailable, updateLaunched, releaseFocusPending;
     private readonly bool test;
 
     internal ManagerWindow(bool selfTest, bool updateFailed = false)
     {
         test = selfTest;
-        Title = Core.Text("manager.title"); Width = 600; Height = 650;
+        Title = Core.Text("manager.title"); Width = 600; SizeToContent = SizeToContent.Height;
         WindowStyle = WindowStyle.SingleBorderWindow;
         ResizeMode = ResizeMode.NoResize;
         WindowChrome.SetWindowChrome(this, new WindowChrome { CaptionHeight = 64, ResizeBorderThickness = SystemParameters.WindowResizeBorderThickness, GlassFrameThickness = new Thickness(0, 64, 0, 0), UseAeroCaptionButtons = true });
@@ -105,7 +105,7 @@ internal sealed class ManagerWindow : Window
         UseLayoutRounding = true; SnapsToDevicePixels = true;
         TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
         TextOptions.SetTextRenderingMode(this, TextRenderingMode.Auto);
-        var layout = new Grid(); layout.RowDefinitions.Add(new() { Height = new GridLength(64) }); layout.RowDefinitions.Add(new());
+        var layout = new Grid(); layout.RowDefinitions.Add(new() { Height = new GridLength(64) }); layout.RowDefinitions.Add(new() { Height = GridLength.Auto });
         var surface = new Border { IsHitTestVisible = false };
         surface.SetResourceReference(Border.BackgroundProperty, "WindowBrush");
         Grid.SetRowSpan(surface, 2); layout.Children.Add(surface);
@@ -140,57 +140,72 @@ internal sealed class ManagerWindow : Window
         Grid.SetRow(ready, 0); layout.Children.Add(ready);
         layout.Children.Add(caption);
         body.Margin = new Thickness(24, 4, 24, 12);
-        var scroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        scroll.SetResourceReference(StyleProperty, "OverlayScrollViewerStyle");
-        Grid.SetRow(scroll, 1); layout.Children.Add(scroll); Content = layout;
+        Grid.SetRow(body, 1); layout.Children.Add(body); Content = layout;
         var runtime = new Grid(); runtime.ColumnDefinitions.Add(new()); runtime.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        status.FontSize = 20; status.FontWeight = FontWeights.Normal; status.Margin = new Thickness(0, 0, 0, 4);
+        status.FontSize = 18; status.FontWeight = FontWeights.Normal; status.Margin = new Thickness(0, 0, 0, 4);
         status.Text = Core.Text("manager.loading"); texts.Children.Add(status);
-        injection.Opacity = .65; injection.Margin = new Thickness(0, 0, 0, 4); texts.Children.Add(injection);
         texts.Children.Add(PanelHint());
         runtime.Children.Add(texts);
-        var buttons = new Grid { VerticalAlignment = VerticalAlignment.Center };
-        buttons.RowDefinitions.Add(new() { Height = GridLength.Auto }); buttons.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        var panel = new Button { Content = Core.Text("manager.panel"), Padding = new Thickness(18, 9, 18, 9), Margin = new Thickness(0, 0, 0, 10) };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        panel.Content = Core.Text("manager.panel"); panel.Padding = new Thickness(14, 7, 14, 7); panel.Margin = new Thickness(0, 0, 8, 0);
         panel.SetResourceReference(StyleProperty, "AccentButtonStyle");
-        panel.Click += async (_, _) => await Execute(8); buttons.Children.Add(panel);
-        host.Content = Core.Text("manager.start"); host.MinWidth = 128; host.Padding = new Thickness(20, 9, 20, 9);
+        panel.Click += async (_, _) => await Execute(retryInjection ? 13 : 8); buttons.Children.Add(panel);
+        host.Content = Core.Text("manager.start"); host.Padding = new Thickness(14, 7, 14, 7);
         host.Click += async (_, _) => { if (running && !Confirm("manager.stop", "manager.stop.confirm")) return; await Execute(running ? 2 : 1); };
-        refresh.Content = Core.Text("manager.refresh"); refresh.Margin = new Thickness(0, 0, 10, 0); refresh.Padding = new Thickness(18, 9, 18, 9);
-        refresh.Click += async (_, _) => await Update();
-        var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        row.Children.Add(refresh); row.Children.Add(host); Grid.SetRow(row, 1); buttons.Children.Add(row);
+        buttons.Children.Add(host);
         Grid.SetColumn(buttons, 1); runtime.Children.Add(buttons);
-        body.Children.Add(Card(runtime, 18, 10));
+        body.Children.Add(Card(runtime, 14, 8));
         body.Children.Add(Label("manager.settings", 14, FontWeights.SemiBold));
         body.Children.Add(Setting("\uE7E8", "page.toggle.autostart", "manager.autostart.hint", autostart));
         body.Children.Add(Setting("\uE7F4", "page.toggle.showDriverName", "manager.driver.hint", driver));
         autostart.Click += async (_, _) => { if (!updating) await Execute(3, autostart.IsChecked == true ? 1 : 0); };
         driver.Click += async (_, _) => { if (!updating) await Execute(4, driver.IsChecked == true ? 1 : 0); };
         body.Children.Add(Label("manager.maintenance", 14, FontWeights.SemiBold));
-        var driverCard = new StackPanel();
-        var driverRow = new Grid();
-        driverRow.ColumnDefinitions.Add(new());
-        driverRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var driverCard = new Grid();
+        driverCard.ColumnDefinitions.Add(new());
+        driverCard.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var driverDetails = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
         driverStatus.Text = Core.Text("manager.loading");
         driverStatus.TextWrapping = TextWrapping.Wrap;
-        driverStatus.VerticalAlignment = VerticalAlignment.Center;
-        driverStatus.Margin = new Thickness(0, 0, 16, 0);
-        driverRow.Children.Add(driverStatus);
+        driverDetails.Children.Add(driverStatus);
         var driverActions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        installDriver.Content = Core.Text("driver.install"); installDriver.Padding = new Thickness(16, 8, 16, 8);
-        uninstallDriver.Content = Core.Text("driver.uninstall"); uninstallDriver.Padding = new Thickness(16, 8, 16, 8);
+        var recordingInfo = new Button
+        {
+            Content = new TextBlock { Text = "\uE946", FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 16 },
+            Width = 30, Height = 30, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0),
+            Background = Brushes.Transparent, BorderThickness = new Thickness(0)
+        };
+        System.Windows.Automation.AutomationProperties.SetName(recordingInfo, Core.Text("recording.info.title"));
+        var recordingTip = new ToolTip
+        {
+            Content = new TextBlock { Text = Core.Text("recording.info"), MaxWidth = 360, TextWrapping = TextWrapping.Wrap },
+            PlacementTarget = recordingInfo, Placement = PlacementMode.Bottom
+        };
+        recordingInfo.ToolTip = recordingTip;
+        ToolTipService.SetInitialShowDelay(recordingInfo, 300);
+        ToolTipService.SetShowDuration(recordingInfo, 60000);
+        recordingInfo.Click += (_, _) => recordingTip.IsOpen = true;
+        recordingInfo.LostKeyboardFocus += (_, _) => recordingTip.IsOpen = false;
+        driverActions.Children.Add(recordingInfo);
+        installDriver.Content = Core.Text("driver.install"); installDriver.Padding = new Thickness(12, 6, 12, 6);
+        uninstallDriver.Content = Core.Text("driver.uninstall"); uninstallDriver.Padding = new Thickness(12, 6, 12, 6);
         installDriver.IsEnabled = false; uninstallDriver.IsEnabled = false;
         installDriver.Visibility = Visibility.Collapsed; uninstallDriver.Visibility = Visibility.Collapsed;
         installDriver.Click += async (_, _) => await Execute(10);
         uninstallDriver.Click += async (_, _) => { if (Confirm("driver.uninstall", "driver.uninstall.confirm")) await Execute(11); };
         driverActions.Children.Add(installDriver); driverActions.Children.Add(uninstallDriver);
-        Grid.SetColumn(driverActions, 1); driverRow.Children.Add(driverActions);
-        driverCard.Children.Add(driverRow);
-        var driverHint = Label("driver.hint", 12, FontWeights.Normal, true);
-        driverHint.Margin = new Thickness(0, 8, 0, 0);
-        driverCard.Children.Add(driverHint); body.Children.Add(Card(driverCard, 16, 10));
+        Grid.SetColumn(driverActions, 1); driverCard.Children.Add(driverActions);
+        driverRestart = Label("driver.restart.required", 13, FontWeights.SemiBold);
+        driverRestart.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
+        driverRestart.Margin = new Thickness(0, 4, 0, 0);
+        driverRestart.Visibility = Visibility.Collapsed;
+        driverDetails.Children.Add(driverRestart);
+        driverHint = Label("driver.hint", 12, FontWeights.Normal, true);
+        driverHint.Margin = new Thickness(0, 4, 0, 0);
+        driverDetails.Children.Add(driverHint);
+        driverCard.Children.Add(driverDetails);
+        body.Children.Add(Card(driverCard, 14, 8));
         var links = new Grid();
         void AddAction(Button button)
         {
@@ -218,11 +233,9 @@ internal sealed class ManagerWindow : Window
         softwareUpdate.Click += async (_, _) => await UpdateSoftware();
         AddAction(softwareUpdate);
         body.Children.Add(Card(links, 14));
-        feedback.TextWrapping = TextWrapping.Wrap; feedback.Margin = new Thickness(0, 12, 0, 0);
-        var feedbackStyle = new System.Windows.Style(typeof(TextBlock));
-        var emptyFeedback = new Trigger { Property = TextBlock.TextProperty, Value = string.Empty };
-        emptyFeedback.Setters.Add(new Setter(VisibilityProperty, Visibility.Collapsed));
-        feedbackStyle.Triggers.Add(emptyFeedback); feedback.Style = feedbackStyle;
+        feedback.TextWrapping = TextWrapping.Wrap;
+        feedback.MinHeight = 20;
+        feedback.Margin = new Thickness(0, 4, 0, 0);
         body.Children.Add(feedback);
         timer.Tick += async (_, _) =>
         {
@@ -243,25 +256,50 @@ internal sealed class ManagerWindow : Window
                 {
                     var invalid = new StringBuilder(32);
                     if (await Task.Run(() => Core.VmexManagerExecute(99, 0, invalid, invalid.Capacity)) != 1 || invalid.ToString() != "management-action") throw new InvalidOperationException("Core management ABI mismatch");
+                    if (await Task.Run(() => Core.VmexManagerExecute(13, 0, invalid, invalid.Capacity)) != 3 || invalid.ToString() != "not-ready")
+                        throw new InvalidOperationException("Reinjection without an initialized Core must be rejected before changing the host");
                     if (TryFindResource("ToggleSwitchCheckBoxStyle") is not System.Windows.Style || TryFindResource("AccentButtonStyle") is not System.Windows.Style) throw new InvalidOperationException("Control styles unavailable");
                     Present(new[] { 1, 0, 1, 0, 1, 0 });
-                    if (status.Text != Core.Text("manager.state.running")) throw new InvalidOperationException("A transient pipe connection failure must not mark a running host as stopped");
+                    if (status.Text != Core.Text("manager.panel.ready")) throw new InvalidOperationException("A transient pipe connection failure must not mark a running host as stopped");
                     Present(new[] { 0, 0, 0, 0, 1, 0 });
-                    if (status.Text != Core.Text("manager.state.stopped")) throw new InvalidOperationException("Stopped host status mismatch");
+                    if (status.Text != Core.Text("manager.state.stopped") || panel.Content.ToString() != Core.Text("manager.panel")) throw new InvalidOperationException("Stopped host status mismatch");
                     Present(new[] { 1, 1, 0, 0, 1, 0 });
-                    if (injection.Text != Core.Text("manager.panel.preparing")) throw new InvalidOperationException("Panel readiness status mismatch");
+                    if (status.Text != Core.Text("manager.panel.preparing") || panel.Content.ToString() != Core.Text("manager.reinject")) throw new InvalidOperationException("Panel readiness status mismatch");
+                    PresentDriver(new[] { 0, 0, 1, 0, 0 }); UpdateLayout();
+                    await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                    Preview("not-ready");
                     Present(new[] { 1, 1, 1, 0, 1, 0 });
-                    PresentDriver(new[] { 0, 0, 0, 0 });
+                    if (panel.Content.ToString() != Core.Text("manager.panel")) throw new InvalidOperationException("A ready panel must offer the open action");
+                    PresentDriver(new[] { 0, 0, 0, 0, 0 });
                     if (installDriver.IsEnabled || uninstallDriver.IsEnabled) throw new InvalidOperationException("Missing driver package must not offer installation");
-                    PresentDriver(new[] { 1, 1, 1, 0 });
+                    PresentDriver(new[] { 1, 1, 0, 0, 0 });
                     if (installDriver.Visibility != Visibility.Collapsed || !uninstallDriver.IsEnabled || uninstallDriver.Visibility != Visibility.Visible) throw new InvalidOperationException("Installed driver must only offer removal");
-                    PresentDriver(new[] { 0, 0, 1, 0 });
-                    if (!installDriver.IsEnabled || installDriver.Visibility != Visibility.Visible || uninstallDriver.Visibility != Visibility.Collapsed) throw new InvalidOperationException("Absent driver must only offer installation");
+                    PresentDriver(new[] { 0, 0, 1, 0, 1 });
+                    if (driverRestart.Visibility != Visibility.Visible || driverHint.Visibility != Visibility.Collapsed || installDriver.IsEnabled || uninstallDriver.IsEnabled)
+                        throw new InvalidOperationException("A pending restart must be visible and block reinstallation");
+                    UpdateLayout();
+                    await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                    Preview("driver-restart");
+                    PresentDriver(new[] { 1, 1, 1, 0, 1 });
+                    if (driverRestart.Visibility != Visibility.Visible || installDriver.IsEnabled || uninstallDriver.IsEnabled)
+                        throw new InvalidOperationException("A pending restart must also block removal");
+                    PresentDriver(new[] { 0, 0, 1, 0, 0 });
+                    if (!installDriver.IsEnabled || installDriver.Visibility != Visibility.Visible || uninstallDriver.Visibility != Visibility.Collapsed ||
+                        driverRestart.Visibility != Visibility.Collapsed || driverHint.Visibility != Visibility.Visible)
+                        throw new InvalidOperationException("Clearing the pending restart must restore installation");
                     if (WindowStyle != WindowStyle.SingleBorderWindow || !WindowChrome.GetWindowChrome(this).UseAeroCaptionButtons || Title != Core.Text("manager.title")) throw new InvalidOperationException("System window chrome unavailable");
                     if (!WindowChrome.GetIsHitTestVisibleInChrome(about) || Core.About().Contains("VMEX_VERSION_STRING") || !Core.About().Contains("VB-CABLE")) throw new InvalidOperationException("About information or caption hit testing unavailable");
                     updating = true; driver.IsChecked = true; updating = false;
-                    Theme.Apply(this, false); UpdateLayout(); Preview("light");
+                    Theme.Apply(this, false); UpdateLayout();
+                    await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                    Preview("light");
                     Theme.Apply(this, true); UpdateLayout(); Preview("dark"); Theme.Apply(this);
+                    recordingInfo.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                    if (!recordingTip.IsOpen || recordingTip.ActualHeight <= 0 || recordingInfo.ToolTip != recordingTip)
+                        throw new InvalidOperationException("Recording information must use the same tooltip for hover and click");
+                    Preview(recordingTip, "recording-info");
+                    recordingTip.IsOpen = false;
                     if (softwareUpdate.TranslatePoint(new Point(), links).Y > 1 ||
                         softwareUpdate.TranslatePoint(new Point(), links).X <= project.TranslatePoint(new Point(), links).X ||
                         Math.Abs(softwareUpdate.TranslatePoint(new Point(softwareUpdate.ActualWidth, 0), links).X - links.ActualWidth) > 1 ||
@@ -278,24 +316,37 @@ internal sealed class ManagerWindow : Window
                     PresentUpdate(false); feedback.Text = string.Empty;
                     if (ActualWidth < 580 || status.Text.Length == 0 || host.Template is null || autostart.Template is null) throw new InvalidOperationException("WPF layout or resources unavailable");
                     feedback.Text = Core.Text("manager.done"); UpdateLayout();
-                    if (scroll.ScrollableHeight > 1) throw new InvalidOperationException("A short feedback message must fit the default manager height");
+                    await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                    double compactHeight = ActualHeight;
+                    feedback.Text = string.Join("\n", Enumerable.Repeat(Core.Text("driver.restart.required"), 6));
+                    UpdateLayout();
+                    await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                    if (SizeToContent != SizeToContent.Height || ActualHeight < compactHeight + 60 ||
+                        feedback.TranslatePoint(new Point(0, feedback.ActualHeight), layout).Y > layout.ActualHeight)
+                        throw new InvalidOperationException("Long feedback must expand the window to fit its content");
+                    Preview("long-message");
                     feedback.Text = string.Empty; UpdateLayout();
-                    double contentWidth = body.ActualWidth;
-                    Height = 440; UpdateLayout();
                     await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
-                    var scrollbar = (ScrollBar)scroll.Template.FindName("PART_VerticalScrollBar", scroll);
-                    if (scrollbar.Visibility != Visibility.Visible || Math.Abs(body.ActualWidth - contentWidth) > 1 || Math.Abs(scroll.ViewportWidth - scroll.ActualWidth) > 1) throw new InvalidOperationException("Overlay scrollbar must not reduce content width");
-                    scroll.ScrollToEnd();
-                    await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
-                    if (scroll.VerticalOffset <= 0 || Math.Abs(scrollbar.Value - scroll.VerticalOffset) > 1) throw new InvalidOperationException("Overlay scrollbar is not synchronized");
+                    if (Math.Abs(ActualHeight - compactHeight) > 1)
+                        throw new InvalidOperationException("Clearing feedback must restore the compact window height");
                     if (!frame.HasTransparentCaptionArea) throw new InvalidOperationException("Native caption buttons are covered by the client background");
                     var aboutWindow = CreateAbout();
                     aboutWindow.Show(); await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
-                    if (aboutWindow.Content is not DockPanel aboutContent || aboutContent.Children.Count != 2) throw new InvalidOperationException("About layout unavailable");
+                    if (aboutWindow.Content is not StackPanel aboutContent || aboutContent.Children.Count != 2 ||
+                        aboutContent.Children[0] is not Border projectCard || aboutContent.Children[1] is not Border { Child: StackPanel thirdParty } ||
+                        thirdParty.Children.Count != 2 || thirdParty.Children[0] is not TextBlock thirdPartyTitle ||
+                        thirdPartyTitle.Text != Core.Text("about.thirdParty") || thirdParty.Children[1] is not Grid components || components.Children.Count != 2 ||
+                        components.Children[0] is not Border microsoftCard || components.Children[1] is not Border cableCard ||
+                        Grid.GetColumn(microsoftCard) >= Grid.GetColumn(cableCard) || Math.Abs(microsoftCard.ActualWidth - cableCard.ActualWidth) > 1)
+                        throw new InvalidOperationException("About must group two equal-width component cards below the project");
+                    if (projectCard.Child is not Grid projectLayout || projectLayout.Children.Count != 2 ||
+                        projectLayout.Children[0] is not Image { Source: BitmapSource { PixelWidth: > 0 } } logo ||
+                        logo.TranslatePoint(new Point(logo.ActualWidth, 0), projectLayout).X >=
+                        projectLayout.Children[1].TranslatePoint(new Point(), projectLayout).X)
+                        throw new InvalidOperationException("The project logo must sit to the left of the project details");
                     Theme.Apply(aboutWindow, false); aboutWindow.UpdateLayout(); Preview(aboutWindow, "about-light");
                     Theme.Apply(aboutWindow, true); aboutWindow.UpdateLayout(); Preview(aboutWindow, "about-dark");
                     aboutWindow.Close();
-                    Height = 830; scroll.ScrollToTop(); UpdateLayout();
                     updating = true; driver.IsChecked = true; driver.IsChecked = false; updating = false;
                     Application.Current.Shutdown(0);
                 }
@@ -344,7 +395,7 @@ internal sealed class ManagerWindow : Window
         Preview(this, "manager-" + theme);
     }
 
-    private static void Preview(Window window, string name)
+    private static void Preview(FrameworkElement window, string name)
     {
         var image = new RenderTargetBitmap((int)window.ActualWidth, (int)window.ActualHeight, 96, 96, PixelFormats.Pbgra32);
         image.Render(window);
@@ -399,28 +450,38 @@ internal sealed class ManagerWindow : Window
         if (await Task.Run(() => Core.VmexManagerQuery(values, values.Length)) != 0) throw new InvalidOperationException(Core.Text("manager.unresponsive"));
         if (passive && busy) return;
         Present(values);
-        var driverValues = new int[4];
+        await ReadDriverState(passive);
+    }
+
+    private async Task ReadDriverState(bool passive = false)
+    {
+        var driverValues = new int[5];
         if (await Task.Run(() => Core.VmexRecordingDriverQuery(driverValues, driverValues.Length)) != 0) throw new InvalidOperationException(Core.Text("driver.query.failed"));
         if (!passive || !busy) PresentDriver(driverValues);
     }
 
     private void PresentDriver(int[] values)
     {
+        bool restartRequired = values[4] != 0;
         var state = Core.Text(values[0] == 0 ? "driver.absent" : values[1] != 0 ? "driver.ready" : "driver.notStarted");
         driverStatus.Text = Core.Text("driver.title") + " · " + state;
         if (values[3] != 0) driverStatus.Text += " · " + Core.Text("driver.problem") + " " + values[3];
-        if (values[2] == 0) driverStatus.Text += " · " + Core.Text("driver.package.missing");
+        if (values[0] == 0 && values[2] == 0) driverStatus.Text += " · " + Core.Text("driver.package.missing");
         installDriver.Visibility = values[0] == 0 ? Visibility.Visible : Visibility.Collapsed;
         uninstallDriver.Visibility = values[0] != 0 ? Visibility.Visible : Visibility.Collapsed;
-        installDriver.IsEnabled = values[0] == 0 && values[2] != 0;
-        uninstallDriver.IsEnabled = values[0] != 0 && values[2] != 0;
+        driverRestart.Visibility = restartRequired ? Visibility.Visible : Visibility.Collapsed;
+        driverHint.Visibility = restartRequired ? Visibility.Collapsed : Visibility.Visible;
+        installDriver.IsEnabled = !restartRequired && values[0] == 0 && values[2] != 0;
+        uninstallDriver.IsEnabled = !restartRequired && values[0] != 0;
     }
 
     private void Present(int[] values)
     {
         running = values[0] != 0; updating = true; autostart.IsChecked = values[3] != 0; driver.IsChecked = values[4] != 0; updating = false;
-        status.Text = Core.Text(running ? "manager.state.running" : "manager.state.stopped");
-        injection.Text = Core.Text(!running ? "manager.panel.stopped" : values[2] != 0 ? "manager.panel.ready" : "manager.panel.preparing");
+        status.Text = Core.Text(!running ? "manager.state.stopped" : values[2] != 0 ? "manager.panel.ready" : "manager.panel.preparing");
+        retryInjection = running && values[2] == 0;
+        panel.Content = Core.Text(retryInjection ? "manager.reinject" : "manager.panel");
+        panel.ToolTip = retryInjection ? Core.Text("manager.reinject.hint") : null;
         host.Content = Core.Text(running ? "manager.stop" : "manager.start");
     }
 
@@ -507,49 +568,86 @@ internal sealed class ManagerWindow : Window
     {
         var window = new Window
         {
-            Owner = this, Title = Core.Text("about.title"), Width = 560, Height = 600,
+            Owner = this, Title = Core.Text("about.title"), Width = 560, SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.CanResize,
             MinWidth = 420, MinHeight = 360, ShowInTaskbar = false
         };
         window.SetResourceReference(BackgroundProperty, "WindowBrush");
         window.SetResourceReference(ForegroundProperty, "TextBrush");
         window.SetResourceReference(FontFamilyProperty, SystemFonts.MessageFontFamilyKey);
-        var content = new DockPanel { Margin = new Thickness(24) };
-        var footer = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
-        Hyperlink CreateLink(string label, string url)
+        TextBlock CreateLink(string key)
         {
-            var link = new Hyperlink(new Run(label)) { NavigateUri = new Uri(url) };
+            var link = new Hyperlink(new Run(Core.Text(key))) { NavigateUri = new Uri(Core.Text(key + ".url")) };
             link.SetResourceReference(TextElement.ForegroundProperty, "AccentBrush");
             link.RequestNavigate += (_, args) =>
             {
                 try { Process.Start(new ProcessStartInfo(args.Uri.AbsoluteUri) { UseShellExecute = true }); args.Handled = true; }
                 catch (Exception error) { MessageBox.Show(window, Core.Text("manager.failed").Replace("{0}", error.Message), window.Title); }
             };
-            return link;
+            var line = new TextBlock { Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap };
+            line.Inlines.Add(link);
+            return line;
         }
-        var line = new TextBlock { Margin = new Thickness(0, 4, 0, 4) };
-        line.Inlines.Add(CreateLink(Core.Text("about.link.project"), Core.Text("about.link.project.url")));
-        footer.Children.Add(line);
-        DockPanel.SetDock(footer, Dock.Bottom); content.Children.Add(footer);
-        var paragraph = new Paragraph { Margin = new Thickness(0) };
-        var body = Core.About();
-        var position = 0;
-        foreach (Match match in Regex.Matches(body, @"https://[^\s]+"))
+
+        var content = new StackPanel { Margin = new Thickness(20) };
+
+        var projectDetails = new StackPanel();
+        projectDetails.Children.Add(new Viewbox
         {
-            paragraph.Inlines.Add(new Run(body.Substring(position, match.Index - position)));
-            paragraph.Inlines.Add(CreateLink(match.Value, match.Value));
-            position = match.Index + match.Length;
+            Child = Label("manager.title", 26, FontWeights.SemiBold),
+            HorizontalAlignment = HorizontalAlignment.Left, StretchDirection = StretchDirection.DownOnly
+        });
+        var projectVersion = Label("about.version", 13, FontWeights.SemiBold);
+        projectVersion.Text = projectVersion.Text.Replace("{0}", Core.Version());
+        projectVersion.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
+        projectVersion.Margin = new Thickness(0, 0, 0, 12);
+        projectDetails.Children.Add(projectVersion);
+        projectDetails.Children.Add(Label("about.developer", 14, FontWeights.Normal));
+        projectDetails.Children.Add(Label("about.license", 13, FontWeights.Normal, true));
+        projectDetails.Children.Add(CreateLink("about.link.project"));
+        var projectLayout = new Grid();
+        projectLayout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        projectLayout.ColumnDefinitions.Add(new ColumnDefinition());
+        using var logoFile = typeof(ManagerWindow).Assembly.GetManifestResourceStream("Vmex.Manager.ProjectLogo.png")
+            ?? throw new InvalidOperationException("Embedded project logo unavailable");
+        projectLayout.Children.Add(new Image
+        {
+            Source = BitmapFrame.Create(logoFile, BitmapCreateOptions.None, BitmapCacheOption.OnLoad),
+            Width = 76, Height = 76, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 20, 0)
+        });
+        Grid.SetColumn(projectDetails, 1);
+        projectLayout.Children.Add(projectDetails);
+        var projectCard = Card(projectLayout, 20);
+        projectCard.Margin = new Thickness(0, 0, 0, 12);
+        content.Children.Add(projectCard);
+
+        var components = new Grid();
+        components.ColumnDefinitions.Add(new ColumnDefinition());
+        components.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        components.ColumnDefinitions.Add(new ColumnDefinition());
+        void AddComponent(string component, int column, params string[] links)
+        {
+            var details = new StackPanel();
+            details.Children.Add(Label(component + ".title", 16, FontWeights.SemiBold));
+            details.Children.Add(Label(component, 13, FontWeights.Normal, true));
+            foreach (var key in links) details.Children.Add(CreateLink(key));
+            var card = Card(details, 16);
+            card.Margin = new Thickness(0);
+            Grid.SetColumn(card, column);
+            components.Children.Add(card);
         }
-        paragraph.Inlines.Add(new Run(body.Substring(position)));
-        var information = new RichTextBox
-        {
-            Document = new FlowDocument(paragraph) { PagePadding = new Thickness(0) },
-            IsReadOnly = true, IsDocumentEnabled = true,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, BorderThickness = new Thickness(0),
-            Background = Brushes.Transparent, Padding = new Thickness(0), FontSize = 14
-        };
-        information.SetResourceReference(ForegroundProperty, "TextBrush");
-        content.Children.Add(information); window.Content = content;
+        AddComponent("about.microsoft", 0, "about.link.microsoft");
+        AddComponent("about.vbcable", 2, "about.link.vbcable", "about.link.vbcable.license");
+        var thirdParty = new StackPanel();
+        var thirdPartyTitle = Label("about.thirdParty", 13, FontWeights.Normal, true);
+        thirdPartyTitle.Margin = new Thickness(0, 0, 0, 10);
+        thirdParty.Children.Add(thirdPartyTitle);
+        thirdParty.Children.Add(components);
+        var thirdPartyCard = Card(thirdParty, 12);
+        thirdPartyCard.Margin = new Thickness(0);
+        content.Children.Add(thirdPartyCard);
+        window.Content = content;
         window.SourceInitialized += (_, _) => Theme.Apply(window);
         return window;
     }
@@ -565,25 +663,34 @@ internal sealed class ManagerWindow : Window
     private async Task Execute(int action, int value = 0)
     {
         if (busy || modal || test) return;
-        busy = true; body.IsEnabled = false; feedback.Text = Core.Text("manager.working");
+        busy = true; body.IsEnabled = false; feedback.Text = Core.Text(action == 13 ? "manager.reinjecting" : "manager.working");
         try
         {
             if (stateRefresh is Task pending) await pending;
             var error = new StringBuilder(4096);
             var result = await Task.Run(() => Core.VmexManagerExecute(action, value, error, error.Capacity));
-            if (result != 0) { Error(error.ToString()); await ReadState(); return; }
-            feedback.Text = error.ToString();
-            if (action is 2 or 7)
+            if (result != 0) Error(error.ToString());
+            else
             {
-                if (action == 7) MessageBox.Show(this, Core.Text("manager.uninstall.done"), Title, MessageBoxButton.OK, MessageBoxImage.Information);
-                busy = false; Close(); return;
+                feedback.Text = error.ToString();
+                if (action is 2 or 7)
+                {
+                    if (action == 7) MessageBox.Show(this, Core.Text("manager.uninstall.done"), Title, MessageBoxButton.OK, MessageBoxImage.Information);
+                    busy = false; Close(); return;
+                }
+                if (action == 9)
+                {
+                    MessageBox.Show(this, Core.Text("manager.startmenu.done"), Title, MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
             }
-            if (action == 9)
+            if (action is 10 or 11)
             {
-                MessageBox.Show(this, Core.Text("manager.startmenu.done"), Title, MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                await ReadDriverState();
+                if (driverRestart.Visibility == Visibility.Visible)
+                    MessageBox.Show(this, driverRestart.Text, Core.Text("driver.title"), MessageBoxButton.OK, MessageBoxImage.Warning);
             }
-            await ReadState();
+            else await ReadState();
         }
         catch (Exception error) { Error(error.Message); }
         finally { busy = false; body.IsEnabled = true; }

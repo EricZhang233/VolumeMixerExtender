@@ -6,11 +6,15 @@
 #include "TextService.h"
 #include "Logger.h"
 #include "EndpointVisibility.h"
+#include "RecordingEndpointLock.h"
+#include "Strings.h"
 #include "UserSettings.h"
 #include <windows.h>
 #include <setupapi.h>
+#include <newdev.h>
 #include <cfgmgr32.h>
 #include <shellapi.h>
+#include <shlobj_core.h>
 #include <wincrypt.h>
 #include <wintrust.h>
 #include <softpub.h>
@@ -18,7 +22,9 @@
 #include <devicetopology.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <array>
-#include <cwctype>
+#include <set>
+#include <initguid.h>
+#include <devpkey.h>
 
 namespace vmex::recording
 {
@@ -26,65 +32,35 @@ namespace vmex::recording
     {
         constexpr GUID mediaClass{ 0x4d36e96c, 0xe325, 0x11ce, { 0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18 } };
         constexpr std::wstring_view kChannel = L"recording.driver";
-        constexpr std::array<const wchar_t*, 9> packageFiles{
-            L"vbMmeCable64_win10.inf", L"vbaudio_cable64_win10.cat", L"vbaudio_cable64_win10.sys",
-            L"vbaudio_cable64arm_win10.sys", L"VBCABLE_ControlPanel.exe", L"VBCABLE_Setup_x64.exe",
-            L"pin_in.ico", L"pin_out.ico", L"readme.txt" };
+        constexpr wchar_t cableHardwareId[] = L"VBAudioVACWDM\0";
+        constexpr wchar_t cableInf[] = L"vbMmeCable64_win10.inf";
+        constexpr wchar_t cableCatalog[] = L"vbaudio_cable64_win10.cat";
+        constexpr wchar_t driverRestartKey[] = L"SYSTEM\\CurrentControlSet\\Control\\VolumeMixerExtenderRecordingDriverRestart";
+        constexpr std::array<const wchar_t*, 4> packageFiles{
+            cableInf, cableCatalog, L"vbaudio_cable64_win10.sys", L"vbaudio_cable64arm_win10.sys" };
 
-        bool HasPackage(const std::filesystem::path& directory)
+        std::span<const std::byte> EmbeddedDriverFile(std::size_t index)
         {
-            for (const auto name : packageFiles)
-            {
-                std::error_code error;
-                const auto file = directory / name;
-                if (!std::filesystem::is_regular_file(file, error) || error) return false;
-                const auto size = std::filesystem::file_size(file, error);
-                if (error || size == 0) return false;
-            }
+            HMODULE module = nullptr;
+            if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(&EmbeddedDriverFile), &module)) return {};
+            const auto resource = ::FindResourceW(module, MAKEINTRESOURCEW(201 + index), RT_RCDATA);
+            const auto loaded = resource ? ::LoadResource(module, resource) : nullptr;
+            const auto* bytes = loaded ? static_cast<const std::byte*>(::LockResource(loaded)) : nullptr;
+            return bytes ? std::span(bytes, ::SizeofResource(module, resource)) : std::span<const std::byte>{};
+        }
+
+        bool HasEmbeddedDriverPackage()
+        {
+            for (std::size_t index = 0; index < packageFiles.size(); ++index)
+                if (EmbeddedDriverFile(index).empty()) return false;
             return true;
-        }
-
-        std::filesystem::path Package()
-        {
-            return platform::GetApplicationDirectory() / L"Driver" / L"VBCABLE";
-        }
-
-        std::wstring HashFile(const std::filesystem::path& path)
-        {
-            HCRYPTPROV provider = 0;
-            HCRYPTHASH hash = 0;
-            HANDLE file = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-            std::wstring result;
-            if (file != INVALID_HANDLE_VALUE && ::CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) &&
-                ::CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash))
-            {
-                std::array<BYTE, 65536> buffer{};
-                DWORD read = 0;
-                bool valid = true;
-                for (;;)
-                {
-                    if (!::ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr)) { valid = false; break; }
-                    if (!read) break;
-                    if (!::CryptHashData(hash, buffer.data(), read, 0)) { valid = false; break; }
-                }
-                std::array<BYTE, 32> digest{};
-                DWORD bytes = static_cast<DWORD>(digest.size());
-                if (valid && ::CryptGetHashParam(hash, HP_HASHVAL, digest.data(), &bytes, 0) && bytes == digest.size())
-                {
-                    constexpr wchar_t digits[] = L"0123456789ABCDEF";
-                    for (const auto byte : digest) { result += digits[byte >> 4]; result += digits[byte & 15]; }
-                }
-            }
-            if (hash) ::CryptDestroyHash(hash);
-            if (provider) ::CryptReleaseContext(provider, 0);
-            if (file != INVALID_HANDLE_VALUE) ::CloseHandle(file);
-            return result;
         }
 
         bool VerifyMember(const std::filesystem::path& directory, const wchar_t* name)
         {
             const auto path = directory / name;
-            const auto catalog = directory / L"vbaudio_cable64_win10.cat";
+            const auto catalog = directory / cableCatalog;
             HCATADMIN admin = nullptr;
             if (!::CryptCATAdminAcquireContext2(&admin, nullptr, BCRYPT_SHA256_ALGORITHM, nullptr, 0)) return false;
             HANDLE file = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -322,86 +298,249 @@ namespace vmex::recording
             return result;
         }
 
-        Status RunInstaller(bool install)
+        struct CableDevices final
         {
-            bool testSigned = false;
-            const auto verified = ValidateDriverPackage(Package(), testSigned);
-            if (!verified) return Report(L"driver-validate", verified);
+            HDEVINFO list;
+            explicit CableDevices(DWORD flags) : list(::SetupDiGetClassDevsW(&mediaClass, L"ROOT", nullptr, flags)) {}
+            ~CableDevices() { if (list != INVALID_HANDLE_VALUE) ::SetupDiDestroyDeviceInfoList(list); }
+
+            DWORD Enumerate(std::vector<SP_DEVINFO_DATA>& matches) const
+            {
+                if (list == INVALID_HANDLE_VALUE) return ::GetLastError();
+                SP_DEVINFO_DATA device{ sizeof(device) };
+                for (DWORD index = 0; ::SetupDiEnumDeviceInfo(list, index, &device); ++index)
+                {
+                    std::array<wchar_t, 4096> ids{};
+                    DWORD type = 0;
+                    if (!::SetupDiGetDeviceRegistryPropertyW(list, &device, SPDRP_HARDWAREID, &type,
+                        reinterpret_cast<PBYTE>(ids.data()), sizeof(ids) - sizeof(wchar_t), nullptr) || type != REG_MULTI_SZ)
+                        continue;
+                    for (const auto* id = ids.data(); *id; id += ::wcslen(id) + 1)
+                    {
+                        if (!IsCableHardwareId(id)) continue;
+                        matches.push_back(device);
+                        break;
+                    }
+                }
+                const auto error = ::GetLastError();
+                return error == ERROR_NO_MORE_ITEMS ? ERROR_SUCCESS : error;
+            }
+
+            bool HasDriver(SP_DEVINFO_DATA& device) const
+            {
+                DWORD size = 0;
+                return !::SetupDiGetDeviceRegistryPropertyW(list, &device, SPDRP_DRIVER, nullptr, nullptr, 0, &size) &&
+                    ::GetLastError() == ERROR_INSUFFICIENT_BUFFER && size > sizeof(wchar_t);
+            }
+        };
+
+        struct DriverCache final
+        {
+            std::filesystem::path path;
+
+            DWORD Create()
+            {
+                std::array<wchar_t, MAX_PATH> windows{};
+                const auto length = ::GetSystemWindowsDirectoryW(windows.data(), static_cast<UINT>(windows.size()));
+                if (!length) return ::GetLastError();
+                if (length >= windows.size()) return ERROR_FILENAME_EXCED_RANGE;
+                const auto root = std::filesystem::path(windows.data()) / L"SystemTemp";
+                const auto attributes = ::GetFileAttributesW(root.c_str());
+                if (attributes == INVALID_FILE_ATTRIBUTES) return ::GetLastError();
+                if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) || !(attributes & FILE_ATTRIBUTE_DIRECTORY)) return ERROR_DIRECTORY;
+                GUID guid{};
+                if (FAILED(::CoCreateGuid(&guid))) return ERROR_GEN_FAILURE;
+                std::array<wchar_t, 40> id{};
+                ::StringFromGUID2(guid, id.data(), static_cast<int>(id.size()));
+                auto directory = root / (L"Vmex.Driver." + std::wstring(id.data()));
+                if (!::CreateDirectoryW(directory.c_str(), nullptr)) return ::GetLastError();
+                path = std::move(directory);
+                return ERROR_SUCCESS;
+            }
+
+            ~DriverCache()
+            {
+                if (path.empty()) return;
+                for (const auto* name : packageFiles) ::DeleteFileW((path / name).c_str());
+                ::RemoveDirectoryW(path.c_str());
+            }
+        };
+
+        DWORD CheckDriverRestart()
+        {
+            HKEY key = nullptr;
+            const auto status = ::RegOpenKeyExW(HKEY_LOCAL_MACHINE, driverRestartKey, 0, KEY_QUERY_VALUE, &key);
+            if (status == ERROR_FILE_NOT_FOUND) return ERROR_SUCCESS;
+            if (status != ERROR_SUCCESS) return static_cast<DWORD>(status);
+            ::RegCloseKey(key);
+            return ERROR_FAIL_REBOOT_REQUIRED;
+        }
+
+        struct DriverRestartBarrier final
+        {
+            bool armed = false;
+
+            DWORD Arm()
+            {
+                HKEY key = nullptr;
+                DWORD disposition = 0;
+                const auto status = ::RegCreateKeyExW(HKEY_LOCAL_MACHINE, driverRestartKey, 0, nullptr,
+                    REG_OPTION_VOLATILE, KEY_QUERY_VALUE, nullptr, &key, &disposition);
+                if (status != ERROR_SUCCESS) return static_cast<DWORD>(status);
+                ::RegCloseKey(key);
+                armed = disposition == REG_CREATED_NEW_KEY;
+                return armed ? ERROR_SUCCESS : ERROR_FAIL_REBOOT_REQUIRED;
+            }
+
+            DWORD Complete(DWORD result) const
+            {
+                if (!armed || result != ERROR_SUCCESS) return result;
+                const auto status = ::RegDeleteKeyW(HKEY_LOCAL_MACHINE, driverRestartKey);
+                return status == ERROR_SUCCESS ? ERROR_SUCCESS : ERROR_SUCCESS_REBOOT_REQUIRED;
+            }
+        };
+
+        DWORD InstallEmbeddedDriver(DriverRestartBarrier& restartBarrier)
+        {
+            CableDevices devices(DIGCF_PRESENT);
+            std::vector<SP_DEVINFO_DATA> matches;
+            if (const auto error = devices.Enumerate(matches); error != ERROR_SUCCESS) return error;
+            for (auto& device : matches)
+                if (devices.HasDriver(device)) return ERROR_SUCCESS;
+
+            DriverCache cache;
+            if (const auto error = cache.Create(); error != ERROR_SUCCESS) return error;
+            if (!ExtractDriverPackage(cache.path)) return ERROR_WRITE_FAULT;
+            if (!ValidateDriverPackage(cache.path)) return static_cast<DWORD>(TRUST_E_BAD_DIGEST);
+            const auto inf = cache.path / cableInf;
+            if (const auto error = restartBarrier.Arm(); error != ERROR_SUCCESS) return error;
+
+            SP_DEVINFO_DATA created{ sizeof(created) };
+            if (matches.empty())
+            {
+                if (!::SetupDiCreateDeviceInfoW(devices.list, cableHardwareId, &mediaClass, nullptr, nullptr, DICD_GENERATE_ID, &created) ||
+                    !::SetupDiSetDeviceRegistryPropertyW(devices.list, &created, SPDRP_HARDWAREID,
+                        reinterpret_cast<const BYTE*>(cableHardwareId), sizeof(cableHardwareId)) ||
+                    !::SetupDiCallClassInstaller(DIF_REGISTERDEVICE, devices.list, &created)) return ::GetLastError();
+            }
+
+            BOOL restart = FALSE;
+            if (::UpdateDriverForPlugAndPlayDevicesW(nullptr, cableHardwareId, inf.c_str(), INSTALLFLAG_NONINTERACTIVE, &restart))
+                return restart ? ERROR_SUCCESS_REBOOT_REQUIRED : ERROR_SUCCESS;
+            const auto error = ::GetLastError();
+            if (error == ERROR_NO_MORE_ITEMS && (matches.empty() ? devices.HasDriver(created) : devices.HasDriver(matches.front())))
+                return ERROR_SUCCESS;
+            if (matches.empty() && !::DiUninstallDevice(nullptr, devices.list, &created, 0, &restart)) return ::GetLastError();
+            return error;
+        }
+
+        DWORD RemoveCableDriver(DriverRestartBarrier& restartBarrier)
+        {
+            CableDevices devices(0);
+            std::vector<SP_DEVINFO_DATA> matches;
+            if (const auto error = devices.Enumerate(matches); error != ERROR_SUCCESS) return error;
+            if (matches.empty()) return ERROR_SUCCESS;
+            if (const auto error = restartBarrier.Arm(); error != ERROR_SUCCESS) return error;
+            std::set<std::wstring> packages;
+            for (auto& device : matches)
+            {
+                std::array<wchar_t, MAX_PATH> inf{};
+                DEVPROPTYPE type = 0;
+                if (::SetupDiGetDevicePropertyW(devices.list, &device, &DEVPKEY_Device_DriverInfPath, &type,
+                    reinterpret_cast<PBYTE>(inf.data()), sizeof(inf), nullptr, 0) && type == DEVPROP_TYPE_STRING)
+                {
+                    const auto name = strings::ToLower(inf.data());
+                    if (name.starts_with(L"oem") && name.ends_with(L".inf") && name.size() > 7 &&
+                        name.find_first_not_of(L"0123456789", 3) == name.size() - 4) packages.insert(name);
+                }
+                BOOL deviceRestart = FALSE;
+                if (!::DiUninstallDevice(nullptr, devices.list, &device, 0, &deviceRestart)) return ::GetLastError();
+            }
+            for (const auto& name : packages)
+            {
+                if (::SetupUninstallOEMInfW(name.c_str(), 0, nullptr)) continue;
+                const auto error = ::GetLastError();
+                if (error == ERROR_FILE_NOT_FOUND || error == ERROR_INF_IN_USE_BY_DEVICES) continue;
+                return error;
+            }
+            return ERROR_SUCCESS_REBOOT_REQUIRED;
+        }
+
+        Status RunDriverOperation(bool install)
+        {
+            const auto action = install ? L"driver-install" : L"driver-uninstall";
+            const auto restart = CheckDriverRestart();
+            if (restart == ERROR_FAIL_REBOOT_REQUIRED)
+                return Report(action, Status::Failed(text::Embedded().Resolve(L"driver.restart.required")));
+            if (restart != ERROR_SUCCESS) return Report(action, Status::FromWin32(L"driver-restart-check", restart));
+            if (install && !HasEmbeddedDriverPackage())
+                return Report(action, Status::Failed(text::Embedded().Resolve(L"driver.package.missing")));
             Snapshot recording;
             const auto stopped = Request(L"off", L"", recording);
             if (!stopped) return stopped;
             EndpointOperation operation;
-            if (!operation.locked) return Report(L"driver-installer", Status::Failed(L"endpoint-operation-busy"));
+            if (!operation.locked) return Report(action, Status::Failed(L"endpoint-operation-busy"));
             VisibilityActions actions;
-            std::vector<VisibilityState> changes;
-            const auto rollback = [&](Status result) {
-                const auto restored = RestoreVisibility(actions, changes);
-                return Report(L"driver-installer", restored ? result : Status::Failed(result.detail + L"; " + restored.detail));
-            };
-            if (!install)
+            const auto result = MaintainDriverVisibility(actions, install, [&]() -> Status
             {
-                const auto shown = ChangeVisibility(actions, true, changes);
-                if (!shown) return rollback(shown);
-            }
-            const auto before = QueryDriver();
-            const auto file = Package() / L"VBCABLE_Setup_x64.exe";
-            const auto directory = Package();
-            SHELLEXECUTEINFOW info{ sizeof(info) };
-            info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
-            info.lpVerb = L"runas";
-            info.lpFile = file.c_str();
-            info.lpDirectory = directory.c_str();
-            info.nShow = SW_SHOWNORMAL;
-            if (!::ShellExecuteExW(&info)) return rollback(Status::FromLastError(L"driver-elevation"));
-            const auto wait = ::WaitForSingleObject(info.hProcess, INFINITE);
-            DWORD code = 0;
-            const bool read = ::GetExitCodeProcess(info.hProcess, &code) != FALSE;
-            ::CloseHandle(info.hProcess);
-            if (wait != WAIT_OBJECT_0 || !read) return rollback(Status::Failed(L"driver-installer-process"));
-            const auto state = QueryDriver();
-            const bool applied = before.installed != state.installed && state.installed == install;
-            if (!applied) return rollback(Status::Failed(text::Embedded().Resolve(L"driver.operation.failed") +
-                L" (" + std::to_wstring(code) + L")"));
-            if (install)
-            {
-                const auto hidden = ChangeVisibility(actions, false, changes);
-                if (!hidden) return rollback(hidden);
-            }
-            return Report(install ? L"driver-install" : L"driver-uninstall", applied ?
-                Status{ kCodeOk, text::Embedded().Resolve(L"driver.restart") } :
-                Status::Failed(text::Embedded().Resolve(L"driver.operation.failed") + L" (" + std::to_wstring(code) + L")"));
+                const auto directory = platform::GetApplicationDirectory();
+                const auto file = directory / L"vmex.exe";
+                SHELLEXECUTEINFOW info{ sizeof(info) };
+                info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+                info.lpVerb = L"runas";
+                info.lpFile = file.c_str();
+                info.lpParameters = install ? kDriverInstallArgument.data() : kDriverRemoveArgument.data();
+                info.lpDirectory = directory.c_str();
+                info.nShow = SW_HIDE;
+                if (!::ShellExecuteExW(&info)) return Status::FromLastError(L"driver-elevation");
+                const auto wait = ::WaitForSingleObject(info.hProcess, INFINITE);
+                DWORD code = ERROR_GEN_FAILURE;
+                const bool read = wait == WAIT_OBJECT_0 && ::GetExitCodeProcess(info.hProcess, &code);
+                ::CloseHandle(info.hProcess);
+                if (!read) return Status::Failed(L"driver-process");
+                if (code == ERROR_FAIL_REBOOT_REQUIRED)
+                    return Status::Failed(text::Embedded().Resolve(L"driver.restart.required"));
+                if (code == static_cast<DWORD>(TRUST_E_BAD_DIGEST))
+                    return Status::Failed(text::Embedded().Resolve(L"driver.signature.invalid"));
+                if (code != ERROR_SUCCESS && code != ERROR_SUCCESS_REBOOT_REQUIRED)
+                    return Status::Failed(text::Embedded().ResolveFormat(L"driver.operation.failed", { std::to_wstring(code) }));
+                return { kCodeOk, text::Embedded().Resolve(
+                    code == ERROR_SUCCESS_REBOOT_REQUIRED ? L"driver.restart" : L"driver.done") };
+            }, [] { return CheckDriverRestart() == ERROR_FAIL_REBOOT_REQUIRED; });
+            return Report(action, result);
         }
     }
 
-    Status ValidateDriverPackage(const std::filesystem::path& directory, bool& testSigned)
+    Status ExtractDriverPackage(const std::filesystem::path& directory)
     {
-        testSigned = false;
-        if (!HasPackage(directory) ||
-            HashFile(directory / L"VBCABLE_Setup_x64.exe") != L"734C35DFA6D98F48782A451633CEB471166EC70D60482FD89A1123D0EE3C4F41" ||
-            HashFile(directory / L"VBCABLE_ControlPanel.exe") != L"F5B44706FE7BA2EED0516DEE791F826DC7A9891E997F6CE9704E2899300B14FF" ||
-            !VerifyMember(directory, L"vbaudio_cable64_win10.sys") ||
-            !VerifyMember(directory, L"vbaudio_cable64arm_win10.sys") ||
-            !VerifyMember(directory, L"vbMmeCable64_win10.inf"))
-            return Status::Failed(text::Embedded().Resolve(L"driver.signature.invalid"));
+        if (!HasEmbeddedDriverPackage()) return Status::Failed(text::Embedded().Resolve(L"driver.package.missing"));
+        for (std::size_t index = 0; index < packageFiles.size(); ++index)
+        {
+            const auto written = platform::WriteAllBytes(directory / packageFiles[index], EmbeddedDriverFile(index));
+            if (!written) return written;
+        }
+        return Status::Ok();
+    }
+
+    Status ValidateDriverPackage(const std::filesystem::path& directory)
+    {
+        for (const auto* name : packageFiles)
+            if (name != cableCatalog && !VerifyMember(directory, name))
+                return Status::Failed(text::Embedded().Resolve(L"driver.signature.invalid"));
         return Status::Ok();
     }
 
     DriverState QueryDriver()
     {
         DriverState state;
-        state.packagePresent = HasPackage(Package());
-        const HDEVINFO devices = ::SetupDiGetClassDevsW(&mediaClass, nullptr, nullptr, DIGCF_PRESENT);
-        if (devices == INVALID_HANDLE_VALUE) return state;
-        SP_DEVINFO_DATA device{ sizeof(device) };
-        for (DWORD index = 0; ::SetupDiEnumDeviceInfo(devices, index, &device); ++index)
+        state.packagePresent = HasEmbeddedDriverPackage();
+        state.restartRequired = CheckDriverRestart() == ERROR_FAIL_REBOOT_REQUIRED;
+        CableDevices devices(DIGCF_PRESENT);
+        std::vector<SP_DEVINFO_DATA> matches;
+        if (devices.Enumerate(matches) != ERROR_SUCCESS) return state;
+        for (auto& device : matches)
         {
-            std::array<wchar_t, 4096> ids{};
-            if (!::SetupDiGetDeviceRegistryPropertyW(devices, &device, SPDRP_HARDWAREID, nullptr,
-                reinterpret_cast<PBYTE>(ids.data()), sizeof(ids) - sizeof(wchar_t), nullptr)) continue;
-            bool match = false;
-            for (const auto* id = ids.data(); *id; id += ::wcslen(id) + 1)
-                match = match || IsCableHardwareId(id);
-            if (!match) continue;
+            if (!devices.HasDriver(device)) continue;
             state.installed = true;
             ULONG flags = 0, problem = 0;
             if (::CM_Get_DevNode_Status(&flags, &problem, device.DevInst, 0) == CR_SUCCESS)
@@ -409,9 +548,8 @@ namespace vmex::recording
                 state.started = (flags & DN_STARTED) != 0;
                 state.problem = problem;
             }
-            break;
+            if (state.started && !state.problem) break;
         }
-        ::SetupDiDestroyDeviceInfoList(devices);
         return state;
     }
 
@@ -425,6 +563,7 @@ namespace vmex::recording
         if (FAILED(apartment.result) && apartment.result != RPC_E_CHANGED_MODE)
             return Status::FromHResult(L"recording-readiness-com", apartment.result);
         const auto driver = QueryDriver();
+        if (driver.restartRequired) return Status::NotSupported(text::Embedded().Resolve(L"driver.restart.required"));
         if (!driver.installed || !driver.started || driver.problem)
             return Status::NotSupported(text::Embedded().Resolve(driver.installed ? L"recording.driver.notReady" : L"recording.driver.missing"));
         std::wstring virtualId, friendly;
@@ -475,9 +614,74 @@ namespace vmex::recording
         return Report(enabled ? L"recording-endpoint-enable" : L"recording-endpoint-disable", actions.SetVisible(id, enabled));
     }
 
-    Status DisableCableEndpoints() { return Report(L"endpoints-disable", ApplyExtraEndpointVisibility(false)); }
-    Status RestoreCableEndpoints() { return Report(L"endpoints-restore", ApplyExtraEndpointVisibility(true)); }
+    Status DisableCableEndpoints()
+    {
+        if (CheckDriverRestart() == ERROR_FAIL_REBOOT_REQUIRED) return ProtectPendingDriverDefaults();
+        return Report(L"endpoints-disable", ApplyExtraEndpointVisibility(false));
+    }
+    Status RestoreCableEndpoints()
+    {
+        if (CheckDriverRestart() == ERROR_FAIL_REBOOT_REQUIRED) return ProtectPendingDriverDefaults();
+        return Report(L"endpoints-restore", ApplyExtraEndpointVisibility(true));
+    }
 
-    Status InstallDriver() { return RunInstaller(true); }
-    Status UninstallDriver() { return RunInstaller(false); }
+    Status ProtectPendingDriverDefaults()
+    {
+        const auto restart = CheckDriverRestart();
+        if (restart == ERROR_SUCCESS) return Status::Ok();
+        if (restart != ERROR_FAIL_REBOOT_REQUIRED) return Status::FromWin32(L"driver-restart-check", restart);
+        std::vector<audio::detail::Endpoint> outputs;
+        if (!audio::detail::EnumEndpoints(eRender, outputs, true)) return Status::Failed(L"driver-pending-output-enumeration");
+        std::vector<std::wstring> virtualEndpoints, physicalEndpoints;
+        for (const auto& endpoint : outputs)
+            (audio::detail::IsOurVirtualDevice(endpoint) ? virtualEndpoints : physicalEndpoints).push_back(endpoint.id);
+        struct Defaults final : IOutputDefaultActions
+        {
+            Status ReadDefault(unsigned role, std::wstring& endpoint) override
+            {
+                auto enumerator = audio::detail::MakeEnumerator();
+                if (!enumerator) return Status::Failed(L"driver-pending-default-enumerator");
+                audio::detail::Ptr<IMMDevice> device;
+                auto result = enumerator->GetDefaultAudioEndpoint(eRender, static_cast<ERole>(role), device.put());
+                LPWSTR id = nullptr;
+                if (SUCCEEDED(result)) result = device->GetId(&id);
+                endpoint = audio::detail::TakeDeviceId(id);
+                return SUCCEEDED(result) ? Status::Ok() : Status::FromHResult(L"driver-pending-default-query", result);
+            }
+            Status SetDefault(unsigned role, std::wstring_view endpoint) override
+            {
+                const auto result = audio::detail::SetSystemDefaultEndpointForRoleResult(std::wstring(endpoint), static_cast<ERole>(role));
+                return SUCCEEDED(result) ? Status::Ok() : Status::FromHResult(L"driver-pending-default-restore", result);
+            }
+        } actions;
+        return ProtectPhysicalDefaults(actions, virtualEndpoints, physicalEndpoints);
+    }
+
+    Status InstallDriver() { return RunDriverOperation(true); }
+    Status UninstallDriver() { return RunDriverOperation(false); }
+
+    int RunDriverMaintenance(bool install)
+    {
+        if (!::IsUserAnAdmin()) return ERROR_ELEVATION_REQUIRED;
+        const HANDLE mutex = ::CreateMutexW(nullptr, FALSE, L"Global\\Vmex.CableDriverOperation");
+        if (!mutex) return static_cast<int>(::GetLastError());
+        const auto wait = ::WaitForSingleObject(mutex, 0);
+        if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED)
+        {
+            ::CloseHandle(mutex);
+            return ERROR_BUSY;
+        }
+        DWORD result = CheckDriverRestart();
+        if (result == ERROR_SUCCESS)
+        {
+            DriverRestartBarrier restartBarrier;
+            result = ERROR_GEN_FAILURE;
+            try { result = install ? InstallEmbeddedDriver(restartBarrier) : RemoveCableDriver(restartBarrier); }
+            catch (...) {}
+            result = restartBarrier.Complete(result);
+        }
+        ::ReleaseMutex(mutex);
+        ::CloseHandle(mutex);
+        return static_cast<int>(result);
+    }
 }

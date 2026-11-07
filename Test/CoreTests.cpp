@@ -402,6 +402,42 @@ namespace
         }
         Actions empty;
         Require(!EnforceRecordingEndpoint(empty, L"").IsOk() && empty.writes == 0, "An empty endpoint must never mutate policy");
+        struct PendingDefaults final : vmex::recording::IOutputDefaultActions
+        {
+            std::array<std::wstring, 3> defaults{L"V", L"R2", L"V16"};
+            unsigned writes = 0;
+            bool reject = false;
+            vmex::Status ReadDefault(unsigned role, std::wstring& endpoint) override
+            { endpoint = defaults[role]; return vmex::Status::Ok(); }
+            vmex::Status SetDefault(unsigned role, std::wstring_view endpoint) override
+            {
+                if (reject) return vmex::Status::Failed(L"default-write");
+                defaults[role] = endpoint;
+                ++writes;
+                return vmex::Status::Ok();
+            }
+        } pending;
+        const std::array<std::wstring, 2> virtualOutputs{L"V", L"V16"};
+        const std::array<std::wstring, 2> physicalOutputs{L"R1", L"R2"};
+        using vmex::recording::ProtectPhysicalDefaults;
+        Require(ProtectPhysicalDefaults(pending, virtualOutputs, physicalOutputs) && pending.writes == 2 &&
+            pending.defaults == std::array<std::wstring, 3>{L"R2", L"R2", L"R2"},
+            "Pending removal must redirect only virtual defaults and preserve the selected physical output");
+        Require(ProtectPhysicalDefaults(pending, virtualOutputs, physicalOutputs) && pending.writes == 2,
+            "Physical defaults must not be rewritten while waiting for reboot");
+        pending.defaults[1] = L"V";
+        Require(ProtectPhysicalDefaults(pending, virtualOutputs, physicalOutputs) && pending.writes == 3 && pending.defaults[1] == L"R2",
+            "A later Windows fallback to the pending virtual device must be corrected again");
+        pending.defaults = {L"V", L"V16", L"V"};
+        Require(!ProtectPhysicalDefaults(pending, virtualOutputs, {}) && pending.writes == 3,
+            "Without a physical output the guard must report failure without choosing another virtual device");
+        pending.reject = true;
+        Require(!ProtectPhysicalDefaults(pending, virtualOutputs, physicalOutputs) && pending.defaults[0] == L"V",
+            "Default-policy write failures must remain visible to the pending-restart guard");
+        pending.reject = false;
+        Require(ProtectPhysicalDefaults(pending, virtualOutputs, physicalOutputs) &&
+            pending.defaults == std::array<std::wstring, 3>{L"R1", L"R1", L"R1"},
+            "If every role fell back to the virtual driver the guard must choose an available physical output");
         vmex::recording::RecordingEndpointLock lock;
         for (int attempt = 0; attempt < 3; ++attempt)
         {
@@ -666,6 +702,37 @@ namespace
         changes.clear();
         Require(!ChangeVisibility(visibility, false, changes) && !RestoreVisibility(visibility, changes) && visibility.endpoints[0].owned,
             "Failed rollback must retain the ownership record for a later recovery attempt");
+        visibility.reject.clear();
+        visibility.endpoints = { {L"V", true, false}, {L"V16", false, true}, {L"input", true, false} };
+        bool pendingRestart = false;
+        const auto removed = MaintainDriverVisibility(visibility, false, [&]
+        {
+            Require(std::none_of(visibility.endpoints.begin(), visibility.endpoints.end(), [](const auto& endpoint) { return endpoint.visible; }),
+                "Every virtual endpoint must be hidden before driver removal can start");
+            pendingRestart = true;
+            return vmex::Status::Ok();
+        }, [&] { return pendingRestart; });
+        Require(removed && std::none_of(visibility.endpoints.begin(), visibility.endpoints.end(), [](const auto& endpoint) { return endpoint.visible; }),
+            "A driver waiting for reboot must not expose virtual endpoints as fallback defaults");
+        visibility.endpoints = { {L"V", true, false}, {L"user-disabled", false, false} };
+        pendingRestart = false;
+        const auto cancelled = MaintainDriverVisibility(visibility, false, [] { return vmex::Status::Failed(L"cancelled"); }, [&] { return pendingRestart; });
+        Require(!cancelled && visibility.endpoints[0].visible && !visibility.endpoints[0].owned && !visibility.endpoints[1].visible,
+            "Cancelling elevation before driver mutation must restore prior visibility and ownership");
+        const auto partialRemoval = MaintainDriverVisibility(visibility, false, [&]
+        { pendingRestart = true; return vmex::Status::Failed(L"partial-driver-removal"); }, [&] { return pendingRestart; });
+        Require(!partialRemoval && !visibility.endpoints[0].visible && visibility.endpoints[0].owned,
+            "A partially removed driver awaiting reboot must retain endpoint isolation without rollback mutations");
+        visibility.endpoints = { {L"V", true, false} };
+        pendingRestart = false;
+        visibility.rejectStore = true;
+        bool driverCalled = false;
+        Require(!MaintainDriverVisibility(visibility, false, [&] { driverCalled = true; return vmex::Status::Ok(); }, [&] { return pendingRestart; }) && !driverCalled,
+            "Driver removal must not begin if endpoint isolation cannot be recorded");
+        visibility.rejectStore = false;
+        Require(MaintainDriverVisibility(visibility, true, [] { return vmex::Status::Ok(); }, [&] { return pendingRestart; }) &&
+            !visibility.endpoints[0].visible && visibility.endpoints[0].owned,
+            "A completed driver install must enter isolated standby");
         Require(vmex::management::IsHostImage(L"C:\\App\\vmex.exe", L"C:\\App") &&
             vmex::management::IsHostImage(L"C:\\APP\\vmex.exe", L"c:\\app"), "The same-directory background host must be recognized");
         Require(!vmex::management::IsHostImage(L"C:\\Other\\vmex.exe", L"C:\\App") &&
@@ -998,11 +1065,6 @@ namespace
 
     void DriverTrust()
     {
-        const auto source = vmex::platform::GetExecutableDirectory() / L"Driver" / L"VBCABLE";
-        bool testSigned = false;
-        const auto verified = vmex::recording::ValidateDriverPackage(source, testSigned);
-        if (!verified) std::wcerr << verified.detail << L'\n';
-        Require(static_cast<bool>(verified), "Signed driver package must verify without importing certificates");
         struct Scratch final
         {
             std::filesystem::path path = std::filesystem::temp_directory_path() /
@@ -1010,25 +1072,56 @@ namespace
             Scratch() { std::filesystem::create_directory(path); }
             ~Scratch() { std::error_code error; std::filesystem::remove_all(path, error); }
         } scratch;
-        Require(!testSigned, "VB-CABLE must not use test signing");
-        std::filesystem::copy(source, scratch.path, std::filesystem::copy_options::recursive);
-        for (const auto name : { L"vbaudio_cable64arm_win10.sys", L"VBCABLE_ControlPanel.exe", L"pin_in.ico", L"pin_out.ico", L"readme.txt" })
+        Require(vmex::recording::QueryDriver().packagePresent, "Core must report the embedded package before extraction");
+        Require(vmex::recording::ExtractDriverPackage(scratch.path).IsOk(), "Embedded package must extract");
+        Require(vmex::recording::ValidateDriverPackage(scratch.path).IsOk(), "Signed driver package must verify without importing certificates");
+        Require(std::distance(std::filesystem::directory_iterator(scratch.path), std::filesystem::directory_iterator{}) == 4,
+            "Extraction must contain only the driver package members");
+        for (const auto name : { L"vbMmeCable64_win10.inf", L"vbaudio_cable64_win10.cat", L"vbaudio_cable64_win10.sys", L"vbaudio_cable64arm_win10.sys" })
         {
-            std::filesystem::remove(scratch.path / name);
-            Require(!vmex::recording::ValidateDriverPackage(scratch.path, testSigned), "Every installer dependency must be present");
-            std::filesystem::copy_file(source / name, scratch.path / name);
+            Require(std::filesystem::remove(scratch.path / name), "Every package member must be extracted");
+            Require(!vmex::recording::ValidateDriverPackage(scratch.path), "Every driver package member must be present");
+            Require(vmex::recording::ExtractDriverPackage(scratch.path).IsOk(), "A fresh extraction must restore the package");
         }
-        Require(vmex::recording::ValidateDriverPackage(scratch.path, testSigned).IsOk(), "Restored complete package must verify");
+        Require(vmex::recording::ValidateDriverPackage(scratch.path).IsOk(), "Restored complete package must verify");
         const auto inf = scratch.path / L"vbMmeCable64_win10.inf";
         { std::ofstream changed(inf, std::ios::binary | std::ios::app); changed << "\nTampered=1\n"; }
-        Require(!vmex::recording::ValidateDriverPackage(scratch.path, testSigned), "A modified INF must not verify against the catalog");
-        std::filesystem::copy_file(source / L"vbMmeCable64_win10.inf", inf, std::filesystem::copy_options::overwrite_existing);
+        Require(!vmex::recording::ValidateDriverPackage(scratch.path), "A modified INF must not verify against the catalog");
+        Require(vmex::recording::ExtractDriverPackage(scratch.path).IsOk(), "A fresh extraction must restore the INF");
         const auto sys = scratch.path / L"vbaudio_cable64_win10.sys";
         { std::fstream changed(sys, std::ios::binary | std::ios::in | std::ios::out); changed.seekg(1024); const auto byte = changed.get(); changed.seekp(1024); changed.put(static_cast<char>(byte ^ 0x5A)); }
-        Require(!vmex::recording::ValidateDriverPackage(scratch.path, testSigned), "A modified driver image must fail verification");
-        std::filesystem::copy_file(source / L"vbaudio_cable64_win10.sys", sys, std::filesystem::copy_options::overwrite_existing);
-        std::filesystem::remove(scratch.path / L"VBCABLE_Setup_x64.exe");
-        Require(!vmex::recording::ValidateDriverPackage(scratch.path, testSigned), "A missing original installer must fail verification");
+        Require(!vmex::recording::ValidateDriverPackage(scratch.path), "A modified driver image must fail verification");
+
+        struct RegistryFixture final
+        {
+            std::wstring path = L"Software\\Vmex.DriverRestartTest." + std::to_wstring(::GetCurrentProcessId()) +
+                L"." + std::to_wstring(::GetTickCount64());
+            HKEY hive = nullptr;
+            bool redirected = false;
+            ~RegistryFixture()
+            {
+                if (redirected) ::RegOverridePredefKey(HKEY_LOCAL_MACHINE, nullptr);
+                if (hive) ::RegCloseKey(hive);
+                ::RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
+            }
+        } registry;
+        Require(::RegCreateKeyExW(HKEY_CURRENT_USER, registry.path.c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE,
+            KEY_ALL_ACCESS, nullptr, &registry.hive, nullptr) == ERROR_SUCCESS, "Driver test registry fixture unavailable");
+        constexpr wchar_t restartKey[] = L"SYSTEM\\CurrentControlSet\\Control\\VolumeMixerExtenderRecordingDriverRestart";
+        HKEY marker = nullptr;
+        Require(::RegCreateKeyExW(registry.hive, restartKey, 0, nullptr, REG_OPTION_VOLATILE,
+            KEY_QUERY_VALUE, nullptr, &marker, nullptr) == ERROR_SUCCESS, "Could not create test restart marker");
+        ::RegCloseKey(marker);
+        Require(::RegOverridePredefKey(HKEY_LOCAL_MACHINE, registry.hive) == ERROR_SUCCESS, "Could not isolate machine registry lookup");
+        registry.redirected = true;
+        Require(vmex::recording::QueryDriver().restartRequired, "Driver query must report a pending restart even when the device is absent");
+        const auto install = vmex::recording::InstallDriver();
+        const auto uninstall = vmex::recording::UninstallDriver();
+        const auto restartText = vmex::text::Embedded().Resolve(L"driver.restart.required");
+        Require(!install && install.detail == restartText && !uninstall && uninstall.detail == restartText,
+            "Pending restart must block both driver operations before elevation");
+        Require(::RegDeleteKeyW(registry.hive, restartKey) == ERROR_SUCCESS && !vmex::recording::QueryDriver().restartRequired,
+            "Driver query must clear the pending state once the restart marker is gone");
     }
 
     void Updates()

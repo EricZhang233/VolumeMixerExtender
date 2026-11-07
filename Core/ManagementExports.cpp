@@ -96,6 +96,7 @@ extern "C" __declspec(dllexport) int VmexManagerExecute(int action, int value, w
         case 10: result = vmex::recording::InstallDriver(); break;
         case 11: result = vmex::recording::UninstallDriver(); break;
         case 12: result = vmex::management::StopHost(true); break;
+        case 13: result = vmex::management::RetryInjection(); break;
         default: result = vmex::Status::InvalidArguments(L"management-action"); break;
         }
     }
@@ -107,12 +108,12 @@ extern "C" __declspec(dllexport) int VmexManagerExecute(int action, int value, w
 
 extern "C" __declspec(dllexport) int VmexRecordingDriverQuery(int* values, int count) noexcept
 {
-    if (!values || count != 4) return vmex::kCodeInvalidArguments;
+    if (!values || (count != 4 && count != 5)) return vmex::kCodeInvalidArguments;
     try
     {
         const auto state = vmex::recording::QueryDriver();
-        const int data[] = { state.installed, state.started, state.packagePresent, static_cast<int>(state.problem) };
-        std::copy_n(data, 4, values);
+        const int data[] = { state.installed, state.started, state.packagePresent, static_cast<int>(state.problem), state.restartRequired };
+        std::copy_n(data, count, values);
         return vmex::kCodeOk;
     }
     catch (...) { return vmex::kCodeFailed; }
