@@ -17,4 +17,7 @@
   <ItemGroup>
     <EmbeddedResource Include="..\ico.png" LogicalName="Vmex.Manager.ProjectLogo.png" />
   </ItemGroup>
+  <Target Name="CleanManagedIntermediate" AfterTargets="Clean" Condition="'$(_CleaningWithoutRebuilding)' != 'false'">
+    <RemoveDir Directories="$(MSBuildProjectDirectory)\bin;$(MSBuildProjectDirectory)\obj" />
+  </Target>
 </Project>

@@ -17,4 +17,7 @@
     <Compile Include="../../Core/UpdateInstaller.cs" Link="UpdateInstaller.cs" />
     <Compile Include="../../Core/UpdateLog.cs" Link="UpdateLog.cs" />
   </ItemGroup>
+  <Target Name="CleanManagedIntermediate" AfterTargets="Clean" Condition="'$(_CleaningWithoutRebuilding)' != 'false'">
+    <RemoveDir Directories="$(MSBuildProjectDirectory)\bin;$(MSBuildProjectDirectory)\obj" />
+  </Target>
 </Project>

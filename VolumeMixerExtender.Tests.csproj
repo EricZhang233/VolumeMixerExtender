@@ -1,6 +1,13 @@
 <Project DefaultTargets="Build">
   <Target Name="Restore" />
   <Target Name="Build" />
+  <Target Name="Clean">
+    <ItemGroup>
+      <_ManagedProject Include="$(MSBuildProjectDirectory)\Manager\Manager.csproj;$(MSBuildProjectDirectory)\Components\updater\Updater.csproj;$(MSBuildProjectDirectory)\Test\Updater\Updater.Tests.csproj" />
+      <_ManagedClean Include="@(_ManagedProject->'%(RootDir)%(Directory)bin');@(_ManagedProject->'%(RootDir)%(Directory)obj');$(MSBuildProjectDirectory)\payload" />
+    </ItemGroup>
+    <RemoveDir Directories="@(_ManagedClean)" />
+  </Target>
   <Target Name="VSTest">
     <Exec Command="pwsh.exe -NoProfile -NonInteractive -File &quot;$(MSBuildThisFileDirectory)Test\RunTests.ps1&quot;" WorkingDirectory="$(MSBuildThisFileDirectory)" />
   </Target>
